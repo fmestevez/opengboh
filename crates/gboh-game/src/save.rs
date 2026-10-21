@@ -183,6 +183,23 @@ pub fn turn(d: &[u8]) -> Option<u16> {
     rest.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()
 }
 
+/// Leaders who have been active in the save's current turn, from the
+/// Running Commentary it holds ("--- Turn #N ---  X is now active. …"), in
+/// order.
+pub fn active_this_turn(d: &[u8]) -> Vec<String> {
+    let text = String::from_utf8_lossy(&d[..d.len().min(0x20000)]).into_owned();
+    let Some(start) = text.rfind("--- Turn #") else { return Vec::new() };
+    let mut out = Vec::new();
+    for part in text[start..].split(" is now active.").collect::<Vec<_>>().split_last().map_or(&[][..], |(_, r)| r) {
+        let name = part.rsplit("  ").next().unwrap_or("").trim();
+        let name = name.rsplit(".  ").next().unwrap_or(name).trim();
+        if !name.is_empty() && !out.iter().any(|n: &String| n == name) {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
 /// Apply saved states to `battle`.
 pub fn apply(battle: &mut Battle, saved: &[(usize, Saved)]) {
     for &(u, s) in saved {
@@ -235,5 +252,8 @@ mod tests {
             .sum();
         println!("rout points lost (both armies): {lost}");
         assert!(turn(&d).is_some());
+        let active = active_this_turn(&d);
+        println!("active this turn: {active:?}");
+        assert!(!active.is_empty());
     }
 }

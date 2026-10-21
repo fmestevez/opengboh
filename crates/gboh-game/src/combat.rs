@@ -401,18 +401,13 @@ pub fn rout_points(type_id: usize, tq: u16, initiative: u16) -> u16 {
     }
 }
 
-/// Whether a unit of `class` that moved into a shock takes the TQ check
-/// before contact, and whether its defender does too. 🟡 From the manual
-/// (heavy and medium infantry, phalanxes, lancers, elephants and chariots,
-/// with exceptions); in the original the check is decided when the combat
-/// is registered, which is not traced yet. Returns `false` for units that
-/// did not move, against skirmishers or routed defenders, and for phalanx
-/// or heavy infantry defenders attacked frontally by light infantry.
-pub fn checks_before_shock(class: MoveClass, moved: bool, defender: MoveClass, frontal: bool) -> bool {
-    use MoveClass::*;
-    let eligible = matches!(class, Phalanx | HeavyInfantry | MediumInfantry | Lancer | Elephant | Chariot);
-    let li_vs_heavy = matches!(class, LightInfantry | LightInfantryMG) && matches!(defender, Phalanx | HeavyInfantry) && frontal;
-    moved && eligible && defender != Skirmisher && !li_vs_heavy
+/// Whether an attacker takes the TQ check before contact: in the original
+/// every attacker that moved this turn is marked when its attack is
+/// registered (`FUN_00570883`), whatever its class (the manual's list of
+/// classes and exceptions is not applied; the original's commentary shows
+/// skirmishers checking).
+pub fn checks_before_shock(_class: MoveClass, moved: bool, _defender: MoveClass, _frontal: bool) -> bool {
+    moved
 }
 
 /// Apply a TQ check to a unit with `hits` and troop quality `tq`: returns

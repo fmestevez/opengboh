@@ -629,12 +629,17 @@ hits from a check, as the manual says).
 
 **Before contact.** Defenders already routed are eliminated when attacked
 (the code sends `EliminateUnit`). If any defender is still standing, each
-attacker marked when the combat was registered takes a TQ check. Per the
-manual the marked units are those that moved and are heavy or medium
-infantry, phalanxes, lancers, elephants or chariots, not against
-skirmishers, and not light infantry attacking phalanx or heavy infantry
-frontally (and their defenders check too); where the original decides this
-is not traced yet. At Hydaspes the Indian chariots (TQ 4, 2 hits) failed
+attacker marked when the combat was registered takes a TQ check; then, if
+any attacker checked, every defender checks too, except phalanx and heavy
+infantry defenders when every checking attacker is light infantry, and a
+charging chariot adds 1 to the defenders' roll. A unit whose hits reach its
+TQ routs and leaves the fight. The marked
+attackers are simply those that moved this turn (`FUN_00570883` marks an
+attacker when its attack is registered if its movement left is below its
+allowance), of any class: the manual's list (heavy and medium infantry,
+phalanxes, lancers, elephants, chariots, with exceptions for skirmishers
+and light infantry) is not what the code does, and the original's
+commentary shows skirmishers taking hits "during the charge". At Hydaspes the Indian chariots (TQ 4, 2 hits) failed
 this check by 3 and routed before contact.
 
 **Angle.** An attacker in one of the defender's two front hexes (the two
@@ -944,7 +949,11 @@ Macedonians / Indians:
 | 6 | 57 / 22 | 7 / 4 |
 | 7 | 66 / 22 | 7 / 4 |
 
-The original is far bloodier. On its turn 4 the Antigenes phalanxes charge
+(Game 1.) A second game of the same setup went very differently (game 2:
+0 / 6 at turn 4, 14 / 47 at turn 7), so the original's results vary widely
+with the dice; distributions, not single games, have to be compared.
+
+In game 1 the original is far bloodier. On its turn 4 the Antigenes phalanxes charge
 the elephant line and Meleager, Cleitus and Coenus rout at once; most of
 the Macedonian loss then comes from failed rallies (terminal routs of
 phalanxes, 14 rout points each). In the rewrite the same attack happens
@@ -952,6 +961,30 @@ but costs the phalanxes almost nothing, so the melee against elephants (or
 the check before contact) differs and needs checking from an identical
 position. Routed elephants rampage in the original (now implemented, see
 `Game::rampage`).
+
+**From identical positions.** Starting from game 2's autosaves (the turn
+is resumed with the leaders the save's commentary has not yet shown active)
+and playing to the next save, 40 rewrite runs each:
+
+| from | original lost (Mac / Ind) | rewrite median (Mac / Ind) |
+|---|---|---|
+| turn 4 | 0 / 15 | 0 / 14 |
+| turn 5 | 14 / 16 | 0 / 22 (Mac max 6) |
+| turn 6 | 0 / 10 | 1 / 12 |
+
+Two of three turns agree closely; on the third the original loses a
+phalanx (14 rout points) and the rewrite never loses more than 6. Loading
+that turn-5 save into the original and letting it play the turn again gave
++1 / +19 (rewrite median +0 / +22), so the phalanx loss was a dice swing of
+the original's, not a rule the rewrite misses. The original's Combat
+Results for that replay (hits each unit took per melee) fit the results
+table's ranges: attackers 0–3, defenders 1–5 (e.g. the Meleager phalanx
+charging an elephant: 3 / 2). Over
+whole battles (40 runs from the start) the rewrite's Macedonian losses at
+turn 7 have median 2 and maximum 43, against 66 and 14 in the two original
+games, which with the replay above looks like the original's spread
+rather than a difference in rules.
+`gboh-tools ai … save=F seed=N` runs these replays.
 
 The commentary also showed that **AI leaders always try for momentum**, and
 that after a successful momentum the leader's units move again, those that

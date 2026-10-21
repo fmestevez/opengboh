@@ -70,6 +70,17 @@ impl Activation {
         }
     }
 
+    /// Resume a turn in which `done` (unit indices) have already been
+    /// active: draw the next of the others.
+    pub fn resume(&mut self, battle: &Battle, done: &[usize], rng: &mut BorlandRand) -> Option<usize> {
+        for (i, &l) in self.leaders.iter().enumerate() {
+            self.done[i] = done.contains(&l);
+        }
+        self.current = None;
+        self.momentum = 0;
+        self.draw(battle, rng)
+    }
+
     /// The active leader (a unit index).
     pub fn active(&self) -> Option<usize> {
         self.current.map(|i| self.leaders[i])

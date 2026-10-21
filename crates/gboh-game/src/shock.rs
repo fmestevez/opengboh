@@ -106,10 +106,14 @@ pub fn resolve(battle: &mut Battle, attackers: &[(usize, bool)], defenders: &[us
 
     // pre-contact TQ checks for marked attackers
     let mut fighting = Vec::new();
+    let (mut checked, mut all_light, mut chariot) = (false, true, false);
     for &(a, moved) in attackers {
         let d = standing[0];
         let frontal = angle(battle.units[d].hex, battle.units[d].facing, battle.units[a].hex) == 0;
         if checks_before_shock(class(battle, a), moved, class(battle, d), frontal) {
+            checked = true;
+            all_light &= class(battle, a) == MoveClass::LightInfantry;
+            chariot |= class(battle, a) == MoveClass::Chariot;
             let u = &battle.units[a];
             let (h, rout) = tq_check_unit(u.hits, u.tq as i32, rng.next() % 10);
             let before = u.hits;
@@ -121,7 +125,32 @@ pub fn resolve(battle: &mut Battle, attackers: &[(usize, bool)], defenders: &[us
         }
         fighting.push(a);
     }
-    if fighting.is_empty() {
+    // then the defenders check (the original's combat function): all of
+    // them once any attacker checked, except phalanxes and heavy infantry
+    // when every checking attacker is light infantry; a charging chariot
+    // adds 1 to their roll
+    if checked {
+        let mut still = Vec::new();
+        for &d in &standing {
+            let c = class(battle, d);
+            if all_light && matches!(c, MoveClass::Phalanx | MoveClass::HeavyInfantry) {
+                still.push(d);
+                continue;
+            }
+            let u = &battle.units[d];
+            let roll = rng.next() % 10 + chariot as u32;
+            let (h, rout) = tq_check_unit(u.hits, u.tq as i32, roll);
+            let before = u.hits;
+            hit(&mut out, battle, d, h - before);
+            if rout {
+                out.routed.push(d);
+            } else {
+                still.push(d);
+            }
+        }
+        standing = still;
+    }
+    if fighting.is_empty() || standing.is_empty() {
         return out;
     }
 

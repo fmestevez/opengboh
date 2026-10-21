@@ -68,6 +68,13 @@ impl Game {
         }
     }
 
+    /// Resume the current turn after the leaders `done` have been active
+    /// (e.g. when starting from a saved game); returns the next leader.
+    pub fn resume_turn(&mut self, done: &[usize]) -> Option<usize> {
+        let l = self.activation.resume(&self.battle, done, &mut self.rng);
+        self.activate(l)
+    }
+
     /// Start the next turn; returns its first leader.
     pub fn begin_turn(&mut self) -> Option<usize> {
         let l = self.activation.begin_turn(&self.battle, &mut self.rng);

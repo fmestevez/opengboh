@@ -15,7 +15,8 @@
 //!   played by the original's AI scripts for n turns; `v` prints the
 //!   scripts' debug output, `home`/`visitor` plays only that army (the
 //!   other gives no orders), `plan=N` uses each side's Nth plan, `save=F`
-//!   starts from the original's saved game F (at its turn).
+//!   starts from the original's saved game F (at its turn), `seed=N`
+//!   seeds the dice.
 //! * `render <DATA dir> <MAP or SCN file> <out.png> [in|normal|out]`: draw a
 //!   map (or a scenario's map with its units) with the faithful renderer.
 
@@ -252,8 +253,10 @@ fn ai(data_dir: &Path, scn_file: &str, n: u32, opts: &[String]) -> Result<()> {
         Ok(Machine::new(Script::load(f, load).map_err(|e| anyhow::anyhow!("{e}"))?))
     };
     let mut machines = [plan(&scn.home_ai, &mut load)?, plan(&scn.visitor_ai, &mut load)?];
-    let mut game = Game::new(&scn, map, 1);
+    let seed: u32 = opts.iter().find_map(|o| o.strip_prefix("seed=")?.parse().ok()).unwrap_or(1);
+    let mut game = Game::new(&scn, map, seed);
     let mut first = 1;
+    let mut resume: Option<Vec<usize>> = None;
     if let Some(path) = opts.iter().find_map(|o| o.strip_prefix("save=")) {
         let data = fs::read(path)?;
         let saved = gboh_game::save::read(&data, &game.battle, scn.home.nation).map_err(|e| anyhow::anyhow!("{}", e.0))?;
@@ -262,9 +265,15 @@ fn ai(data_dir: &Path, scn_file: &str, n: u32, opts: &[String]) -> Result<()> {
         game.activation.turn = t - 1;
         first = t as u32;
         println!("loaded {path}: turn {t}, rout points {} vs {}", game.rout_points(0), game.rout_points(1));
+        // carry on with the leaders who have not yet been active this turn
+        let names = gboh_game::save::active_this_turn(&data);
+        resume = Some(game.battle.leaders().filter(|&l| names.iter().any(|n| *n == game.battle.units[l].name)).collect());
     }
     for turn in first..first + n {
-        let mut next = game.begin_turn();
+        let mut next = match resume.take() {
+            Some(done) => game.resume_turn(&done),
+            None => game.begin_turn(),
+        };
         while let Some(l) = next {
             let side = game.battle.units[l].side;
             let army = if side == game.armies[0].0 { 0 } else { 1 };
