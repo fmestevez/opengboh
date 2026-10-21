@@ -1,0 +1,10 @@
+/target
+/out
+# Never commit original game data
+*.EIF
+*.eif
+*.PAL
+*.WAV
+*.MAP
+*.SCN
+.DS_Store

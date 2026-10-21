@@ -1,0 +1,57 @@
+# opengboh
+
+An open-source reimplementation, written in Rust, of the Erudite Software engine
+behind the *Great Battles of History* (GBoH) series of computer games:
+
+* *The Great Battles of Alexander* (1997): current focus
+* *The Great Battles of Hannibal* (1997): planned
+* *The Great Battles of Caesar* (1998): planned
+
+**This repository contains no game data.** You need your own copy of a
+supported game (e.g. from GOG); the tools here read the original files
+from its `DATA` directory.
+
+## Status
+
+Early. Currently:
+
+* `gboh-formats`: parsers for the original data (EIF sprites, palette, battle
+  maps, scenarios).
+* `gboh-render`: a faithful software renderer for the battlefield (terrain,
+  streams, cliffs, roads, river rocks, trees, stones and units in formation),
+  checked pixel by pixel against the original game.
+* `gboh-viewer`: a window to scroll and zoom a battlefield (wgpu).
+* `gboh-tools`: command-line utilities.
+
+See [docs/formats.md](docs/formats.md) for format notes.
+
+## Usage
+
+```sh
+cargo run --release -p gboh-tools -- extract "/path/to/game/DATA" out/eif
+```
+
+Writes every sprite cel as PNG plus a `manifest.json` (names, hotspots) per file.
+
+```sh
+cargo run --release -p gboh-tools -- render "/path/to/game/DATA" GRANICUS.SCN granicus.png normal
+cargo run --release -p gboh-viewer -- "/path/to/game/DATA" GRANICUS.SCN
+```
+
+`render` draws a battle map, or a scenario's map with its units, to a PNG (`in`, `normal` or `out` zoom). The viewer
+opens the map in a window: arrows/WASD, drag or the mouse wheel to scroll,
+1/2/3 to zoom in/normal/out, +/- for pixel scale, space to pause the water
+animation, Esc to quit.
+
+## License
+
+opengboh is free software: you can redistribute it and/or modify it under the
+terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. See [LICENSE](LICENSE).
+
+## Legal
+
+This is an independent reimplementation. It does not include or redistribute
+any of the original games' code or assets. All game titles are trademarks of
+their respective owners.
