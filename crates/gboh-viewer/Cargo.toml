@@ -8,6 +8,7 @@ license.workspace = true
 anyhow = "1.0.104"
 gboh-formats = { version = "0.1.0", path = "../gboh-formats" }
 gboh-render = { version = "0.1.0", path = "../gboh-render" }
+gboh-game = { version = "0.1.0", path = "../gboh-game" }
 pollster = "0.4"
 wgpu = "25"
 winit = "0.30"

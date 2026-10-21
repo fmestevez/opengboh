@@ -3,6 +3,7 @@
 //!
 //! This crate contains no game data; it parses files from a user's own copy.
 
+pub mod crt;
 pub mod eif;
 pub mod map;
 pub mod pal;

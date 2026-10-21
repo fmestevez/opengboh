@@ -20,6 +20,10 @@ Early. Currently:
 * `gboh-render`: a faithful software renderer for the battlefield (terrain,
   streams, cliffs, roads, river rocks, trees, stones and units in formation),
   checked pixel by pixel against the original game.
+* `gboh-game`: game rules, independent of rendering (so far: battle state,
+  leader ratings, command, activation order, movement, turning,
+  command points, shock and missile combat, routs, rally, rout points
+  and a turn loop).
 * `gboh-viewer`: a window to scroll and zoom a battlefield (wgpu).
 * `gboh-tools`: command-line utilities.
 
@@ -42,6 +46,15 @@ cargo run --release -p gboh-viewer -- "/path/to/game/DATA" GRANICUS.SCN
 opens the map in a window: arrows/WASD, drag or the mouse wheel to scroll,
 1/2/3 to zoom in/normal/out, +/- for pixel scale, space to pause the water
 animation, Esc to quit.
+
+Given a scenario, the viewer also plays the battle hot seat (both sides by
+hand, early and incomplete): the window title shows the turn, the active
+leader and his command points. Click one of his flagged units to select it
+and light its reachable hexes; click a lit hex to move, or an enemy in front
+to designate a shock; right click an enemy to volley; Q/E turn the unit;
+Enter finishes the leader (his shocks are fought). Add `ai` after the
+scenario to have the computer play the visitor army with the original's AI
+scripts; `gboh-tools ai <DATA> <SCN> <turns>` lets them play both sides.
 
 ## License
 

@@ -5,6 +5,15 @@
 //! * `maps <DATA dir>`: parse every battle map and print a summary.
 //! * `scenarios <DATA dir>`: parse every scenario and check units fit the map.
 //! * `units <DATA dir> <SCN file>`: list a scenario's units.
+//! * `command <DATA dir> <SCN file>`: a sample turn: leaders in activation
+//!   order and the units each commands.
+//! * `moves <DATA dir> <SCN file> <unit name> [l|r...]`: hexes a unit can
+//!   reach, optionally after turning it left or right.
+//! * `turns <DATA dir> <SCN file> <n>`: play n turns with no orders (the
+//!   turn loop: activation order, routs, victory check).
+//! * `ai <DATA dir> <SCN file> <n> [v]`: both armies played by the
+//!   original's AI scripts (each side's first plan) for n turns; `v` also
+//!   prints the scripts' debug output.
 //! * `render <DATA dir> <MAP or SCN file> <out.png> [in|normal|out]`: draw a
 //!   map (or a scenario's map with its units) with the faithful renderer.
 
@@ -48,6 +57,12 @@ fn main() -> Result<()> {
         Some("maps") if args.len() == 3 => maps(Path::new(&args[2])),
         Some("scenarios") if args.len() == 3 => scenarios(Path::new(&args[2])),
         Some("units") if args.len() == 4 => units(Path::new(&args[2]), &args[3]),
+        Some("command") if args.len() == 4 => command(Path::new(&args[2]), &args[3]),
+        Some("turns") if args.len() == 5 => turns(Path::new(&args[2]), &args[3], args[4].parse()?),
+        Some("ai") if args.len() >= 5 => ai(Path::new(&args[2]), &args[3], args[4].parse()?, args.get(5).map(String::as_str)),
+        Some("moves") if (5..=6).contains(&args.len()) => {
+            moves(Path::new(&args[2]), &args[3], &args[4], args.get(5).map_or("", String::as_str))
+        }
         Some("render") if (5..=6).contains(&args.len()) => render(
             Path::new(&args[2]),
             &args[3],
@@ -56,7 +71,8 @@ fn main() -> Result<()> {
         ),
         _ => bail!(
             "usage: gboh-tools extract <DATA dir> <out dir> | maps <DATA dir> | scenarios <DATA dir> | units <DATA dir> <SCN file> \
-             | render <DATA dir> <MAP|SCN file> <out.png> [in|normal|out]"
+             | command <DATA dir> <SCN file> | turns <DATA dir> <SCN file> <n> \
+             | moves <DATA dir> <SCN file> <unit name> [l|r...] | render <DATA dir> <MAP|SCN file> <out.png> [in|normal|out]"
         ),
     }
 }
@@ -137,6 +153,135 @@ fn units(data_dir: &Path, scn_file: &str) -> Result<()> {
             "kind={:2} nation={} a={} b={} hex={} {:?} facing={} {:24} {art:36} {:?}",
             u.kind, u.nation, u.unk_a, u.unk_b, u.hex, hex, u.facing, u.name, u.extra
         );
+    }
+    Ok(())
+}
+
+fn command(data_dir: &Path, scn_file: &str) -> Result<()> {
+    use gboh_game::{activation::Activation, battle::Battle, command::commanded};
+    let scn = Scenario::parse(&fs::read(find_ci(data_dir, scn_file)?)?)?;
+    let map = Map::parse(&fs::read(find_ci(data_dir, &scn.map_file)?)?)?;
+    let battle = Battle::from_scenario(&scn, &map);
+    let mut activation = Activation::new(&battle, gboh_formats::scn::battle_index(&scn.map_file));
+    let mut rng = gboh_render::BorlandRand::new(1);
+    // one sample turn: leaders in activation order, no momentum
+    let mut next = activation.begin_turn(&battle, &mut rng);
+    while let Some(l) = next {
+        let u = &battle.units[l];
+        let r = u.leader.unwrap();
+        println!("{} (initiative {}, range {}, line {}) at ({}, {})", u.name, r.initiative, r.command_range, r.personal_combat, u.hex.x, u.hex.y);
+        for i in commanded(&battle, l) {
+            let c = &battle.units[i];
+            println!("    {:24} group {:2} at ({}, {})", c.name, c.group, c.hex.x, c.hex.y);
+        }
+        next = activation.next(&battle, false, &mut rng);
+    }
+    Ok(())
+}
+
+fn moves(data_dir: &Path, scn_file: &str, name: &str, turns: &str) -> Result<()> {
+    use gboh_game::{battle::Battle, movement::{highlighted, reachable}, orders::turn};
+    let scn = Scenario::parse(&fs::read(find_ci(data_dir, scn_file)?)?)?;
+    let map = Map::parse(&fs::read(find_ci(data_dir, &scn.map_file)?)?)?;
+    let mut battle = Battle::from_scenario(&scn, &map);
+    let Some(i) = battle.units.iter().position(|u| u.name == name) else { bail!("no unit named {name}") };
+    // optional turns first: l = left, r = right
+    for c in turns.chars() {
+        turn(&mut battle, &map, i, c == 'l').map_err(|e| anyhow::anyhow!("turn refused: {e:?}"))?;
+    }
+    let u = &battle.units[i];
+    let points = u.mp;
+    println!("{} at ({}, {}) facing {}, {points} movement points", u.name, u.hex.x, u.hex.y, u.facing);
+    let costs = reachable(&battle, &map, i, points);
+    for h in highlighted(&battle, &map, i, points) {
+        let cost = costs.get(&h).map_or_else(|| "(second hex)".to_string(), |c| format!("cost {c}"));
+        println!("  ({:2}, {:2}) hex {} {cost}", h.x, h.y, map.hex_id_origin as i32 + h.x * 100 + h.y);
+    }
+    Ok(())
+}
+
+fn turns(data_dir: &Path, scn_file: &str, n: u32) -> Result<()> {
+    use gboh_game::game::{Game, Verdict};
+    let scn = Scenario::parse(&fs::read(find_ci(data_dir, scn_file)?)?)?;
+    let map = Map::parse(&fs::read(find_ci(data_dir, &scn.map_file)?)?)?;
+    let mut game = Game::new(&scn, map, 1);
+    for turn in 1..=n {
+        let mut order = Vec::new();
+        let mut next = game.begin_turn();
+        while let Some(l) = next {
+            order.push(game.battle.units[l].name.clone());
+            next = game.finish_leader(false).1;
+        }
+        let verdict = game.end_turn();
+        println!(
+            "turn {turn}: {}  | rout points {}/{} vs {}/{}",
+            order.join(", "),
+            game.rout_points(0),
+            game.armies[0].1,
+            game.rout_points(1),
+            game.armies[1].1
+        );
+        if let Verdict::Won(a) = verdict {
+            println!("army {a} wins");
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn ai(data_dir: &Path, scn_file: &str, n: u32, verbose: Option<&str>) -> Result<()> {
+    use gboh_game::ai::{Machine, Script};
+    use gboh_game::battle::UnitState;
+    use gboh_game::game::{Game, Verdict};
+    let scn = Scenario::parse(&fs::read(find_ci(data_dir, scn_file)?)?)?;
+    let map = Map::parse(&fs::read(find_ci(data_dir, &scn.map_file)?)?)?;
+    let mut load = |name: &str| find_ci(data_dir, name).ok().and_then(|p| fs::read(p).ok()).map(|d| String::from_utf8_lossy(&d).into_owned());
+    let plan = |files: &[String], load: &mut dyn FnMut(&str) -> Option<String>| -> Result<Machine> {
+        let f = files.first().context("no AI plan")?;
+        println!("plan {f}");
+        Ok(Machine::new(Script::load(f, load).map_err(|e| anyhow::anyhow!("{e}"))?))
+    };
+    let mut machines = [plan(&scn.home_ai, &mut load)?, plan(&scn.visitor_ai, &mut load)?];
+    let mut game = Game::new(&scn, map, 1);
+    for turn in 1..=n {
+        let mut next = game.begin_turn();
+        while let Some(l) = next {
+            let side = game.battle.units[l].side;
+            let m = &mut machines[if side == game.armies[0].0 { 0 } else { 1 }];
+            let before: Vec<_> = game.battle.units.iter().map(|u| (u.hex, u.facing)).collect();
+            let log = game.ai_orders(m).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let moved = game.battle.units.iter().zip(&before).filter(|(u, b)| (u.hex, u.facing) != **b).count();
+            let used = game.points.as_ref().map_or(0, |p| p.used);
+            let shocks = game.shocks.len();
+            let name = game.battle.units[l].name.clone();
+            let (out, n2) = game.finish_leader(false);
+            let routed: usize = out.iter().map(|o| o.routed.len() + o.eliminated.len()).sum();
+            println!("turn {turn} {name:24} orders {used:2}  units moved/turned {moved:2}  shocks {shocks}  routed {routed}");
+            if verbose.is_some() {
+                for line in log {
+                    println!("    {line}");
+                }
+            }
+            next = n2;
+        }
+        let verdict = game.end_turn();
+        let gone = |side: u8| game.battle.units.iter().filter(|u| u.side == side && u.state == UnitState::Gone).count();
+        let routed = |side: u8| game.battle.units.iter().filter(|u| u.side == side && u.state == UnitState::Routed).count();
+        println!(
+            "end of turn {turn}: rout points {}/{} vs {}/{} (units out {} vs {}, routed {} vs {})",
+            game.rout_points(0),
+            game.armies[0].1,
+            game.rout_points(1),
+            game.armies[1].1,
+            gone(game.armies[0].0),
+            gone(game.armies[1].0),
+            routed(game.armies[0].0),
+            routed(game.armies[1].0)
+        );
+        if let Verdict::Won(a) = verdict {
+            println!("army {a} wins");
+            break;
+        }
     }
     Ok(())
 }
@@ -227,18 +372,21 @@ fn render(data_dir: &Path, file: &str, out: &Path, zoom: &str) -> Result<()> {
     };
     let mut load = |name: &str| find_ci(data_dir, name).ok().and_then(|p| fs::read(p).ok());
     // a scenario brings its map and units
-    let (map_file, units) = if file.to_ascii_lowercase().ends_with(".scn") {
-        let scn = Scenario::parse(&load(file).with_context(|| format!("{file} not found"))?)?;
-        (scn.map_file, scn.units)
+    let scenario = if file.to_ascii_lowercase().ends_with(".scn") {
+        Some(Scenario::parse(&load(file).with_context(|| format!("{file} not found"))?)?)
     } else {
-        (file.to_string(), Vec::new())
+        None
     };
+    let map_file = scenario.as_ref().map_or_else(|| file.to_string(), |s| s.map_file.clone());
+    let units = scenario.as_ref().map_or_else(Vec::new, |s| s.units.clone());
     let map = Map::parse(&load(&map_file).with_context(|| format!("{map_file} not found"))?)?;
+    let flagged = scenario.as_ref().map_or_else(Vec::new, |s| gboh_game::command::opening_flags(s, &map, 1));
     let pal = battlefield::palette(&mut load)?;
     let titles = eif_title_index(data_dir)?;
     let mut load_title =
         |title: &str| titles.get(title).and_then(|n| fs::read(data_dir.join(n)).ok());
-    let canvas = battlefield::render(&map_file, &map, zoom, &pal, 1, &units, &mut load, &mut load_title)?;
+    let canvas =
+        battlefield::render(&map_file, &map, zoom, &pal, 1, &units, &flagged, &mut load, &mut load_title)?;
     write_png(out, canvas.width as u32, canvas.height as u32, &canvas.to_rgba(&pal))
 }
 

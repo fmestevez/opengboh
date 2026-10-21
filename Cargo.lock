@@ -483,6 +483,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "gboh-game"
+version = "0.1.0"
+dependencies = [
+ "gboh-formats",
+]
+
+[[package]]
 name = "gboh-render"
 version = "0.1.0"
 dependencies = [
@@ -495,6 +502,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "gboh-formats",
+ "gboh-game",
  "gboh-render",
  "png",
  "serde",
@@ -507,6 +515,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "gboh-formats",
+ "gboh-game",
  "gboh-render",
  "pollster",
  "wgpu",

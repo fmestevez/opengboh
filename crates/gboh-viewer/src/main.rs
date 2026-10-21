@@ -8,13 +8,19 @@
 //!
 //! Keys: arrows/WASD or drag to scroll, wheel to scroll, 1/2/3 = zoom in /
 //! normal / out, +/- = pixel scale, space = toggle water animation, Esc =
-//! quit.
+//! quit. With a scenario the battle can be played hot seat (see `play`):
+//! click units and hexes, Q/E to turn, right click to volley, Enter to
+//! finish a leader.
+
+mod play;
 
 use anyhow::{Context, Result, bail};
 use gboh_formats::map::Map;
 use gboh_formats::pal::Palette;
 use gboh_formats::scn::Scenario;
-use gboh_render::battlefield;
+use gboh_formats::units::ART_TITLES;
+use gboh_render::battlefield::{self, Scene};
+use gboh_render::units::UnitView;
 use gboh_render::terrain::Zoom;
 use gboh_render::Canvas;
 use std::path::{Path, PathBuf};
@@ -72,6 +78,7 @@ fn view_uniform(origin: [f32; 2], size: [f32; 2], scale: f32) -> [u8; 32] {
 struct Level {
     width: u32,
     height: u32,
+    texture: wgpu::Texture,
     bind_group: wgpu::BindGroup,
 }
 
@@ -225,11 +232,22 @@ impl Gpu {
                         wgpu::BindGroupEntry { binding: 2, resource: uniform.as_entire_binding() },
                     ],
                 });
-                Level { width, height, bind_group }
+                Level { width, height, texture, bind_group }
             })
             .collect();
 
         Ok(Self { window, surface, device, queue, config, pipeline, palette, uniform, levels })
+    }
+
+    /// Replace a level's battlefield pixels (same size).
+    fn update_level(&self, level: usize, canvas: &Canvas) {
+        let l = &self.levels[level];
+        self.queue.write_texture(
+            l.texture.as_image_copy(),
+            &canvas.pixels,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(l.width), rows_per_image: None },
+            l.texture.size(),
+        );
     }
 
     fn set_palette(&self, pal: &Palette) {
@@ -286,6 +304,11 @@ impl Gpu {
 struct Viewer {
     title: String,
     canvases: Vec<Canvas>,
+    scenes: Vec<Scene>,
+    play: Option<play::Play>,
+    /// Levels whose canvas is out of date with the battle.
+    stale: [bool; 3],
+    press: Option<PhysicalPosition<f64>>,
     base_palette: Palette,
     gpu: Option<Gpu>,
     level: usize,
@@ -322,6 +345,7 @@ impl Viewer {
         self.centre[0] *= w1 as f32 / w0 as f32;
         self.centre[1] *= f1 as f32 / f0 as f32;
         self.level = level;
+        self.refresh();
         self.update_title();
         self.redraw();
     }
@@ -329,7 +353,42 @@ impl Viewer {
     fn update_title(&self) {
         if let Some(g) = &self.gpu {
             let zoom = ["Zoom In", "Normal", "Zoom Out"][self.level];
-            g.window.set_title(&format!("opengboh: {} ({zoom}, {}x)", self.title, self.scale));
+            let status = self.play.as_ref().map_or(String::new(), |p| format!(" | {}", p.status));
+            g.window.set_title(&format!("opengboh: {} ({zoom}, {}x){status}", self.title, self.scale));
+        }
+    }
+
+    /// Redraw the battle at the current level if it changed.
+    fn refresh(&mut self) {
+        let Some(p) = &self.play else { return };
+        if !self.stale[self.level] {
+            return;
+        }
+        let scene = &self.scenes[self.level];
+        let mut canvas = scene.compose(&p.views(), &p.flagged());
+        play::light(&mut canvas, scene, &p.lit(), &self.base_palette);
+        if let Some(g) = &self.gpu {
+            g.update_level(self.level, &canvas);
+        }
+        self.canvases[self.level] = canvas;
+        self.stale[self.level] = false;
+    }
+
+    /// The battle changed: redraw.
+    fn changed(&mut self) {
+        self.stale = [true; 3];
+        self.refresh();
+        self.update_title();
+        self.redraw();
+    }
+
+    /// A click at the cursor.
+    fn click(&mut self, right: bool) {
+        let o = self.origin();
+        let (px, py) = (o[0] + self.cursor.x as f32 / self.scale, o[1] + self.cursor.y as f32 / self.scale);
+        let Some(hex) = play::pick(&self.scenes[self.level], px as i32, py as i32) else { return };
+        if self.play.as_mut().is_some_and(|p| p.click(hex, right)) {
+            self.changed();
         }
     }
 
@@ -367,6 +426,8 @@ impl ApplicationHandler for Viewer {
             }
         }
         self.upload_palette();
+        self.stale = [true; 3];
+        self.refresh();
         self.update_title();
         self.redraw();
     }
@@ -394,6 +455,11 @@ impl ApplicationHandler for Viewer {
                     Key::Named(NamedKey::ArrowUp) => self.scroll(0.0, -STEP),
                     Key::Named(NamedKey::ArrowDown) => self.scroll(0.0, STEP),
                     Key::Named(NamedKey::Space) => self.animate = !self.animate,
+                    Key::Named(NamedKey::Enter) => {
+                        if self.play.as_mut().is_some_and(|p| p.finish()) {
+                            self.changed();
+                        }
+                    }
                     Key::Character(c) => match c.to_ascii_lowercase().as_str() {
                         "a" => self.scroll(-STEP, 0.0),
                         "d" => self.scroll(STEP, 0.0),
@@ -402,6 +468,11 @@ impl ApplicationHandler for Viewer {
                         "1" => self.set_level(0),
                         "2" => self.set_level(1),
                         "3" => self.set_level(2),
+                        "q" | "e" => {
+                            if self.play.as_mut().is_some_and(|p| p.turn(c.eq_ignore_ascii_case("q"))) {
+                                self.changed();
+                            }
+                        }
                         "+" | "=" => {
                             self.scale = (self.scale + 1.0).min(8.0);
                             self.update_title();
@@ -419,6 +490,17 @@ impl ApplicationHandler for Viewer {
             }
             WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
                 self.drag = (state == ElementState::Pressed).then_some(self.cursor);
+                if state == ElementState::Pressed {
+                    self.press = Some(self.cursor);
+                } else if let Some(p) = self.press.take() {
+                    // a click, not a drag
+                    if (p.x - self.cursor.x).abs() + (p.y - self.cursor.y).abs() < 6.0 {
+                        self.click(false);
+                    }
+                }
+            }
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } => {
+                self.click(true);
             }
             WindowEvent::CursorMoved { position, .. } => {
                 if let Some(from) = self.drag {
@@ -482,35 +564,56 @@ fn eif_title_index(dir: &Path) -> std::collections::HashMap<String, String> {
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let Some(data_dir) = args.get(1).map(PathBuf::from) else {
-        bail!("usage: gboh-viewer <DATA dir> [MAP or SCN file]");
+        bail!("usage: gboh-viewer <DATA dir> [MAP or SCN file] [ai]");
     };
     let file = args.get(2).map_or("CHAERONE.SCN", String::as_str);
     let mut load = |name: &str| find_ci(&data_dir, name).and_then(|p| std::fs::read(p).ok());
     // a scenario brings its map and units
-    let (map_file, units) = if file.to_ascii_lowercase().ends_with(".scn") {
-        let scn = Scenario::parse(&load(file).with_context(|| format!("{file} not found"))?)?;
-        (scn.map_file, scn.units)
+    let scenario = if file.to_ascii_lowercase().ends_with(".scn") {
+        Some(Scenario::parse(&load(file).with_context(|| format!("{file} not found"))?)?)
     } else {
-        (file.to_string(), Vec::new())
+        None
     };
+    let map_file = scenario.as_ref().map_or_else(|| file.to_string(), |s| s.map_file.clone());
+    let units = scenario.as_ref().map_or_else(Vec::new, |s| s.units.clone());
     let map_file = map_file.as_str();
     let map = Map::parse(&load(map_file).with_context(|| format!("{map_file} not found"))?)?;
+    let flagged = scenario.as_ref().map_or_else(Vec::new, |s| gboh_game::command::opening_flags(s, &map, 1));
     let titles = eif_title_index(&data_dir);
     let mut load_title = |title: &str| titles.get(title).and_then(|n| std::fs::read(data_dir.join(n)).ok());
     let base_palette = {
         let data = load("GAME.PAL").context("GAME.PAL not found")?;
         Palette::parse(&data)?
     };
-    let canvases = ZOOMS
+    let views: Vec<UnitView> = units.iter().enumerate().filter_map(|(i, u)| UnitView::of_scenario(&map, i, u)).collect();
+    let types: Vec<usize> = (0..ART_TITLES.len()).collect();
+    let scenes = ZOOMS
         .iter()
-        .map(|&z| battlefield::render(map_file, &map, z, &base_palette, 1, &units, &mut load, &mut load_title))
+        .map(|&z| Scene::build(map_file, &map, z, &base_palette, 1, &types, &mut load, &mut load_title))
         .collect::<Result<Vec<_>, _>>()?;
+    let canvases: Vec<Canvas> = scenes.iter().map(|s| s.compose(&views, &flagged)).collect();
+    // `ai` after the file: the computer plays the visitor army with its
+    // first plan
+    let ai = match (args.get(3).map(String::as_str), &scenario) {
+        (Some("ai"), Some(s)) => {
+            let plan = s.visitor_ai.first().context("no AI plan")?;
+            let mut read = |name: &str| load(name).map(|d| String::from_utf8_lossy(&d).into_owned());
+            let script = gboh_game::ai::Script::load(plan, &mut read).map_err(|e| anyhow::anyhow!("{e}"))?;
+            Some((s.visitor.nation, gboh_game::ai::Machine::new(script)))
+        }
+        _ => None,
+    };
+    let play = scenario.as_ref().map(|s| play::Play::new(gboh_game::game::Game::new(s, map.clone(), 1), ai));
     let level = 1;
     let centre = [canvases[level].width as f32 / 2.0, canvases[level].height as f32 / 2.0];
     let title = if map.name.is_empty() { map_file.to_string() } else { map.name.clone() };
     let mut viewer = Viewer {
         title,
         canvases,
+        scenes,
+        play,
+        stale: [false; 3],
+        press: None,
         base_palette,
         gpu: None,
         level,

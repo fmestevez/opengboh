@@ -304,19 +304,31 @@ file    := u16 n_leaders, leader[n_leaders], u16 unk (skipped by the game),
            u8 n_home_ai, u8 n_visitor_ai, str8 ai_file[n_home_ai + n_visitor_ai],
            unit* (until end of file)
 leader  := u16 id, u16 len, name[len]
-side    := u8 nation, u8 unk, u8 points
+side    := u8 nation, u8 retreat, u8 rout_level
 str8    := u8 len, char[len]
 unit    := u8 kind, base, extra(kind)
 base    := str8 name, u8 nation (0..5), u16 unk_a, u16 unk_b, u16 hex_id, u8 facing
 ```
 
 * `hex_id` = map `hex_id_origin + x*100 + y`.
+* `side`: the army's nation, the map direction its routed units flee in
+  (1 N, 3 E, 5 S, 7 W) and its rout level, the rout points at which it
+  withdraws (from the game's loader). Hydaspes: Macedonians `2 7 80` (flee
+  west, withdraw at 80), Indians `3 3 70`.
 * `facing` is a direction 1..8 (N, NE, E, SE, S, SW, W, NW) in map terms;
   scenarios only use 2, 3, 4, 6, 7, 8. On screen (the map turned a quarter)
   it becomes facing + 2, wrapping 8 to 1 (6 → NW, 7 → N, 3 → S). That gives
   the six screen facings N, NE, SE, S, SW, NW. (At Chaeronea the Macedonians
   face 6, NW on screen, towards the Greeks, who face 2/8, SE/NE.)
-* `extra` by original class:
+* All decoded unit values agree with the manual's unit table (pp. 70–76):
+  `unk_a` = MA, size, TQ, missile weapon and range (the first missile value
+  after the weapon; the oxybeles' range 7 is not stored). The last missile
+  value (5 for javelins, 10 for bows and slings, 0 for some units) is still
+  unknown.
+* `extra` by original class. For combat units the first value is the unit's
+  **size**, the second its **troop quality** and the byte after them is set
+  for units that cover two hexes (phalanx, double-sized hoplites) (`Size:` and `TQ:` in game;
+  Hypaspist 1 at Hydaspes, `6 8`, shows `TQ: 8 … Size: 6`):
 
 | kind | class | extra fields |
 |---|---|---|
@@ -382,18 +394,507 @@ formation covers two hexes: figures 0–4 and 10–14 stand on the unit's hex an
 5–9 and 15–19 on its flank neighbour, a quarter turn clockwise from the
 facing on screen (for a unit facing NW, the hex to the NE). Each hex holds a
 front and a back rank of five, so the two hexes form two long ranks.
-**Activation flags** 🟡 (`AFLAG*.EIF`: strips `Macedonian Flag`, `Greek Flag`,
-`Persian Flag`, `Indian Flag` (three animation cels each), `Flag Shadow`,
-`Stem`). Every non-leader unit gets a flag object on its hex, at the hex
-centre shifted sideways by `5 − rand() % 11` zoom-in pixels. The game shows
-it only on units the active leader can order this turn, so drawing flags
-needs the command rules. At Hydaspes, turn 1, they show on nearly every
-Macedonian unit, not just Alexander's command group.
-
-The scenario field `unk_b` is the unit's command group: it matches the leader
-whose own `unk_b` is the same (at Chaeronea: Athens 2 with Demosthenes,
-Thebes 4 with Theagenes, Macedonians 0 and 1 with Alexander and Philip).
+**Activation flags** ✅ placement / 🟡 rule (`AFLAG*.EIF`: strips
+`Macedonian Flag`, `Greek Flag`, `Persian Flag`, `Indian Flag` (three
+animation cels each), `Flag Shadow`, `Stem`). Every non-leader unit gets a
+flag when its sprites are built: the pole's anchor is the hex centre plus
+(`5 − rand() % 11`, −12) zoom-in pixels, and the raised pennant hangs at
+(+1, −82) from that anchor (both measured at Zoom In). Pennant by nation:
+Macedonian, Persian (and allied), Indian, Greek (and tribal). The game shows
+flags only on units the active leader can order (see Leaders and command).
+The flag's ground shadow is not drawn yet, and the pennant's raising
+animation is not modelled.
 
 Infantry and phalanx figures also carry a per-facing draw depth. The renderer
 sorts all objects by anchor row, then depth; the original's exact rule is
 not confirmed.
+
+## Leaders and command 🟡
+
+**Leader ratings.** The four leader values in a scenario are, in file order:
+
+| value | meaning | evidence |
+|---|---|---|
+| 1 | charisma | 0–4; Alexander 4, Tauron 0; named in `CONSTANT.AI`; picks the leader in a shock's casualty roll |
+| 2 | command range | passed with the leader's hex to range searches; reduced by wounds |
+| 3 | initiative | shown in game as `I:`; also the starting command points (`Com: n/n`) |
+| 4 | personal combat | named in `CONSTANT.AI`; reduced by wounds with the command range; added to the leader casualty roll |
+
+At Chaeronea, Alexander (CH) is `3 5 6 7` and the game shows `I: 6 Com: 6/6`;
+Alexander III elsewhere is `4 9 7 7` and shows `I: 7 Com: 7/7`. The manual's
+leader table (pp. 77–79) confirms values 2 and 3 for every leader checked
+(Alexander 7/9, Theagenes 4/9, Demosthenes 3/5, Porus 5/6, Darius III 3/8:
+initiative / command range); it does not list values 1 and 4.
+
+**Sides.** A unit fights for its nation's side unless the scenario's pairs
+remap it: each pair `(nation, side)` puts `nation` on `side`'s army (at
+Granicus `(0, 1)` puts Memnon's Greek mercenaries with the Persians).
+
+**Command** (matches the flags raised at Hydaspes, turn 1). An activated
+leader commands the units of his own command group within his command
+range. With personal combat he also brings in each other leader of his side
+within his range, with that leader's units within the subordinate's own
+range. At Hydaspes this flags Alexander's group, Coenus's Companions and
+Antigenes's phalanx, but not Craterus's group 16 hexes away across the
+river.
+
+**Hex distance.** Map hexes are columns `x` and rows `y`, odd columns half a
+hex lower (offset coordinates). Axial `q = x`, `r = y − (x − (x & 1)) / 2`;
+distance `max(|dq|, |dr|, |dq + dr|)`.
+
+**Activation order** ✅ (from the game controller). Each leader registers
+his name, nation and initiative when the scenario loads; the register order
+is the scenario order. Every turn:
+
+1. **Elite initiative.** If the battle has the rule (all but Chaeronea,
+   Samarkand and the last table entry) and it has been used fewer than three
+   times, a named leader goes first: on turn 1 the first leader whose name
+   contains `Alexander` (`Parmenion` at Issus), on later turns `Alexander`
+   with a 40% chance (100% at Pelium) per turn. (The game can also ask the
+   player.)
+2. **Initiative draw.** Otherwise, and for every later activation, one
+   leader is drawn among those not yet activated this turn (and not
+   eliminated), with probability proportional to initiative: `rand() %
+   total`, then the first leader whose cumulative range contains the roll.
+   A leader with initiative 0 is never drawn.
+3. **Momentum.** A leader who asks for it after his activation goes again
+   if `rand() % 100 < (initiative + 1) × 8` on the first attempt, `× 5` on
+   the second; at most two successes ("… attempted momentum (tactical
+   initiative) and was successful!"). Otherwise the next leader is drawn.
+
+The turn ends when every leader has gone. This matches every capture so far:
+Lyginus, Pelium, Granicus and Hydaspes open with Alexander by elite
+initiative; at Chaeronea, where the rule is off, Alexander (initiative 6, as
+is Philip) came up in the draw.
+
+## Movement ✅ (verified in game: the hexes the game highlights for a selected unit match exactly for six Hydaspes units, including two phalanxes)
+
+**Movement allowance** is the scenario's `unk_a` (leaders 9, cavalry 8, most
+foot 5, phalanx 4). It sets both the unit's current and maximum movement
+points.
+
+**Movement classes** by unit type (the original's class codes): phalanx (0),
+heavy infantry (2: hoplites, hypaspists), medium infantry (3), Macedonian and
+Greek light infantry (5), light infantry (6), skirmishers (7: javelins,
+archers, slingers, Agrianians), heavy cavalry (8), lancers (11), light
+cavalry (12), elephants (13), chariots (14), oxybeles (15). Leaders move by
+rules not ported yet.
+
+**Direction.** A unit faces a hex corner and moves only into the two hexes in
+front, keeping its facing: facing 2 → sides N and NE, 3 → NE and SE, 4 → SE
+and S, 6 → S and SW, 7 → SW and NW, 8 → NW and N (map sides).
+
+**Step cost** into a neighbour: the largest terrain cost of the destination's
+hex codes (woods 2; everything else in the shipped maps 1), at least 1; +1
+for crossing a minor stream (side code 6); + the elevation difference. Side
+code 11 costs 99. In the original's table these are hex terrain types 0–5
+and 10 (costs 1, 2, 1, 2, 1, 2, 2) and side types 6, 8, 9 (+1 each) and 11
+(99). Side types 8 and 9 never occur, and the loader's water marker for
+elevation 0 is overwritten, so water costs only its elevation change.
+
+**Impassable:**
+
+* any side with side code 20;
+* climbing more than 2 levels (elevation 0 counts as 1), more than 3 for
+  skirmishers, more than 1 for horses, elephants and chariots;
+* chariots into woods or rocky hexes (hex codes 1–5);
+* horses (heavy and light cavalry, lancers) into a hex next to an elephant;
+* a hex holding any unit except a friendly leader (two-hex units hold both
+  hexes).
+
+The original also has bans for chariots and elephants on streams and other
+sides, but they test side types above 4 directly, which its side test always
+answers no, so they never apply.
+
+**Zones of control.** A unit may enter a hex next to an enemy combat unit
+but not move on from it (unless it started there); skirmishers ignore this.
+The original also asks each enemy whether it exerts the zone; that test is
+not ported.
+
+**Two-hex units** (phalanx, double-sized hoplites) have a second hex at the
+flank, map direction facing + 2. Both hexes move together the same way; both
+steps must be legal and the cost is the main hex's. The game highlights both
+hexes of every position.
+
+**Reachable hexes** are found by a shortest-path search over these steps
+with the unit's remaining movement points.
+
+## Orders ✅ turning and command points (verified in game)
+
+**Turning.** A unit turns 60° at a time. Every class pays one movement
+point (the manual's two points for elephants, chariots and cataphracts is
+not in the code); chariots also take two cohesion hits per turn, as the
+manual says. Left is anticlockwise through the
+six facings (3 → 2 → 8 → 7 → 6 → 4 → 3) and right the reverse. Skirmishers pay only for their first turn of the turn. A two-hex unit pivots: on a left turn its main hex stays and the
+second hex swings round it, on a right turn the second hex stays and the
+main hex swings. An about-face (three steps) swaps a two-hex unit's hexes.
+Verified at Hydaspes: after turning Hypaspist 1 left, the game highlights
+exactly the hexes predicted for facing 2 with 4 points left.
+
+**Command points** (`Com: left/max`, starting at the leader's initiative;
+verified at Hydaspes: after Alexander had Hypaspist 1 turn and the Agema
+Companions, of Coenus's group, move, the game showed `Com: 4/7`, i.e. 1 + 2
+points).
+Each time a unit finishes its orders the active leader is charged: one point
+when he moves on to a different unit, two if that unit is outside his own
+command group. A personal combat uses all remaining points. The leader is
+finished when he has used them all.
+
+**Ordered again.** Units are marked as ordered when a leader activates them.
+A unit ordered by a second leader in the same turn takes one cohesion hit
+("… takes 1 cohesion hit for being ordered again this turn.").
+
+## Shock combat ✅ tables (match the manual) / 🟡 resolution flow
+
+**Checked against the manual** ("Combat Tables", pp. 81–86 of the GOG PDF).
+The game's base-column table, minus 1, equals the manual's "Initial Clash of
+Spears" for every defender class, angle and attacker class it lists (0
+differences); the superiority table equals the manual's "Shock Superiority"
+(0 differences, 1 = AS, 2 = DS); the size adjustment formula reproduces the
+manual's "Size Ratio Difference" table; and the results tables match "Shock
+Combat Results" in 128 of 130 cells. The two that differ (the game's data
+wins for a faithful port; they may be manual typos or a later patch):
+
+| die | column | manual | game |
+|---|---|---|---|
+| 0 | 3 | 3(2) | 4(2) |
+| 1 | 10 | 2(3) | 2(2) |
+
+Class codes map to the manual's abbreviations: PH 0, HI 2, MI 3, LP 5
+(peltasts), LI 6, SK 7, HC 8, LN 11, LC 12, EL 13, CH 14.
+
+Rules the manual gives that the game does **not** apply: the terrain
+shifts (1L for defenders in river, marsh or woods, 1L/2L uphill or across
+steep-banked streams, 1R downhill): the caller passes a terrain shift that
+is always 0; skirmisher halving, and ignoring size when elephants or
+chariots fight: neither appears anywhere in the combat code.
+
+**Around the table** (from the caller):
+
+* Side sizes are summed, leaving skirmishers out when any other kind of unit
+  is on that side (as the manual says for the Agrianians).
+* The defending class used is that of the defending unit that gives the
+  attacker the lowest frontal base column.
+* Each side's hits are shared: `total ÷ units` each, the remainder to the
+  leading unit; a unit whose share is at least three times the other side's
+  per-unit share (at least 1) takes 2 more; a unit one hit from routing and
+  in enemy contact makes a TQ check, taking 1 fewer hit if it costs nothing
+  and 1 more otherwise.
+* A unit whose hits reach its TQ routs. The manual's "DS–" (no
+defender superiority against cavalry) applies to missile units *out of
+missiles*; the game's code tests only whether the defender is missile
+capable.
+
+The original resolves a shock with one call per combat. Inputs: the leading
+attacker's class and the defender's class (movement classes, codes 0–15),
+the attack angle (0 front, 1 flank, 2 rear), the attackers' total size and
+the defender's size, and a few flags.
+
+**Column** (0–12) = `COLUMN[defender][angle][attacker] − 1`
++ size adjustment (attackers bigger: `attacker ÷ defender − 1`, integer
+division; defender bigger: `1 − ceil(defender ÷ attacker)`)
+− 3 for a phalanx attacked from the front
++ 2 / − 2 when the leading attacker / the defender is cataphracted heavy
+cavalry (the heavy cavalry's trailing scenario byte; the manual mentions only
+the defender's 2L)
++ any further shift, clamped to 0–12. The base table is 16 × 3 × 16 values
+(in `gboh_game::combat`).
+
+**Row** = `rand() % 10` (the caller passes no modifiers).
+
+**Hits**: the attackers take `ATTACKER_HITS[row][column]` (6 at worst, 1 at
+best) shared among them; the defender takes `DEFENDER_HITS[row][column]`
+(1 to 6). Higher columns favour the attacker.
+
+**Superiority** doubles the defender's hits (attacker superior) or triples
+the attackers' (defender superior):
+
+* flank and rear attacks make the attacker superior, except a flank attack
+  on skirmishers and horse attacking elephants;
+* otherwise a 16 × 16 class table decides (1 attacker, 2 defender), with
+  exceptions removing the defender's superiority when a defending missile
+  unit faces certain horse classes, or heavy cavalry with its special flag
+  attacks heavy infantry. The manual's "DS–#" and "hDS" marks correspond to
+  these exceptions.
+
+**Leader casualties.** After a shock, each side's leader involved (the one
+with the highest first rating, probably charisma) rolls `rand() % 10` plus
+his fourth rating; the loser by 1–2 is finished for the turn, by 3–4
+wounded (killed if already wounded), by 5–6 killed; a tie or a margin of 7
+or more does nothing (the code only tests 1–6).
+
+**TQ checks.** A unit checking takes `max(0, rand() % 10 − TQ)` cohesion
+hits; if its hits then reach its TQ, it routs (so a TQ 9 unit never takes
+hits from a check, as the manual says).
+
+**Before contact.** Defenders already routed are eliminated when attacked
+(the code sends `EliminateUnit`). If any defender is still standing, each
+attacker marked when the combat was registered takes a TQ check. Per the
+manual the marked units are those that moved and are heavy or medium
+infantry, phalanxes, lancers, elephants or chariots, not against
+skirmishers, and not light infantry attacking phalanx or heavy infantry
+frontally (and their defenders check too); where the original decides this
+is not traced yet. At Hydaspes the Indian chariots (TQ 4, 2 hits) failed
+this check by 3 and routed before contact.
+
+**Angle.** An attacker in one of the defender's two front hexes (the two
+it moves into) attacks frontally, from the two opposite hexes from the rear,
+and from the remaining two on the flank.
+
+**Leading attacker and angle.** Against the primary target (the clicked
+defender, else the first), each attacker is scored by its frontal base
+column against the target's class. An attacker in the target's flank or
+rear (either hex of a two-hex unit) takes the lead if its score is at least
+the best so far, and sets the angle to flank or rear; a frontal attacker
+takes the lead only while no flanker has, with the same test; ties go to
+the later unit. So a flanker scoring below an earlier frontal attacker
+brings no flank advantage. (The manual says the most advantageous angle is
+used.)
+
+**Sequence** of one shock (as implemented in `gboh_game::shock`): eliminate
+routed defenders; pre-contact TQ checks; pick the leading attacker and
+angle; pick the defending class; sum sizes; roll on the table; share hits and apply the
+extra and near-rout rules; units whose hits reach their TQ rout. Not yet:
+applying leader casualties, advance after combat, rout movement, and how the
+original pairs attackers and defenders (in game every enemy in an
+attacker's zone of control must be attacked, and every defender must be in
+an attacker's zone).
+
+**Rout points** (the original's per-class method): Alexander his initiative
+× 10 (also as "Alexander (CH)" at Chaeronea, where the manual says not),
+other leaders × 5, phalanxes 2 × TQ, skirmishers 1 (the Agrianians too; the
+manual says 2), elephants and chariots 2, oxybeles 0, everything else TQ.
+
+
+Seen in game but not ported: reaction fire (when the Agema Companions moved
+next to them, "India 3 throws javelins at Agema Companions for 1 cohesion
+hit"). Missile units show `Jav(3/3); Range: 1` for India 1, whose scenario
+missile values are `3 1 5`: the first is the weapon (javelin), the second
+matches the range; the 3/3 supply is not yet matched to a field.
+
+Seen in game (Hydaspes, turn 1): Indian chariots (TQ 4) charged the Agema
+Companions; "India 8 took 3 cohesion hits during the charge. India 8 is
+routing!" With 2 earlier hits that made 5 ≥ TQ, so it routed before contact,
+consistent with the rout rule above. The game's Combat Results dialog shows
+only each unit's current and total hits and hits to rout, not the column or
+die roll, so the shock tables can only be checked statistically or by
+reading the game's memory.
+
+Not ported yet: choosing the combats and attackers, the pre-shock check
+(a per-class table indexed with a 0–9 roll), routs and elimination.
+
+## Missile fire ✅ table (ranges agree with the manual) / 🟡 not checked in game beyond reaction fire
+
+**Weapon codes** inside the game: 1 bow, 3 sling, 4 javelin, 6 bow and 7
+javelin on light cavalry, 8 bolt (scenario missile byte 1, 2, 3, 4,
+remapped; light cavalry's bows and javelins are re-coded on load).
+**Supply** (manual): javelins 3, bows and slings 10, bolts 99; replenished
+at a leader's activation by a random amount up to half the original supply
+(not ported).
+
+**Volley.** Hit if `rand() % 10 + modifier ≤ HIT_ON[weapon][range]`:
+
+| weapon | range 1 | 2 | 3 | 4 | 5 | 6 |
+|---|---|---|---|---|---|---|
+| bow | 5 | 3 | 3 | 1 | | |
+| sling | 3 | 2 | | | | |
+| javelin | 5 | | | | | |
+| mounted bow | 5 | 3 | 1 | | | |
+| mounted javelin | 3 | | | | | |
+| bolt | 7 | 5 | 5 | 3 | 2 | 1 |
+
+A bolt at range 7 reads past the table into the next byte (85), so it
+always hits. Modifiers: +1 against phalanx or heavy infantry, +3 more when
+that target is shot from its front at range 1 by anything but javelins
+(shields); +1 if the shooter has moved this turn (not javelins); against
+cataphracts +2 for bows, +1 for slings and javelins. A hit is 1 cohesion hit,
+2 against elephants and chariots.
+
+**Reaction fire** at a unit entering a missile unit's zone of control: a
+volley at range 1 with no front or movement modifiers. Seen at Hydaspes:
+India 3's javelins hit the Agema Companions for 1 (hits on 0–5, 60%).
+
+Leaders can be hit by volleys (15% per the manual); not ported.
+
+## Routs ✅ path rule (from the code) / 🟡 not checked in game
+
+A routed unit first turns to face its retreat direction the short way round
+(two-hex units that cannot turn are eliminated), then flees: two hexes at
+once, its full movement allowance in the rout phase at the end of the turn
+(manual). Each step tries map directions in order: retreat N: N, NW, NE; E:
+NE, SE, N, S; S: S, SW, SE; W: NW, SW, N, S. Fleeing east or west, odd steps
+swap the first two, so the unit zig-zags straight across. A step must stay
+on the map, be passable for the unit, be outside enemy zones of control and
+be empty; failing that, a hex with friendly units is used (routing through
+them; per the manual they take a cohesion hit). Reaching the map edge or
+finding no step takes the unit out of the battle (terminal rout or
+elimination), and its rout points count against its army.
+
+**Rally** (from the code; the manual adds: once per turn per unit, by a
+leader within command range, two orders outside his group, and the unit
+cannot be ordered again that turn). The first roll fails if `rand() % 10 >
+leader initiative + 1`. Otherwise a second roll, halved, and the unit's TQ
+band give the hits removed:
+
+| roll | TQ < 4 | TQ 4–5 | TQ ≥ 6 |
+|---|---|---|---|
+| 0–1 | 1 | 1 | 1 |
+| 2–3 | 2 | 2 | 2 |
+| 4–5 | 2 | 2 | 2 |
+| 6–7 | fails | 3 | 3 |
+| 8–9 | fails | 4 | 4 |
+
+A failed rally sends the unit into terminal rout towards its map edge.
+
+## Turn sequence 🟡 (`gboh_game::game`; the manual's order with the ported rules)
+
+1. **Begin turn:** elite initiative or the initiative draw picks the first
+   leader; he gets command points equal to his initiative.
+2. **Orders:** he orders units in his command (move, turn, volley; one or
+   two points each) and designates shocks.
+3. **Finish leader:** his shocks are resolved; routed units flee two hexes;
+   then momentum or the next draw. Repeat until every leader has gone.
+4. **End turn:** routed units flee their full movement allowance; movement
+   points and turning reset.
+5. **Victory:** an army whose lost rout points (units out of the battle)
+   reach its rout level withdraws and loses; if both do, the one less far
+   past its level wins, the Macedonians on a tie (manual).
+
+Also in the loop (🟡 from the manual unless noted):
+
+* **Missiles:** units start with their supply; a volley order needs the
+  target in the unit's arc (within range by forward steps from its front),
+  once per activation. At each activation units in command that are out of
+  missiles get `rand() % (ceil(supply ÷ 2) + 1)` and cannot be ordered.
+* **Reaction fire** during movement, hex by hex: each enemy missile unit
+  with missiles and the entered hex in its arc fires at range 1; a unit
+  routed by it stops.
+* **Shock designation:** the target must be in a front hex; every other
+  enemy in the attacker's front hexes is attacked too, unless already
+  attacked this phase; a second attacker on the same target joins that
+  shock. Skirmishers cannot shock except the Agrianians, or against
+  chariots and routed units.
+* **Advance:** if a shock clears the primary defender's hex and it is
+  empty and next to no other enemy, the attacker with the highest TQ moves
+  in (single-hex units).
+* **Leader casualties:** finished leaders skip the rest of the turn;
+  wounded ones lose 2 command range and 2 from the fourth rating (the
+  original's wound message carries a 2); a second wound, or "killed",
+  removes them.
+
+* **Orderly withdrawal:** when a unit moves next to cavalry (it not being
+  cavalry), a leader, or skirmishers (it being heavy infantry or phalanx),
+  they make a TQ check (`rand() % 10 ≤ TQ − hits`) and on success take one
+  hit if approached from flank or rear (skirmishers: rear only) and back
+  away up to two hexes, keeping facing, avoiding enemy zones, rough terrain
+  and occupied hexes.
+* **Routing through friends:** friendly units on a routed unit's path take
+  one cohesion hit.
+
+Not yet: rampaging elephants and a computer opponent.
+
+## AI scripts (`*.AI`) ✅ language / 🟡 built-ins
+
+The computer opponent is scripted: plain-text files in `DATA`, 45 of them
+(about 7,800 lines). Each scenario names its plans per army (`home_ai`,
+`visitor_ai`; Hydaspes: `MHYDAS1-3` and `IHYDAS1-3`). `BASICMAN.AI` holds the
+shared tactics; `SPECIAL.AI` is a library the Macedonian Hydaspes and Pelium
+plans import after it; the rest are plans.
+
+**Language.** Names are case-sensitive: `BASICMAN.AI`'s `Rally` has a local
+`routing` beside the constant `ROUTING`, and treating them as one makes
+every unit look routed. Keywords appear in fixed case (`if`, `else`,
+`for … to`, `while`, `return`, `var`, `const`, `procedure`, `import`,
+`write`, `watch`, `NOT`, `AND`, `OR`, `Conditions`, `Orders for`). A file
+holds imports, constants, variables and procedures (forward declarations end
+in `;`), and a plan `Name { … }` with a `Conditions` block and `Orders for
+<leader> { <condition> <call>; … }`. The `;` ending a simple statement may
+be missing before `else` or `}` (`BASICMAN.AI` and `SPECIAL.AI` rely on
+this). Values are integers; lists are handles. With these rules every file
+parses, and every call in every plan names a script procedure or a game
+built-in with the right number of arguments.
+
+**Running.** The game asks the active AI leader's plan for one order at a
+time (`GiveAIOrder`): the conditions are evaluated, the first `Orders for`
+entry whose condition holds is called, and that repeats after each order
+until the script calls `FinishLeader`.
+
+**Built-ins.** The game registers 23 constants (`TQ 1`, `COHESION_HIT 2`,
+`SIZE 3`, `MOVEMENT_POINTS 4`, `MOVEMENT_REMAINING 5`, `MISSLE_TYPE 6`,
+`MISSLE_RANGE 7`, `MISSLES_REMAINING 8`, `UNIT_TYPE 9`, directions `NORTH 1`
+… `NORTHWEST 8`, `TRUE`, `FALSE`, `CLOCKWISE 1`, `COUNTERCLOCKWISE 2`) and
+50 functions with their argument counts (`MoveToward(hex, unit)`,
+`Query(attribute, unit)`, `AssignList(list, kind, unit)`, …). `CONSTANT.AI`
+adds names for the attributes, the classes and the AI's own codes.
+
+Script values: units are ids, hexes are `x * 100 + y` with **no** map origin
+(Porus's first goal at Hydaspes, `1016`, is map hex (10, 16), in front of
+the Macedonian line), directions 1 N … 8 NW. Facings are hex vertices (NE,
+E, SE, SW, W, NW); adjacent-hex directions are sides (N, NE, SE, S, SW,
+NW); `GetFrontalFacings` in `BASICMAN.AI` spells this out.
+
+`Query` attributes (from the code): leaders 14 command range, 15
+initiative, 16 charisma, 17 personal combat, 18 orders given, 19 orders
+left; combat units 1 TQ, 2 cohesion hits, 3 size, 9 class, 21 routing;
+missile units 6 type, 7 range, 8 missiles left; every unit 4 movement
+allowance, 5 movement left, 10 hex, 11 second hex, 12 facing, 13 nation, 20
+missile capable; anything else returns −1. Nations as the scripts see them
+(the game remaps on load): file 0 Greek → 4, 1 Persian → 2, 2 Macedonian →
+1, 3 Indian → 3, 4 Danubian → 5, 5 Scythian → 6, matching `CONSTANT.AI`.
+`AssignList` kinds: 0 front, 1 flank, 2 rear, 3 own hexes, 5 all around, 6
+the units the leader can order. `Random(n)` is `rand() % n`. The group list
+is the units the active leader can order.
+
+**Traced built-ins** (per-class unit methods; all combat classes share
+them):
+
+* **Order count:** the AI's own budget is initiative − orders given; each
+  new unit ordered costs one, wherever it stands.
+* **`Direction(a, b)`:** hexes become grid points `(2x + 2, 4y + 2 + 2·(x
+  odd))`; the ratio of `|dy|` to `|dx|` (0, equal, under, 3×, under 3×,
+  over) and the quadrant index a table of angles in 15° steps clockwise from
+  north (the six neighbours sit at 0, 4, 8, 12, 16, 20). The angle ÷ 4 gives
+  NE, E, SE, SW, W, NW, so due north counts as NE and due south as SW.
+* **`IsInGeneralDir(unit, hex)`:** the angle lies in the facing's five-step
+  cone (NE 0–4, E 4–8, SE 8–12, SW 12–16, W 16–20, NW 20–0), from either hex
+  of a two-hex unit.
+* **`Rotate(unit, dir)`:** N becomes NE and S becomes SW; it turns clockwise
+  if that is fewer steps, otherwise counter-clockwise.
+* **`TurnToAttack(unit)`:** tries facings 0–3 turns away, clockwise first
+  at each distance, and turns to the first with an enemy in front.
+* **`AnyoneToCombat(unit)`:** among enemies the unit can reach, routed ones
+  first, then those within 3 hits of routing, then those its class is
+  attacker superior to (superiority table), then reachable flank and rear
+  hexes of the others, then enemies it attacks at a frontal base column
+  above 4; the nearest in the first non-empty group.
+* **`MoveToward(hex, unit)`:** the target if reachable, else the reachable
+  hex (its own included) nearest the target.
+* **`FindClosestEnemyToAttack(unit)`:** searches rings outward; routed
+  enemies count.
+* **`CanMove(unit)`:** whether any empty hex is reachable.
+* **`Recover(unit)`:** removes 0/1/2/3 hits with 5/40/50/5%; the leader's
+  initiative moves `(initiative − 4) × 4` points from "none" to "three" (a
+  negative "none" comes off "one"); the roll `rand() % 100` is 40 lower in
+  an enemy zone of control.
+* **`AttemptToRally(unit)`:** counts the order, then the rally rule.
+
+* **Group list and `CanBeOrdered`:** the group list is the leader's whole
+  group, in command range or not (`GetUnitsOutOfRange` filters it with
+  `InCommandRange`); `CanBeOrdered` is true for units in his command and for
+  the leader himself until he has moved (`MoveLeader` asks it first).
+* **Moving a unit** (`FUN_00538e7c`): a unit ordered again after another
+  leader ordered it this turn takes 1 cohesion hit when it moves (the
+  "ordered again" penalty; not applied yet).
+
+Not traced: `Attack`, `Fire`, `EnemyWithinRange`, `FindClosestEnemyToFire`,
+`FindHurtingUnit` and leader movement; `gboh_game::ai_host` writes them from
+their names and use.
+
+**AI against AI**, 30 turns, each side's first plan: Granicus ends turn 19
+in a Macedonian win (Persians 95/90 rout points); Gaugamela ends turn 17 in
+a Persian win (Macedonians 152/150). Hydaspes, Chaeronea and Issus run 30
+turns without a verdict. At Hydaspes the Indian plans keep sending their
+leaders to goal hexes (`GenericMove(1016)` until an Indian unit stands on
+1016) that the Macedonian line blocks; units already next to the enemy
+report "could not move", as the original's `MoveToward` would, so whether
+the original stalls the same way is not yet checked.

@@ -2,26 +2,19 @@
 //! original data files.
 
 use crate::objects::{self, ObjectSprites};
-use crate::units::{self, UnitSprites};
+use crate::units::{self, UnitSprites, UnitView};
 use crate::terrain::{self, Layout, TerrainArt, Zoom};
 use crate::{BorlandRand, Canvas, strip};
 use gboh_formats::eif::Eif;
 use gboh_formats::map::Map;
 use gboh_formats::pal::Palette;
-use gboh_formats::scn::Unit;
-use gboh_formats::units::{ART_TITLES, unit_type};
+use gboh_formats::scn::{Unit, battle_index};
+use gboh_formats::units::ART_TITLES;
 use std::collections::HashMap;
-
-/// Map files in the order of the original's battle table (`0x5e4394`).
-const BATTLES: [&str; 11] = [
-    "CHAERONE", "LYGINUS", "PELIUM", "GRANICUS", "ISSUS", "GAUGAMEL", "SAMARKAN", "JAXARTES",
-    "ARIGAEUM", "HYDASPES", "PARAIT",
-];
 
 /// Block strip offset the original picks per battle (`FUN_00506e5e`).
 pub fn strip_offset(map_file: &str, map: &Map) -> usize {
-    let stem = map_file.split('.').next().unwrap_or("").to_ascii_uppercase();
-    match BATTLES.iter().position(|b| *b == stem) {
+    match battle_index(map_file) {
         _ if map.unk_b == 2 => 0,
         Some(0 | 1) => 1,
         Some(5) => 3,
@@ -39,10 +32,9 @@ struct Town {
     offsets: &'static [(i32, i32)],
 }
 
-/// Towns by battle (index into [`BATTLES`]).
+/// Towns by battle (see [`battle_index`]).
 fn town(map_file: &str) -> Option<Town> {
-    let stem = map_file.split('.').next().unwrap_or("").to_ascii_uppercase();
-    match BATTLES.iter().position(|b| *b == stem)? {
+    match battle_index(map_file)? {
         0 => Some(Town { title: "Chaeronea", hex: (0, 16), offsets: &[(-65, 79)] }),
         2 => Some(Town {
             title: "Pelium",
@@ -118,11 +110,124 @@ pub fn palette(load: &mut Loader) -> Result<Palette, Error> {
     Ok(pal)
 }
 
+/// A town's placement and its cels with hotspots.
+type TownArt = (Town, Vec<(crate::Sprite, (i32, i32))>);
+
+/// A battlefield ready to draw: its terrain (drawn once) and the art for
+/// the objects drawn over it each frame.
+pub struct Scene {
+    pub map: Map,
+    pub layout: Layout,
+    pub terrain: Canvas,
+    objects: ObjectSprites,
+    placed: Vec<objects::Placement>,
+    town: Option<TownArt>,
+    unit_art: HashMap<usize, Option<UnitSprites>>,
+    flag_art: Option<units::FlagSprites>,
+    seed: u32,
+    shadow: [u8; 256],
+}
+
+impl Scene {
+    /// Load the art and draw the terrain of `map` (loaded from `map_file`)
+    /// at `zoom`, with the sprite sets of unit types `types`. Shadows use
+    /// `pal`'s remap table 0; `seed` drives the random art choices.
+    /// `load_title` reads an EIF file by its title.
+    #[allow(clippy::too_many_arguments)]
+    pub fn build(
+        map_file: &str,
+        map: &Map,
+        zoom: Zoom,
+        pal: &Palette,
+        seed: u32,
+        types: &[usize],
+        load: &mut Loader,
+        load_title: &mut Loader,
+    ) -> Result<Self, Error> {
+        let blocks = eif(load, zoom.blocks_file())?;
+        let artwork = eif(load, zoom.artwork_file())?;
+        let cliffs = if map.unk_b == 2 { eif(load, zoom.green_artwork_file())? } else { artwork.clone() };
+        let mut art =
+            TerrainArt::load(&blocks, &artwork, &cliffs).ok_or_else(|| Error::Strips(zoom.blocks_file().into()))?;
+        let overlay = eif(load, zoom.objects_file())?;
+        art.river_rocks = strip(&overlay, "River Impass").unwrap_or_default();
+        let back = eif(load, "LANDBACK.EIF")?;
+        art.background = strip(&back, "Blocks").and_then(|s| s.into_iter().next());
+        let terrain = terrain::render(map, &art, zoom, strip_offset(map_file, map), seed);
+        let placed = objects::scatter(map, &mut BorlandRand::new(seed));
+        let suffix = match zoom {
+            Zoom::In => "",
+            Zoom::Normal => " (Half size)",
+            Zoom::Out => " (Quarter size)",
+        };
+        let town = town(map_file).and_then(|t| {
+            let eif = Eif::parse(&load_title(&format!("{}{suffix}", t.title))?).ok()?;
+            let cels = &eif.strips.first()?.cels;
+            let sprites: Vec<_> = cels
+                .iter()
+                .filter_map(|c| Some((crate::Sprite::from(c.decode().ok()?), (c.hot_x as i32, c.hot_y as i32))))
+                .collect();
+            Some((t, sprites))
+        });
+        let mut unit_art = HashMap::new();
+        for &ty in types {
+            unit_art.entry(ty).or_insert_with(|| {
+                let title = format!("{}{suffix}", ART_TITLES[ty]);
+                load_title(&title).and_then(|d| Eif::parse(&d).ok()).and_then(|e| UnitSprites::load(&e))
+            });
+        }
+        let flag_art = load_title(&format!("Activation Unit Flags{suffix}"))
+            .and_then(|d| Eif::parse(&d).ok())
+            .and_then(|e| units::FlagSprites::load(&e));
+        Ok(Self {
+            map: map.clone(),
+            layout: Layout::new(map, zoom),
+            terrain,
+            objects: ObjectSprites::load(&overlay),
+            placed,
+            town,
+            unit_art,
+            flag_art,
+            seed,
+            shadow: pal.remap[0],
+        })
+    }
+
+    /// The battlefield with `units` on it, depth sorted with trees, stones
+    /// and the town; units whose id is in `flagged` show their activation
+    /// flag.
+    pub fn compose(&self, units: &[UnitView], flagged: &[usize]) -> Canvas {
+        let (map, layout) = (&self.map, &self.layout);
+        let mut canvas = self.terrain.clone();
+        let mut items = objects::drawables(map, layout, &self.objects, &self.placed);
+        if let Some((t, sprites)) = &self.town {
+            for ((sprite, hot), &offset) in sprites.iter().zip(t.offsets) {
+                items.push(objects::Drawable { anchor: objects::anchor_at(map, layout, t.hex, offset), depth: 0, sprite, hot: *hot });
+            }
+        }
+        for u in units {
+            if let Some(Some(sprites)) = self.unit_art.get(&u.type_id) {
+                items.extend(units::drawables(map, layout, u, sprites));
+            }
+        }
+        if let Some(art) = &self.flag_art {
+            // every unit draws its flag's sideways jitter when it is built,
+            // in scenario order
+            let mut rng = BorlandRand::new(self.seed);
+            let last = units.iter().map(|u| u.id).max().map_or(0, |m| m + 1);
+            let jitters: Vec<i32> = (0..last).map(|_| 5 - (rng.next() % 11) as i32).collect();
+            for u in units.iter().filter(|u| flagged.contains(&u.id)) {
+                items.extend(units::flag_drawables(map, layout, u, jitters[u.id], art));
+            }
+        }
+        objects::draw(&mut canvas, items, &self.shadow);
+        canvas
+    }
+}
+
 /// Draw `map` (loaded from `map_file`) at `zoom`: terrain, then trees,
-/// stones, the battle's town (if any) and `units` depth sorted together. Shadows use `pal`'s remap table
-/// 0. `seed` drives the random art choices. `load_title` reads an EIF file by
-/// its title (unit sprite sets are named by title); units whose art is
-/// missing are skipped.
+/// stones, the battle's town (if any) and `units` depth sorted together.
+/// Units whose index is in `flagged` get their activation flag raised.
 #[allow(clippy::too_many_arguments)]
 pub fn render(
     map_file: &str,
@@ -131,56 +236,12 @@ pub fn render(
     pal: &Palette,
     seed: u32,
     units: &[Unit],
+    flagged: &[usize],
     load: &mut Loader,
     load_title: &mut Loader,
 ) -> Result<Canvas, Error> {
-    let blocks = eif(load, zoom.blocks_file())?;
-    let artwork = eif(load, zoom.artwork_file())?;
-    let cliffs = if map.unk_b == 2 { eif(load, zoom.green_artwork_file())? } else { artwork.clone() };
-    let mut art =
-        TerrainArt::load(&blocks, &artwork, &cliffs).ok_or_else(|| Error::Strips(zoom.blocks_file().into()))?;
-    let overlay = eif(load, zoom.objects_file())?;
-    art.river_rocks = strip(&overlay, "River Impass").unwrap_or_default();
-    let back = eif(load, "LANDBACK.EIF")?;
-    art.background = strip(&back, "Blocks").and_then(|s| s.into_iter().next());
-    let mut canvas = terrain::render(map, &art, zoom, strip_offset(map_file, map), seed);
-    let placed = objects::scatter(map, &mut BorlandRand::new(seed));
-    let layout = Layout::new(map, zoom);
-    let object_sprites = ObjectSprites::load(&overlay);
-    let mut items = objects::drawables(map, &layout, &object_sprites, &placed);
-
-    let suffix = match zoom {
-        Zoom::In => "",
-        Zoom::Normal => " (Half size)",
-        Zoom::Out => " (Quarter size)",
-    };
-    let town_art = town(map_file).and_then(|t| {
-        let eif = Eif::parse(&load_title(&format!("{}{suffix}", t.title))?).ok()?;
-        let cels = &eif.strips.first()?.cels;
-        let sprites: Vec<_> = cels
-            .iter()
-            .filter_map(|c| Some((crate::Sprite::from(c.decode().ok()?), (c.hot_x as i32, c.hot_y as i32))))
-            .collect();
-        Some((t, sprites))
-    });
-    if let Some((t, sprites)) = &town_art {
-        for ((sprite, hot), &offset) in sprites.iter().zip(t.offsets) {
-            items.push(objects::Drawable { anchor: objects::anchor_at(map, &layout, t.hex, offset), depth: 0, sprite, hot: *hot });
-        }
-    }
-    let mut unit_art: HashMap<usize, Option<UnitSprites>> = HashMap::new();
-    let typed: Vec<_> = units.iter().filter_map(|u| Some((u, unit_type(u)?))).collect();
-    for &(_, ty) in &typed {
-        unit_art.entry(ty).or_insert_with(|| {
-            let title = format!("{}{suffix}", ART_TITLES[ty]);
-            load_title(&title).and_then(|d| Eif::parse(&d).ok()).and_then(|e| UnitSprites::load(&e))
-        });
-    }
-    for &(u, ty) in &typed {
-        if let Some(Some(sprites)) = unit_art.get(&ty) {
-            items.extend(units::drawables(map, &layout, u, ty, sprites));
-        }
-    }
-    objects::draw(&mut canvas, items, &pal.remap[0]);
-    Ok(canvas)
+    let views: Vec<UnitView> = units.iter().enumerate().filter_map(|(i, u)| UnitView::of_scenario(map, i, u)).collect();
+    let types: Vec<usize> = views.iter().map(|v| v.type_id).collect();
+    let scene = Scene::build(map_file, map, zoom, pal, seed, &types, load, load_title)?;
+    Ok(scene.compose(&views, flagged))
 }

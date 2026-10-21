@@ -8,7 +8,7 @@
 //!            u8 n_home_ai, u8 n_visitor_ai, str8 ai_file[n_home_ai + n_visitor_ai],
 //!            unit* (until end of file)
 //! leader  := u16 id, u16 len, name[len]
-//! side    := u8 nation, u8 unk, u8 points
+//! side    := u8 nation, u8 retreat direction, u8 rout level
 //! unit    := u8 kind, base, kind-specific fields
 //! base    := str8 name, u8 nation, u16 unk_a, u16 unk_b, u16 hex, u8 facing
 //! ```
@@ -38,8 +38,10 @@ pub struct Scenario {
 #[derive(Debug, Clone, Copy)]
 pub struct Side {
     pub nation: u8,
-    pub unk: u8,
-    pub points: u8,
+    /// Map direction (1 N, 3 E, 5 S, 7 W) the army's routed units flee in.
+    pub retreat: u8,
+    /// Rout points at which the army withdraws (loses).
+    pub rout_level: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -101,7 +103,7 @@ impl Scenario {
         let title = str8(&mut r)?;
         let map_file = str8(&mut r)?;
         let unit_file = str8(&mut r)?;
-        let mut side = || -> Result<Side> { Ok(Side { nation: u8(&mut r)?, unk: u8(&mut r)?, points: u8(&mut r)? }) };
+        let mut side = || -> Result<Side> { Ok(Side { nation: u8(&mut r)?, retreat: u8(&mut r)?, rout_level: u8(&mut r)? }) };
         let home = side()?;
         let visitor = side()?;
         let pairs = (0..u8(&mut r)?).map(|_| Ok((u8(&mut r)?, u8(&mut r)?))).collect::<Result<_>>()?;
@@ -138,4 +140,18 @@ impl Scenario {
         }
         Ok(Self { leaders, unk, title, map_file, unit_file, home, visitor, pairs, home_ai, visitor_ai, units })
     }
+}
+
+/// Map files in the order of the original's battle table (`0x5e4394`); many
+/// per-battle rules are indexed by it.
+const BATTLES: [&str; 11] = [
+    "CHAERONE", "LYGINUS", "PELIUM", "GRANICUS", "ISSUS", "GAUGAMEL", "SAMARKAN", "JAXARTES",
+    "ARIGAEUM", "HYDASPES", "PARAIT",
+];
+
+/// The battle index of a map file name (case-insensitive, extension
+/// ignored).
+pub fn battle_index(map_file: &str) -> Option<usize> {
+    let stem = map_file.split('.').next().unwrap_or("").to_ascii_uppercase();
+    BATTLES.iter().position(|b| *b == stem)
 }

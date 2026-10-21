@@ -110,10 +110,37 @@ fn screen_neighbour(layout: &Layout, hex: (usize, usize), dir: usize) -> Option<
 /// (two of the eight directions) clockwise from the facing on screen.
 const FLANK_TURN: usize = 2;
 
-/// Drawables for `unit` standing on its hex, or nothing if it is off the
-/// map.
-pub fn drawables<'a>(map: &Map, layout: &Layout, unit: &Unit, ty: usize, art: &'a UnitSprites) -> Vec<Drawable<'a>> {
-    let Some(hex) = map.hex_from_id(unit.hex) else { return Vec::new() };
+/// What the renderer needs to know about a unit on the map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnitView {
+    /// Map hex `(x, y)`.
+    pub hex: (usize, usize),
+    /// Scenario facing (map directions).
+    pub facing: u8,
+    /// Unit type id (see `gboh_formats::units`).
+    pub type_id: usize,
+    /// Scenario nation byte.
+    pub nation: u8,
+    /// Index in the scenario (the order the original builds sprites in).
+    pub id: usize,
+}
+
+impl UnitView {
+    /// The view of a scenario unit, if it is on the map and has a type.
+    pub fn of_scenario(map: &Map, id: usize, unit: &Unit) -> Option<Self> {
+        Some(Self {
+            hex: map.hex_from_id(unit.hex)?,
+            facing: unit.facing,
+            type_id: gboh_formats::units::unit_type(unit)?,
+            nation: unit.nation,
+            id,
+        })
+    }
+}
+
+/// Drawables for `unit` standing on its hex.
+pub fn drawables<'a>(map: &Map, layout: &Layout, unit: &UnitView, art: &'a UnitSprites) -> Vec<Drawable<'a>> {
+    let (hex, ty) = (unit.hex, unit.type_id);
     let facing = screen_facing(unit.facing);
     let Some((sprite, hot)) = art.standing.get(facing - 1) else { return Vec::new() };
     let formation = Formation::of_type(ty);
@@ -129,6 +156,60 @@ pub fn drawables<'a>(map: &Map, layout: &Layout, unit: &Unit, ty: usize, art: &'
             Some(Drawable { anchor: anchor_at(map, layout, on, f.offset[facing - 1]), depth: f.depth[facing - 1], sprite, hot: *hot })
         })
         .collect()
+}
+
+/// Activation flag art (`Activation Unit Flags`): one pennant animation
+/// per nation and the pole.
+pub struct FlagSprites {
+    pennants: Vec<(Sprite, (i32, i32))>,
+    stem: (Sprite, (i32, i32)),
+}
+
+impl FlagSprites {
+    pub fn load(eif: &Eif) -> Option<Self> {
+        let first = |name: &str| -> Option<(Sprite, (i32, i32))> {
+            let s = eif.strips.iter().find(|s| s.name == name)?;
+            let c = s.cels.first()?;
+            Some((Sprite::from(c.decode().ok()?), (c.hot_x as i32, c.hot_y as i32)))
+        };
+        let pennants = ["Macedonian Flag", "Persian Flag", "Indian Flag", "Greek Flag"]
+            .into_iter()
+            .map(first)
+            .collect::<Option<_>>()?;
+        Some(Self { pennants, stem: first("Stem")? })
+    }
+}
+
+/// Where a flag stands, in zoom-in pixels from the hex centre (before the
+/// sideways jitter), and where its pennant hangs from the pole's anchor.
+/// Measured in game at Zoom In.
+const FLAG_BASE: (i32, i32) = (0, -12);
+const PENNANT: (i32, i32) = (1, -82);
+
+/// The pole and raised pennant (first animation frame) of `unit`'s flag.
+/// `jitter` is the unit's sideways offset, `5 - rand() % 11` in the
+/// original. The flag's ground shadow is not drawn yet.
+pub fn flag_drawables<'a>(map: &Map, layout: &Layout, unit: &UnitView, jitter: i32, art: &'a FlagSprites) -> Vec<Drawable<'a>> {
+    let hex = unit.hex;
+    // pennant by nation: Macedonian, Persian (and allied), Indian, Greek
+    // (and tribal)
+    let pennant = match unit.nation {
+        2 => 0,
+        1 | 5 => 1,
+        3 => 2,
+        _ => 3,
+    };
+    let base = (FLAG_BASE.0 + jitter, FLAG_BASE.1);
+    let (stem, stem_hot) = &art.stem;
+    let (flag, flag_hot) = &art.pennants[pennant];
+    let pole = anchor_at(map, layout, hex, base);
+    let top = anchor_at(map, layout, hex, (base.0 + PENNANT.0, base.1 + PENNANT.1));
+    // the pennant sorts with its pole, so it shares the pole's anchor
+    let hot = (flag_hot.0 - (top.0 - pole.0), flag_hot.1 - (top.1 - pole.1));
+    vec![
+        Drawable { anchor: pole, depth: 0, sprite: stem, hot: *stem_hot },
+        Drawable { anchor: pole, depth: 1, sprite: flag, hot },
+    ]
 }
 
 const PHALANX: [Figure; 20] = [
