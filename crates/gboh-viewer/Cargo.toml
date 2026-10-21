@@ -12,3 +12,4 @@ gboh-game = { version = "0.1.0", path = "../gboh-game" }
 pollster = "0.4"
 wgpu = "25"
 winit = "0.30"
+rodio = { version = "0.20", default-features = false, features = ["wav"] }

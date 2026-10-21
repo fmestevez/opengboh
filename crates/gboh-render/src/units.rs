@@ -77,14 +77,36 @@ pub fn screen_facing(facing: u8) -> usize {
 /// hotspots.
 pub struct UnitSprites {
     standing: Vec<(Sprite, (i32, i32))>,
+    /// Routed pose per screen facing: the `StandingR` strip where the art
+    /// has one, else the first cel of each running strip (`RoutN`… or
+    /// `RN`…).
+    routed: Vec<(Sprite, (i32, i32))>,
+    /// Walking frames per screen facing (strips `N`…`NW`).
+    walking: Vec<Vec<(Sprite, (i32, i32))>>,
 }
 
 impl UnitSprites {
     pub fn load(eif: &Eif) -> Option<Self> {
-        let s = eif.strips.iter().find(|s| s.name == "Standing")?;
-        let sprites = strip(eif, "Standing")?;
-        let hot = s.cels.iter().map(|c| (c.hot_x as i32, c.hot_y as i32));
-        Some(Self { standing: sprites.into_iter().zip(hot).collect() })
+        let cels = |name: &str| -> Option<Vec<(Sprite, (i32, i32))>> {
+            let s = eif.strips.iter().find(|s| s.name == name)?;
+            let sprites = strip(eif, name)?;
+            let hot = s.cels.iter().map(|c| (c.hot_x as i32, c.hot_y as i32));
+            Some(sprites.into_iter().zip(hot).collect())
+        };
+        let standing = cels("Standing")?;
+        let running = |prefix: &str| -> Option<Vec<(Sprite, (i32, i32))>> {
+            ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+                .iter()
+                .map(|d| cels(&format!("{prefix}{d}"))?.into_iter().next())
+                .collect()
+        };
+        let routed = cels("StandingR")
+            .filter(|r| r.len() >= 8)
+            .or_else(|| running("Rout"))
+            .or_else(|| running("R"))
+            .unwrap_or_else(|| standing.clone());
+        let walking = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"].iter().map(|d| cels(d).unwrap_or_default()).collect();
+        Some(Self { standing, routed, walking })
     }
 }
 
@@ -123,6 +145,11 @@ pub struct UnitView {
     pub nation: u8,
     /// Index in the scenario (the order the original builds sprites in).
     pub id: usize,
+    /// Drawn in its routed pose.
+    pub routed: bool,
+    /// While walking: the frame of the walking animation, and how far it is
+    /// along the way to the next hex, in canvas pixels.
+    pub walk: Option<(usize, (i32, i32))>,
 }
 
 impl UnitView {
@@ -134,6 +161,8 @@ impl UnitView {
             type_id: gboh_formats::units::unit_type(unit)?,
             nation: unit.nation,
             id,
+            routed: false,
+            walk: None,
         })
     }
 }
@@ -142,7 +171,13 @@ impl UnitView {
 pub fn drawables<'a>(map: &Map, layout: &Layout, unit: &UnitView, art: &'a UnitSprites) -> Vec<Drawable<'a>> {
     let (hex, ty) = (unit.hex, unit.type_id);
     let facing = screen_facing(unit.facing);
-    let Some((sprite, hot)) = art.standing.get(facing - 1) else { return Vec::new() };
+    let walking = unit.walk.and_then(|(frame, _)| {
+        let cels = art.walking.get(facing - 1)?;
+        cels.get(frame % cels.len().max(1))
+    });
+    let poses = if unit.routed { &art.routed } else { &art.standing };
+    let Some((sprite, hot)) = walking.or(poses.get(facing - 1)) else { return Vec::new() };
+    let shift = unit.walk.map_or((0, 0), |(_, s)| s);
     let formation = Formation::of_type(ty);
     let second = (facing + FLANK_TURN - 1) % 8 + 1;
     let second = screen_neighbour(layout, hex, second);
@@ -153,7 +188,8 @@ pub fn drawables<'a>(map: &Map, layout: &Layout, unit: &UnitView, art: &'a UnitS
         .filter_map(|(i, f)| {
             // two-hex formations put every other group of five on the second hex
             let on = if formation == Formation::Phalanx && (i / 5) % 2 == 1 { second? } else { hex };
-            Some(Drawable { anchor: anchor_at(map, layout, on, f.offset[facing - 1]), depth: f.depth[facing - 1], sprite, hot: *hot })
+            let (x, y) = anchor_at(map, layout, on, f.offset[facing - 1]);
+            Some(Drawable { anchor: (x + shift.0, y + shift.1), depth: f.depth[facing - 1], sprite, hot: *hot })
         })
         .collect()
 }

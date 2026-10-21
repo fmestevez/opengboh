@@ -17,6 +17,9 @@
 //!   other gives no orders), `plan=N` uses each side's Nth plan, `save=F`
 //!   starts from the original's saved game F (at its turn), `seed=N`
 //!   seeds the dice.
+//! * `strips <EIF file>`: list an art file's strips and cel counts.
+//! * `render … [save=F]`: draw a saved game of the original instead of the
+//!   scenario's opening (routed units in their routed pose).
 //! * `render <DATA dir> <MAP or SCN file> <out.png> [in|normal|out]`: draw a
 //!   map (or a scenario's map with its units) with the faithful renderer.
 
@@ -57,6 +60,7 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
         Some("extract") if args.len() == 4 => extract(Path::new(&args[2]), Path::new(&args[3])),
+        Some("strips") if args.len() == 3 => strips(Path::new(&args[2])),
         Some("maps") if args.len() == 3 => maps(Path::new(&args[2])),
         Some("scenarios") if args.len() == 3 => scenarios(Path::new(&args[2])),
         Some("units") if args.len() == 4 => units(Path::new(&args[2]), &args[3]),
@@ -66,16 +70,17 @@ fn main() -> Result<()> {
         Some("moves") if (5..=6).contains(&args.len()) => {
             moves(Path::new(&args[2]), &args[3], &args[4], args.get(5).map_or("", String::as_str))
         }
-        Some("render") if (5..=6).contains(&args.len()) => render(
+        Some("render") if (5..=7).contains(&args.len()) => render(
             Path::new(&args[2]),
             &args[3],
             Path::new(&args[4]),
             args.get(5).map_or("normal", String::as_str),
+            args.get(6).and_then(|a| a.strip_prefix("save=")),
         ),
         _ => bail!(
-            "usage: gboh-tools extract <DATA dir> <out dir> | maps <DATA dir> | scenarios <DATA dir> | units <DATA dir> <SCN file> \
+            "usage: gboh-tools extract <DATA dir> <out dir> | strips <EIF file> | maps <DATA dir> | scenarios <DATA dir> | units <DATA dir> <SCN file> \
              | command <DATA dir> <SCN file> | turns <DATA dir> <SCN file> <n> \
-             | moves <DATA dir> <SCN file> <unit name> [l|r...] | render <DATA dir> <MAP|SCN file> <out.png> [in|normal|out]"
+             | moves <DATA dir> <SCN file> <unit name> [l|r...] | render <DATA dir> <MAP|SCN file> <out.png> [in|normal|out] [save=F]"
         ),
     }
 }
@@ -331,6 +336,16 @@ fn ai(data_dir: &Path, scn_file: &str, n: u32, opts: &[String]) -> Result<()> {
     Ok(())
 }
 
+fn strips(path: &Path) -> Result<()> {
+    let eif = gboh_formats::eif::Eif::parse(&fs::read(path)?)?;
+    println!("{}", eif.title);
+    for (i, s) in eif.strips.iter().enumerate() {
+        let sizes: Vec<String> = s.cels.iter().take(3).map(|c| format!("{}x{}", c.width, c.height)).collect();
+        println!("  {i:3} {:32} {:3} cels  {}", s.name, s.cels.len(), sizes.join(" "));
+    }
+    Ok(())
+}
+
 fn sanitize(s: &str) -> String {
     let s: String = s.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
     if s.is_empty() { "_".into() } else { s }
@@ -408,7 +423,7 @@ fn extract(data_dir: &Path, out_dir: &Path) -> Result<()> {
 }
 
 /// Battle order in the original's scenario table (string ids 93..102, 80).
-fn render(data_dir: &Path, file: &str, out: &Path, zoom: &str) -> Result<()> {
+fn render(data_dir: &Path, file: &str, out: &Path, zoom: &str, save: Option<&str>) -> Result<()> {
     let zoom = match zoom {
         "in" => Zoom::In,
         "normal" => Zoom::Normal,
@@ -430,8 +445,34 @@ fn render(data_dir: &Path, file: &str, out: &Path, zoom: &str) -> Result<()> {
     let titles = eif_title_index(data_dir)?;
     let mut load_title =
         |title: &str| titles.get(title).and_then(|n| fs::read(data_dir.join(n)).ok());
-    let canvas =
-        battlefield::render(&map_file, &map, zoom, &pal, 1, &units, &flagged, &mut load, &mut load_title)?;
+    let canvas = match (save, &scenario) {
+        // a saved game's positions, routed units in their routed pose
+        (Some(path), Some(scn)) => {
+            use gboh_render::units::UnitView;
+            let mut battle = gboh_game::battle::Battle::from_scenario(scn, &map);
+            let data = fs::read(path)?;
+            let saved = gboh_game::save::read(&data, &battle, scn.home.nation).map_err(|e| anyhow::anyhow!("{}", e.0))?;
+            gboh_game::save::apply(&mut battle, &saved);
+            let views: Vec<UnitView> = battle
+                .units
+                .iter()
+                .filter(|u| u.on_field())
+                .map(|u| UnitView {
+                    hex: (u.hex.x as usize, u.hex.y as usize),
+                    facing: u.facing,
+                    type_id: u.type_id,
+                    nation: u.nation,
+                    id: u.source,
+                    routed: u.state == gboh_game::battle::UnitState::Routed,
+                    walk: None,
+                })
+                .collect();
+            let types: Vec<usize> = views.iter().map(|v| v.type_id).collect();
+            let scene = battlefield::Scene::build(&map_file, &map, zoom, &pal, 1, &types, &mut load, &mut load_title)?;
+            scene.compose(&views, &[])
+        }
+        _ => battlefield::render(&map_file, &map, zoom, &pal, 1, &units, &flagged, &mut load, &mut load_title)?,
+    };
     write_png(out, canvas.width as u32, canvas.height as u32, &canvas.to_rgba(&pal))
 }
 

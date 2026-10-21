@@ -55,7 +55,8 @@ to designate a shock; right click an enemy to volley; Q/E turn the unit,
 R rallies it, C recovers its cohesion; click the active leader and then a
 lit hex to move him; G tries a group move (all his orders; a lit hex then
 moves the whole group); Enter finishes the leader (his shocks are fought), M
-finishes him and tries for momentum. Add `ai` after the
+finishes him and tries for momentum. Sounds come from the game's own WAV
+files. Add `ai` after the
 scenario to have the computer play the visitor army with the original's AI
 scripts; `gboh-tools ai <DATA> <SCN> <turns>` lets them play both sides.
 

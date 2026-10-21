@@ -14,6 +14,7 @@
 //! try for momentum).
 
 mod play;
+mod sound;
 
 use anyhow::{Context, Result, bail};
 use gboh_formats::map::Map;
@@ -35,6 +36,10 @@ use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
 /// Time per water animation frame. The original's rate is not known yet.
+/// Seconds a walking unit takes per hex, and per walking frame.
+const WALK_HEX: f32 = 0.2;
+const WALK_FRAME: f32 = 0.08;
+
 const WATER_FRAME: Duration = Duration::from_millis(250);
 const ZOOMS: [Zoom; 3] = [Zoom::In, Zoom::Normal, Zoom::Out];
 
@@ -307,8 +312,11 @@ struct Viewer {
     canvases: Vec<Canvas>,
     scenes: Vec<Scene>,
     play: Option<play::Play>,
+    sound: sound::Sound,
     /// Levels whose canvas is out of date with the battle.
     stale: [bool; 3],
+    /// A move being animated: unit, path, and when it started.
+    walking: Option<(usize, Vec<gboh_game::hex::Hex>, Instant)>,
     press: Option<PhysicalPosition<f64>>,
     base_palette: Palette,
     gpu: Option<Gpu>,
@@ -366,7 +374,17 @@ impl Viewer {
             return;
         }
         let scene = &self.scenes[self.level];
-        let mut canvas = scene.compose(&p.views(), &p.flagged());
+        let views = match &self.walking {
+            Some((u, path, start)) => {
+                let t = start.elapsed().as_secs_f32() / WALK_HEX;
+                let i = (t as usize).min(path.len().saturating_sub(2));
+                let frac = (t - i as f32).clamp(0.0, 1.0);
+                let frame = (start.elapsed().as_secs_f32() / WALK_FRAME) as usize;
+                p.views_walking(scene, Some((*u, path[i], path[i + 1], frac, frame)))
+            }
+            None => p.views(),
+        };
+        let mut canvas = scene.compose(&views, &p.flagged());
         play::light(&mut canvas, scene, &p.lit(), &self.base_palette);
         if let Some(g) = &self.gpu {
             g.update_level(self.level, &canvas);
@@ -375,8 +393,18 @@ impl Viewer {
         self.stale[self.level] = false;
     }
 
-    /// The battle changed: redraw.
+    /// The battle changed: play its sounds, start any walk, and redraw.
     fn changed(&mut self) {
+        if let Some(p) = &mut self.play {
+            for e in p.events.drain(..) {
+                self.sound.play(e);
+            }
+            if let Some((u, path)) = p.walks.drain(..).next_back()
+                && path.len() >= 2
+            {
+                self.walking = Some((u, path, Instant::now()));
+            }
+        }
         self.stale = [true; 3];
         self.refresh();
         self.update_title();
@@ -427,6 +455,11 @@ impl ApplicationHandler for Viewer {
             }
         }
         self.upload_palette();
+        if let Some(p) = &mut self.play {
+            for e in p.events.drain(..) {
+                self.sound.play(e);
+            }
+        }
         self.stale = [true; 3];
         self.refresh();
         self.update_title();
@@ -542,6 +575,17 @@ impl ApplicationHandler for Viewer {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // a walking unit: redraw until it arrives
+        if let Some((_, path, start)) = &self.walking {
+            if start.elapsed().as_secs_f32() >= WALK_HEX * (path.len() - 1) as f32 {
+                self.walking = None;
+            }
+            self.stale = [true; 3];
+            self.refresh();
+            self.redraw();
+            event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + std::time::Duration::from_millis(40)));
+            return;
+        }
         if !self.animate {
             event_loop.set_control_flow(ControlFlow::Wait);
             return;
@@ -633,7 +677,9 @@ fn main() -> Result<()> {
         canvases,
         scenes,
         play,
+        sound: sound::Sound::new(&data_dir),
         stale: [false; 3],
+        walking: None,
         press: None,
         base_palette,
         gpu: None,

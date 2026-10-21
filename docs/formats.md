@@ -409,6 +409,19 @@ Infantry and phalanx figures also carry a per-facing draw depth. The renderer
 sorts all objects by anchor row, then depth; the original's exact rule is
 not confirmed.
 
+## Routed units and debris 🟡
+
+Unit art carries, besides `Standing` and the walking strips `N`…`NW`, a
+routed standing pose `StandingR` (8 cels, one per facing; infantry), running
+strips `RoutN`…`RoutNW` (infantry) or `RN`…`RNW` (cavalry, elephants), and
+`Drop…`, `Spear…`, `Shield`, `Helmet` pieces. `RDEBRIS.EIF` ("Generic Rout
+Debris") holds dropped bows, shields and spears. The rewrite draws routed
+units in `StandingR`, else the first cel of their running strip for their
+facing; the formation is kept (the original's routed layout and the debris
+are not drawn yet). `gboh-tools render … save=F` draws a saved game. In the
+viewer a moved unit walks along its path (0.2 s per hex, the walking strip
+for its facing; 🟡 the original's timing is not measured).
+
 ## Leaders and command 🟡
 
 **Leader ratings.** The four leader values in a scenario are, in file order:
@@ -1066,9 +1079,35 @@ first side:
    Macedonian win. (Checked here as each leader finishes; the original
    checks per unit.)
 
-Not found yet: the Jaxartes condition (the Scythians win if no unrouted
-Macedonian unit is north of the river by the end of turn 4).
+The manual's Jaxartes condition (the Scythians win if no unrouted
+Macedonian unit is north of the river by the end of turn 4) is not in the
+code: the only battle-specific turn tests are the limits above.
 
 AI against AI with these rules (each side's first plan): every battle but
 Issus ends within 10 turns; Arigaeum and the Jaxartes end on the turn limit
 (Indian and Scythian wins).
+
+## Sounds 🟡
+
+Plain 16-bit PCM WAV files in `DATA` (22 kHz mono effects, 44 kHz stereo
+music). The original names them in tables at `0x61ad34`–`0x61b068`:
+
+* **Movement**, groups of four, picked as `group × 4 + rand() % 4`
+  (`FUN_005138f0`): `lilup2-5`, `milup1-2`, `hilup1-4` (twice),
+  `horslup2-4`, `eleflup1-3`, `darius` (Darius' chariot), `charlup1-3`,
+  `cavlup1-4`, `hcav1-3` (four times), `eleflup`, `oxymove`, `lilup`.
+  Which unit uses which group is set in the presentation code (not traced;
+  the rewrite maps by name: light, medium and heavy infantry, light and
+  heavy cavalry, elephants, chariots, oxybeles).
+* **Splashes** `splash`, `splash1-4`, `splasha`, `splashb` (water).
+* **Missiles:** bows `bowshot`, `bowshot1` with hits `arohitsa-c`;
+  javelins `bowshot` with `javhits1-3`; slings `sling` with `rokhit1-3`;
+  oxybeles `oxybeles` with `oxyhit`, `oxyhit1-2`.
+* **Shock:** `shoklup1-5`, in 13 rows of five (`param × 5 + rand() % 5`);
+  `blows`; elephants `elef1-5`, `elefblow`, hits `elefhit`, `elefhit2-3`;
+  horses `horsbat`, `horsbat1-2`, `hors1-4`.
+* **Ambient:** `river`, `river1-2`, `waves`.
+* **Music:** `start`, `main`, `alex4`, `victory`, `defeat`.
+
+The viewer plays selection, movement, volley (shot and hit), shock (with
+elephants), battle start and the end.
