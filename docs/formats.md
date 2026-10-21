@@ -414,13 +414,28 @@ not confirmed.
 Unit art carries, besides `Standing` and the walking strips `N`…`NW`, a
 routed standing pose `StandingR` (8 cels, one per facing; infantry), running
 strips `RoutN`…`RoutNW` (infantry) or `RN`…`RNW` (cavalry, elephants), and
-`Drop…`, `Spear…`, `Shield`, `Helmet` pieces. `RDEBRIS.EIF` ("Generic Rout
-Debris") holds dropped bows, shields and spears. The rewrite draws routed
+`Drop…`, `Spear…`, `Shield`, `Helmet` pieces, and fallen men: `Shock`
+(killed in melee), `Arrow` (by missiles), `Trample` (by elephants) and
+`General` (a leader). `RDEBRIS.EIF` ("Generic Rout Debris") holds dropped
+bows, shields and spears. The viewer leaves a fallen man of the unit's own
+art for each cohesion hit (up to four at a time for infantry, two for
+cavalry, one for elephants, chariots and oxybeles) at a random spot in its hex,
+of the kind that caused it, and routed units run (running strips, facing the
+way they go), including off the map; 🟡 how many bodies the original drops
+and where is not measured. The rewrite draws routed
 units in `StandingR`, else the first cel of their running strip for their
 facing; the formation is kept (the original's routed layout and the debris
-are not drawn yet). `gboh-tools render … save=F` draws a saved game. In the
+are not drawn yet). In the original, units also lose figures as they take
+hits: the presentation code marks figures as dying (`CombatAnimate`,
+`CohesionHit`, `UnitEliminated`; the figure state array at `+0x148`, 1
+dying, 2 dead) and they become bodies, so a worn unit stands thinner
+(Hypaspist 2, 7 hits on TQ 8, shows about half its 20 figures). How many
+die per hit comes with the message from the logical side and is not traced;
+the rewrite keeps full formations. `gboh-tools render … save=F` draws a saved game. In the
 viewer a moved unit walks along its path (0.2 s per hex, the walking strip
-for its facing; 🟡 the original's timing is not measured).
+for its facing; 🟡 the original's timing is not measured). The game logs
+moves and volleys (`Game::log`), so the computer's moves are walked and
+heard too, one after another, faster while several are waiting.
 
 ## Leaders and command 🟡
 
@@ -1039,7 +1054,9 @@ state (art titles), then the logical units, then activation state and the
 AI plan files in use (`mhydas3.ai`). `gboh_game::save` reads the units:
 
 * **Order:** combat units of the home army in scenario order, then the
-  visitor's, then the leaders the same way.
+  visitor's, then the leaders in plain scenario order (checked by drawing
+  game 2's turn-5 save beside the original's own view of it: grouping the
+  leaders by army put Indian leaders where Macedonian ones stand).
 * **Base record** (`FUN_00529e9f`), 2-byte values unless noted: movement
   left, unknown, done, ordered again, unknown, a flag adding one trailing
   value, hex (`x * 100 + y`), second hex, facing (4 bytes), out of the

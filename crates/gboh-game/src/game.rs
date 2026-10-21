@@ -39,6 +39,8 @@ pub struct Game {
     orderable_now: Vec<usize>,
     /// Whether the active leader has moved (once per activation).
     pub leader_moved: bool,
+    /// What happened since a front end last took it.
+    pub log: Vec<Happened>,
     /// Battle index (see `gboh_formats::scn::battle_index`), for the
     /// battles' own victory rules.
     pub battle_index: Option<usize>,
@@ -54,6 +56,26 @@ pub struct Game {
     group_streak: HashMap<usize, u8>,
     /// Shocks designated by the active leader.
     pub shocks: Vec<Designation>,
+}
+
+/// Something that happened on the battlefield, for a front end to show
+/// (moves to animate, volleys to sound).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Happened {
+    /// A unit (or leader) walked through these hexes, from where it was;
+    /// `running` when routed.
+    Moved { unit: usize, path: Vec<crate::hex::Hex>, running: bool },
+    Volley { shooter: usize, weapon: crate::missile::Weapon, hit: bool },
+    /// A unit lost men: `count` cohesion hits taken on `hex`, of `kind`.
+    Casualties { unit: usize, hex: crate::hex::Hex, kind: Casualty, count: i32 },
+}
+
+/// How men fell (the unit art's corpse strips).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Casualty {
+    Shock,
+    Arrow,
+    Trample,
 }
 
 /// The result of a group move attempt.
@@ -91,6 +113,7 @@ impl Game {
             resupplied: Vec::new(),
             orderable_now: Vec::new(),
             leader_moved: false,
+            log: Vec::new(),
             battle_index: battle_index(&scn.map_file),
             exited: 0,
             group_move: None,
@@ -144,6 +167,44 @@ impl Game {
         let resupplied = &self.resupplied;
         self.orderable_now.retain(|&u| b.units[u].mp == b.units[u].max_mp && !b.units[u].done && !resupplied.contains(&u));
         leader
+    }
+
+    /// Move `unit` to `to` (see `orders::move_to`), logging the hexes it
+    /// walked through (up to where reaction fire may have stopped it).
+    pub fn order_move(&mut self, unit: usize, to: crate::hex::Hex) -> Result<Vec<(usize, i32)>, orders::Refused> {
+        let start = self.battle.units[unit].hex;
+        let mp = self.battle.units[unit].mp;
+        let path = crate::movement::path_to(&self.battle, &self.map, unit, mp, to).unwrap_or_default();
+        let map = self.map.clone();
+        let fire = orders::move_to(&mut self.battle, &map, unit, to, &mut self.rng)?;
+        let end = self.battle.units[unit].hex;
+        let hits: i32 = fire.iter().map(|&(_, h)| h).sum();
+        if hits > 0 {
+            self.log.push(Happened::Casualties { unit, hex: end, kind: Casualty::Arrow, count: hits });
+        }
+        let mut walked = vec![start];
+        for h in path {
+            walked.push(h);
+            if h == end {
+                break;
+            }
+        }
+        self.log.push(Happened::Moved { unit, path: walked, running: false });
+        Ok(fire)
+    }
+
+    /// `shooter` volleys at `target` (see `orders::volley`), logged.
+    pub fn order_volley(&mut self, shooter: usize, target: usize) -> Result<i32, orders::Refused> {
+        let weapon = self.battle.units[shooter].missile.map(|m| m.0);
+        let hits = orders::volley(&mut self.battle, shooter, target, &mut self.rng)?;
+        if let Some(weapon) = weapon {
+            self.log.push(Happened::Volley { shooter, weapon, hit: hits > 0 });
+        }
+        if hits > 0 {
+            let hex = self.battle.units[target].hex;
+            self.log.push(Happened::Casualties { unit: target, hex, kind: Casualty::Arrow, count: hits });
+        }
+        Ok(hits)
     }
 
     /// Rally a routed unit with the active leader (the order must already
@@ -334,8 +395,10 @@ impl Game {
         for &u in &group {
             self.battle.units[u].mp = 0;
         }
+        let from = self.battle.units[l].hex;
         self.battle.units[l].hex = to;
         self.leader_moved = true;
+        self.log.push(Happened::Moved { unit: l, path: vec![from, to], running: false });
         true
     }
 
@@ -356,8 +419,10 @@ impl Game {
         if !self.leader_options().contains(&to) || to == self.battle.units[l].hex {
             return false;
         }
+        let from = self.battle.units[l].hex;
         self.battle.units[l].hex = to;
         self.leader_moved = true;
+        self.log.push(Happened::Moved { unit: l, path: vec![from, to], running: false });
         true
     }
 
@@ -432,6 +497,12 @@ impl Game {
         for (attackers, defenders) in std::mem::take(&mut self.shocks) {
             let target_hex = defenders.first().map(|&d| self.battle.units[d].hex);
             let out = shock::resolve(&mut self.battle, &attackers, &defenders, &mut self.rng);
+            for &(u, h) in &out.hits {
+                if h > 0 {
+                    let hex = self.battle.units[u].hex;
+                    self.log.push(Happened::Casualties { unit: u, hex, kind: Casualty::Shock, count: h });
+                }
+            }
             for &u in &out.eliminated {
                 self.battle.units[u].state = UnitState::Gone;
             }
@@ -568,6 +639,7 @@ impl Game {
         use crate::movement::MoveClass::*;
         self.battle.units[elephant].state = UnitState::Routed;
         let mut here = self.battle.units[elephant].hex;
+        let mut trail = vec![here];
         let mut hit = Vec::new();
         'legs: for _ in 0..4 {
             let side = match self.rng.next() % 10 {
@@ -606,14 +678,18 @@ impl Game {
                     let n = if frontal && !horse { 1 } else { 2 };
                     self.battle.units[u].hits += n;
                     hit.push(u);
+                    let hex = self.battle.units[u].hex;
+                    self.log.push(Happened::Casualties { unit: u, hex, kind: Casualty::Trample, count: n });
                     let o = &self.battle.units[u];
                     if o.hits >= o.tq as i32 {
                         self.rout(u, 2);
                     }
                 }
                 here = next;
+                trail.push(here);
             }
         }
+        self.log.push(Happened::Moved { unit: elephant, path: trail, running: true });
         self.battle.units[elephant].state = UnitState::Gone;
         hit
     }
@@ -637,6 +713,9 @@ impl Game {
                 self.battle.units[o].hits += 1;
             }
         }
+        let mut trail = vec![self.battle.units[unit].hex];
+        trail.extend(path.iter().copied());
+        self.log.push(Happened::Moved { unit, path: trail, running: true });
         if gone {
             self.battle.units[unit].state = UnitState::Gone;
         } else if let Some(&h) = path.last() {
@@ -790,6 +869,7 @@ mod tests {
         Game {
             battle,
             battle_index: None,
+            log: Vec::new(),
             exited: 0,
             map: Map {
                 name: String::new(),

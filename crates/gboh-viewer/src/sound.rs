@@ -66,7 +66,9 @@ impl Sound {
                     .collect()
             })
             .unwrap_or_default();
-        Self { output: rodio::OutputStream::try_default().ok(), dir: data_dir.into(), files, cache: HashMap::new(), seed: 1 }
+        // GBOH_MUTE silences everything
+        let output = if std::env::var_os("GBOH_MUTE").is_some() { None } else { rodio::OutputStream::try_default().ok() };
+        Self { output, dir: data_dir.into(), files, cache: HashMap::new(), seed: 1 }
     }
 
     fn pick<'a>(&mut self, names: &[&'a str]) -> &'a str {

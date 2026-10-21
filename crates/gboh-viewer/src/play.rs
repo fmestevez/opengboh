@@ -9,7 +9,6 @@
 //! him; G tries a group move (then a lit hex moves the whole group). Enter finishes the leader (shocks are resolved), M finishes him and
 //! tries for momentum; after the last leader the turn ends.
 
-use gboh_formats::map::Map;
 use gboh_formats::pal::Palette;
 use gboh_game::battle::UnitState;
 use gboh_game::game::{Game, Verdict};
@@ -24,11 +23,18 @@ pub struct Play {
     pub game: Game,
     /// Sounds to play for what just happened.
     pub events: Vec<crate::sound::Event>,
-    /// Moves to animate: the unit and the hexes it walked through, from
-    /// where it started.
-    pub walks: Vec<(usize, Vec<Hex>)>,
-    /// The computer's side (scenario nation byte) and its script.
-    ai: Option<(u8, gboh_game::ai::Machine)>,
+    /// Moves to animate: the unit, the hexes it went through from where it
+    /// started, and whether it ran (routed).
+    pub walks: Vec<(usize, Vec<Hex>, bool)>,
+    /// Fallen men lying on the battlefield.
+    pub corpses: Vec<gboh_render::units::Corpse>,
+    seed: u32,
+    /// The sides the computer plays (scenario nation byte) and their
+    /// scripts.
+    ai: Vec<(u8, gboh_game::ai::Machine)>,
+    /// The computer plays one leader per `step_computer` call (the viewer
+    /// paces it) instead of right after a human leader finishes.
+    pub demo: bool,
     selected: Option<usize>,
     leader: Option<usize>,
     pub status: String,
@@ -36,30 +42,37 @@ pub struct Play {
 }
 
 impl Play {
-    /// `ai`: the side the computer plays (nation byte) with its plan.
-    pub fn new(mut game: Game, ai: Option<(u8, gboh_game::ai::Machine)>) -> Self {
+    /// `ai`: the sides the computer plays (nation byte) with their plans.
+    pub fn new(mut game: Game, ai: Vec<(u8, gboh_game::ai::Machine)>) -> Self {
         let leader = game.begin_turn();
-        let mut p = Self { game, ai, events: vec![crate::sound::Event::Start], walks: Vec::new(), selected: None, leader, status: String::new(), over: false };
+        let demo = ai.len() > 1;
+        let mut p = Self { game, ai, demo, events: vec![crate::sound::Event::Start], walks: Vec::new(), corpses: Vec::new(), seed: 12345, selected: None, leader, status: String::new(), over: false };
         p.say("battle begins");
-        p.computer_turns();
+        if !p.demo {
+            p.computer_turns();
+        }
         p
     }
 
     /// While the active leader is the computer's, let its script give his
     /// orders and finish him.
     fn computer_turns(&mut self) {
-        while !self.over
-            && let (Some(l), Some((side, _))) = (self.leader, &self.ai)
-            && self.game.battle.units[l].side == *side
-        {
-            let name = self.game.battle.units[l].name.clone();
-            let machine = &mut self.ai.as_mut().unwrap().1;
-            if let Err(e) = self.game.ai_orders(machine) {
-                println!("AI error: {e}");
-            }
-            println!("computer: {name}");
-            self.finish_one(true);
+        while self.step_computer() {}
+    }
+
+    /// If the active leader is the computer's, play him (orders, then
+    /// finish with momentum); returns whether one was played.
+    pub fn step_computer(&mut self) -> bool {
+        let Some(l) = self.leader.filter(|_| !self.over) else { return false };
+        let side = self.game.battle.units[l].side;
+        let Some(i) = self.ai.iter().position(|(s, _)| *s == side) else { return false };
+        let name = self.game.battle.units[l].name.clone();
+        if let Err(e) = self.game.ai_orders(&mut self.ai[i].1) {
+            println!("AI error: {e}");
         }
+        println!("computer: {name}");
+        self.finish_one(true);
+        true
     }
 
     fn say(&mut self, what: &str) {
@@ -74,13 +87,105 @@ impl Play {
         println!("{what}");
     }
 
+    /// Turn what the game logged into walks to animate and sounds.
+    pub fn take_log(&mut self) {
+        for h in std::mem::take(&mut self.game.log) {
+            match h {
+                gboh_game::game::Happened::Moved { unit, mut path, running } => {
+                    // a unit fleeing off the map logs the hex beyond the edge
+                    let map = &self.game.map;
+                    path.retain(|h| h.x >= 0 && h.y >= 0 && (h.x as usize) < map.width && (h.y as usize) < map.height);
+                    let class = gboh_game::movement::MoveClass::of_type(self.game.battle.units[unit].type_id);
+                    if let (Some(c), false) = (class, running) {
+                        self.events.push(crate::sound::Event::Move(c));
+                    }
+                    if path.len() >= 2 {
+                        self.walks.push((unit, path, running));
+                    }
+                }
+                gboh_game::game::Happened::Casualties { unit, hex, kind, count } => {
+                    let kind = match kind {
+                        gboh_game::game::Casualty::Shock => 0,
+                        gboh_game::game::Casualty::Arrow => 1,
+                        gboh_game::game::Casualty::Trample => 2,
+                    };
+                    // bodies in proportion to the figures: elephants and
+                    // chariots have few, so drop one at most; cavalry two
+                    use gboh_game::movement::MoveClass::*;
+                    let most = match gboh_game::movement::MoveClass::of_type(self.game.battle.units[unit].type_id) {
+                        Some(Elephant | Chariot | Oxybeles) => 1,
+                        Some(HeavyCavalry | LightCavalry | Lancer) => 2,
+                        _ => 4,
+                    };
+                    for _ in 0..count.min(most) {
+                        let mut r = || {
+                            self.seed = self.seed.wrapping_mul(22695477).wrapping_add(1);
+                            ((self.seed >> 16) & 0x7fff) as i32
+                        };
+                        let offset = (r() % 90 - 45, r() % 36 - 18);
+                        let cel = r() as usize;
+                        self.corpses.push(gboh_render::units::Corpse {
+                            hex: (hex.x as usize, hex.y as usize),
+                            type_id: self.game.battle.units[unit].type_id,
+                            kind,
+                            cel,
+                            offset,
+                        });
+                    }
+                }
+                gboh_game::game::Happened::Volley { weapon, hit, .. } => {
+                    self.events.push(crate::sound::Event::Volley(weapon, hit));
+                }
+            }
+        }
+    }
+
     /// Units to draw, with `walking` (a unit, the hex it is leaving, the
     /// next hex, how far along and the frame) drawn on its way.
-    pub fn views_walking(&self, scene: &Scene, walking: Option<(usize, Hex, Hex, f32, usize)>) -> Vec<UnitView> {
+    /// Units in `pending` (walks not yet shown) are drawn where they
+    /// started.
+    pub fn views_walking(
+        &self,
+        scene: &Scene,
+        walking: Option<(usize, Hex, Hex, f32, usize, bool)>,
+        pending: &[(usize, Vec<Hex>, bool)],
+    ) -> Vec<UnitView> {
         let mut views = self.views();
-        if let Some((u, from, to, t, frame)) = walking {
+        // units shown on the move even if already out of the battle
+        let shown = pending.iter().map(|(u, _, _)| *u).chain(walking.map(|w| w.0));
+        for u in shown.collect::<Vec<_>>() {
+            let o = &self.game.battle.units[u];
+            if !views.iter().any(|v| v.id == o.source) {
+                views.push(UnitView {
+                    hex: (o.hex.x as usize, o.hex.y as usize),
+                    facing: o.facing,
+                    type_id: o.type_id,
+                    nation: o.nation,
+                    id: o.source,
+                    routed: true,
+                    walk: None,
+                });
+            }
+        }
+        // latest first, so a unit with several pending walks ends up at the
+        // start of its earliest
+        for (u, path, _) in pending.iter().rev() {
+            let id = self.game.battle.units[*u].source;
+            if let (Some(v), Some(h)) = (views.iter_mut().find(|v| v.id == id), path.first()) {
+                v.hex = (h.x as usize, h.y as usize);
+            }
+        }
+        if let Some((u, from, to, t, frame, running)) = walking {
             let id = self.game.battle.units[u].source;
             if let Some(v) = views.iter_mut().find(|v| v.id == id) {
+                if running {
+                    // routed men run the way they are going
+                    v.routed = true;
+                    let d = gboh_game::ai_host::direction(from, to);
+                    if d > 0 {
+                        v.facing = d as u8;
+                    }
+                }
                 let a = gboh_render::objects::anchor_at(&scene.map, &scene.layout, (from.x as usize, from.y as usize), (0, 0));
                 let b = gboh_render::objects::anchor_at(&scene.map, &scene.layout, (to.x as usize, to.y as usize), (0, 0));
                 v.hex = (from.x as usize, from.y as usize);
@@ -182,14 +287,8 @@ impl Play {
             }
             (Some(s), Some(t)) if right => {
                 let name = self.game.battle.units[t].name.clone();
-                let weapon = self.game.battle.units[s].missile.map(|m| m.0);
-                match orders::volley(&mut self.game.battle, s, t, &mut self.game.rng) {
-                    Ok(h) if self.charge(s) => {
-                        if let Some(w) = weapon {
-                            self.events.push(crate::sound::Event::Volley(w, h > 0));
-                        }
-                        self.say(&format!("volley at {name}: {h} hits"))
-                    }
+                match self.game.order_volley(s, t) {
+                    Ok(h) if self.charge(s) => self.say(&format!("volley at {name}: {h} hits")),
                     Ok(_) => self.say("no command points"),
                     Err(_) => self.say("cannot volley at that"),
                 }
@@ -208,25 +307,8 @@ impl Play {
                     self.say("no command points");
                     return false;
                 }
-                let map: Map = self.game.map.clone();
-                let start = self.game.battle.units[s].hex;
-                let mp = self.game.battle.units[s].mp;
-                let path = gboh_game::movement::path_to(&self.game.battle, &map, s, mp, hex).unwrap_or_default();
-                match orders::move_to(&mut self.game.battle, &map, s, hex, &mut self.game.rng) {
+                match self.game.order_move(s, hex) {
                     Ok(fire) => {
-                        // animate up to where the unit actually stopped
-                        let end = self.game.battle.units[s].hex;
-                        let mut walked = vec![start];
-                        for h in path {
-                            walked.push(h);
-                            if h == end {
-                                break;
-                            }
-                        }
-                        self.walks.push((s, walked));
-                        if let Some(c) = gboh_game::movement::MoveClass::of_type(self.game.battle.units[s].type_id) {
-                            self.events.push(crate::sound::Event::Move(c));
-                        }
                         let hits: i32 = fire.iter().map(|&(_, h)| h).sum();
                         self.say(&if fire.is_empty() { "moved".into() } else { format!("moved; reaction fire {hits} hits") });
                     }
@@ -307,7 +389,9 @@ impl Play {
             return false;
         }
         self.finish_one(momentum);
-        self.computer_turns();
+        if !self.demo {
+            self.computer_turns();
+        }
         true
     }
 
@@ -330,7 +414,7 @@ impl Play {
             if let Verdict::Won(a) = self.game.end_turn() {
                 self.over = true;
                 let nation = self.game.armies[a].0;
-                let won = self.ai.as_ref().is_none_or(|(side, _)| *side != nation);
+                let won = self.ai.len() != 1 || self.ai[0].0 != nation;
                 self.events.push(crate::sound::Event::End { won });
                 self.say(&format!("army of nation {nation} wins"));
                 return;
@@ -394,6 +478,7 @@ pub fn light(canvas: &mut Canvas, scene: &Scene, hexes: &[Hex], pal: &Palette) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gboh_formats::map::Map;
     use gboh_formats::scn::Scenario;
 
     /// Plays a few orders at Hydaspes; runs only with `GBOH_DATA` set to the
@@ -404,15 +489,16 @@ mod tests {
         let dir = std::path::Path::new(&dir);
         let scn = Scenario::parse(&std::fs::read(dir.join("HYDASPES.SCN")).unwrap()).unwrap();
         let map = Map::parse(&std::fs::read(dir.join("HYDASPES.MAP")).unwrap()).unwrap();
-        let mut p = Play::new(Game::new(&scn, map, 1), None);
+        let mut p = Play::new(Game::new(&scn, map, 1), Vec::new());
         let agema = p.game.battle.units.iter().position(|u| u.name == "Agema Companions").unwrap();
         assert!(p.click(Hex::new(13, 21), false), "select");
         assert_eq!(p.selected, Some(agema));
         assert!(p.lit().contains(&Hex::new(21, 20)));
         assert!(p.click(Hex::new(21, 20), false), "move");
+        p.take_log();
         assert_eq!(p.game.battle.units[agema].hex, Hex::new(21, 20));
         // the move is queued for animation, from the start to the end hex
-        let (u, path) = p.walks.last().unwrap();
+        let (u, path, _) = p.walks.last().unwrap();
         assert_eq!(*u, agema);
         assert_eq!((path[0], *path.last().unwrap()), (Hex::new(13, 21), Hex::new(21, 20)));
         println!("{}", p.status);
@@ -442,17 +528,45 @@ mod tests {
         let map = Map::parse(&read("HYDASPES.MAP").unwrap()).unwrap();
         let mut text = |n: &str| read(n).map(|d| String::from_utf8_lossy(&d).into_owned());
         let script = gboh_game::ai::Script::load(&scn.visitor_ai[0], &mut text).unwrap();
-        let ai = Some((scn.visitor.nation, gboh_game::ai::Machine::new(script)));
+        let ai = vec![(scn.visitor.nation, gboh_game::ai::Machine::new(script))];
         let mut p = Play::new(Game::new(&scn, map, 1), ai);
         let start: Vec<_> = p.game.battle.units.iter().map(|u| u.hex).collect();
         for _ in 0..12 {
             p.finish(false);
+            p.take_log();
             if let Some(l) = p.leader {
                 assert_eq!(p.game.battle.units[l].side, scn.home.nation);
             }
         }
         let moved = p.game.battle.units.iter().zip(&start).filter(|(u, h)| u.side == scn.visitor.nation && u.hex != **h).count();
-        println!("{} | Indian units moved: {moved}", p.status);
+        println!("{} | Indian units moved: {moved} | walks queued {}", p.status, p.walks.len());
+        assert!(!p.walks.is_empty(), "the computer's moves are queued for animation");
+        println!("fallen men: {}", p.corpses.len());
+        assert!(!p.corpses.is_empty(), "casualties leave bodies");
+        // optionally dump a frame with the bodies, as a binary PPM
+        if let Ok(out) = std::env::var("GBOH_DUMP") {
+            let files: Vec<_> = std::fs::read_dir(dir).unwrap().filter_map(|e| e.ok()).map(|e| e.path()).collect();
+            let find = |n: &str| files.iter().find(|p| p.file_name().is_some_and(|f| f.eq_ignore_ascii_case(n))).cloned();
+            let mut load = |n: &str| find(n).and_then(|p| std::fs::read(p).ok());
+            let heads: Vec<(String, Vec<u8>)> = files
+                .iter()
+                .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("eif")))
+                .map(|p| (p.file_name().unwrap().to_string_lossy().into_owned(), std::fs::read(p).unwrap()[..128].to_vec()))
+                .collect();
+            let titles = gboh_render::battlefield::eif_titles(heads.iter().map(|(n, h)| (n.as_str(), h.as_slice())));
+            let mut load_title = |t: &str| titles.get(t).and_then(|n| std::fs::read(dir.join(n)).ok());
+            let pal = gboh_render::battlefield::palette(&mut load).unwrap();
+            let types: Vec<usize> = (0..gboh_formats::units::ART_TITLES.len()).collect();
+            let map = p.game.map.clone();
+            let scene = Scene::build(&scn.map_file, &map, gboh_render::terrain::Zoom::In, &pal, 1, &types, &mut load, &mut load_title).unwrap();
+            let c = scene.compose_with(&p.views(), &[], &p.corpses);
+            let rgba = c.to_rgba(&pal);
+            let mut ppm = format!("P6 {} {} 255\n", c.width, c.height).into_bytes();
+            for px in rgba.chunks(4) {
+                ppm.extend_from_slice(&px[..3]);
+            }
+            std::fs::write(out, ppm).unwrap();
+        }
         assert!(moved > 0);
     }
 
@@ -463,7 +577,7 @@ mod tests {
         let dir = std::path::Path::new(&dir);
         let scn = Scenario::parse(&std::fs::read(dir.join("HYDASPES.SCN")).unwrap()).unwrap();
         let map = Map::parse(&std::fs::read(dir.join("HYDASPES.MAP")).unwrap()).unwrap();
-        let mut p = Play::new(Game::new(&scn, map, 1), None);
+        let mut p = Play::new(Game::new(&scn, map, 1), Vec::new());
         println!("refused: {:?}", p.game.group_move_refused());
         if p.game.group_move_refused().is_some() {
             return;
@@ -471,6 +585,7 @@ mod tests {
         assert!(p.group_move());
         println!("{} | options {}", p.status, p.lit().len());
         if let Some(&to) = p.lit().first() {
+            p.take_log();
             let before = p.game.battle.units.iter().filter(|u| u.mp == 0).count();
             assert!(p.click(to, false));
             assert!(p.game.battle.units.iter().filter(|u| u.mp == 0).count() > before);
@@ -496,7 +611,7 @@ mod tests {
         let titles = gboh_render::battlefield::eif_titles(heads.iter().map(|(n, h)| (n.as_str(), h.as_slice())));
         let mut load_title = |t: &str| titles.get(t).and_then(|n| std::fs::read(dir.join(n)).ok());
         let pal = gboh_render::battlefield::palette(&mut load).unwrap();
-        let p = Play::new(Game::new(&scn, map.clone(), 1), None);
+        let p = Play::new(Game::new(&scn, map.clone(), 1), Vec::new());
         let types: Vec<usize> = (0..gboh_formats::units::ART_TITLES.len()).collect();
         for z in [gboh_render::terrain::Zoom::In, gboh_render::terrain::Zoom::Normal, gboh_render::terrain::Zoom::Out] {
             let scene = Scene::build(&scn.map_file, &map, z, &pal, 1, &types, &mut load, &mut load_title).unwrap();
@@ -505,6 +620,55 @@ mod tests {
                 let _ = scene.compose(&p.views(), &p.flagged());
             }
             println!("{z:?}: {:.1} ms per frame", t.elapsed().as_secs_f64() * 1000.0 / 5.0);
+        }
+    }
+
+    /// Plays demo battles (the computer on both sides) and renders every
+    /// walk step, as the viewer would; runs only with `GBOH_DATA`.
+    #[test]
+    fn demo_renders() {
+        let Ok(dir) = std::env::var("GBOH_DATA") else { return };
+        let dir = std::path::Path::new(&dir);
+        let files: Vec<_> = std::fs::read_dir(dir).unwrap().filter_map(|e| e.ok()).map(|e| e.path()).collect();
+        let find = |n: &str| files.iter().find(|p| p.file_name().is_some_and(|f| f.eq_ignore_ascii_case(n))).cloned();
+        let read = |n: &str| find(n).and_then(|p| std::fs::read(p).ok());
+        let heads: Vec<(String, Vec<u8>)> = files
+            .iter()
+            .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("eif")))
+            .map(|p| (p.file_name().unwrap().to_string_lossy().into_owned(), std::fs::read(p).unwrap()[..128].to_vec()))
+            .collect();
+        let titles = gboh_render::battlefield::eif_titles(heads.iter().map(|(n, h)| (n.as_str(), h.as_slice())));
+        let mut load = |n: &str| read(n);
+        let pal = gboh_render::battlefield::palette(&mut load).unwrap();
+        let types: Vec<usize> = (0..gboh_formats::units::ART_TITLES.len()).collect();
+        for scn_file in ["HYDASPES.SCN", "GAUGAMEL.SCN", "PELIUM.SCN"] {
+            let scn = Scenario::parse(&read(scn_file).unwrap()).unwrap();
+            let map = Map::parse(&read(&scn.map_file).unwrap()).unwrap();
+            let mut text = |n: &str| read(n).map(|d| String::from_utf8_lossy(&d).into_owned());
+            let mut ai = Vec::new();
+            for (nation, plans) in [(scn.visitor.nation, &scn.visitor_ai), (scn.home.nation, &scn.home_ai)] {
+                let script = gboh_game::ai::Script::load(&plans[0], &mut text).unwrap();
+                ai.push((nation, gboh_game::ai::Machine::new(script)));
+            }
+            let mut load = |n: &str| read(n);
+            let mut load_title = |t: &str| titles.get(t).and_then(|n| std::fs::read(dir.join(n)).ok());
+            let scene = Scene::build(&scn.map_file, &map, gboh_render::terrain::Zoom::Out, &pal, 1, &types, &mut load, &mut load_title).unwrap();
+            let mut p = Play::new(Game::new(&scn, map, 3), ai);
+            let (mut steps, mut frames) = (0, 0);
+            while steps < 150 && p.step_computer() {
+                steps += 1;
+                p.take_log();
+                let walks = std::mem::take(&mut p.walks);
+                for (i, (u, path, running)) in walks.iter().enumerate() {
+                    for w in path.windows(2) {
+                        let v = p.views_walking(&scene, Some((*u, w[0], w[1], 0.5, 1, *running)), &walks[i + 1..]);
+                        let _ = scene.compose_with(&v, &p.flagged(), &p.corpses);
+                        frames += 1;
+                    }
+                }
+                let _ = scene.compose_with(&p.views(), &p.flagged(), &p.corpses);
+            }
+            println!("{scn_file}: {steps} leaders, {frames} walk frames, {} fallen, over {}", p.corpses.len(), p.over);
         }
     }
 }

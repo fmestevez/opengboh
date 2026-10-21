@@ -2,7 +2,7 @@
 //! original data files.
 
 use crate::objects::{self, ObjectSprites};
-use crate::units::{self, UnitSprites, UnitView};
+use crate::units::{self, Corpse, UnitSprites, UnitView};
 use crate::terrain::{self, Layout, TerrainArt, Zoom};
 use crate::{BorlandRand, Canvas, strip};
 use gboh_formats::eif::Eif;
@@ -197,9 +197,21 @@ impl Scene {
     /// and the town; units whose id is in `flagged` show their activation
     /// flag.
     pub fn compose(&self, units: &[UnitView], flagged: &[usize]) -> Canvas {
+        self.compose_with(units, flagged, &[])
+    }
+
+    /// As `compose`, with fallen men lying where they fell.
+    pub fn compose_with(&self, units: &[UnitView], flagged: &[usize], corpses: &[Corpse]) -> Canvas {
         let (map, layout) = (&self.map, &self.layout);
         let mut canvas = self.terrain.clone();
         let mut items = objects::drawables(map, layout, &self.objects, &self.placed);
+        for c in corpses {
+            if let Some(Some(art)) = self.unit_art.get(&c.type_id)
+                && let Some(d) = units::corpse_drawable(map, layout, c, art)
+            {
+                items.push(d);
+            }
+        }
         if let Some((t, sprites)) = &self.town {
             for ((sprite, hot), &offset) in sprites.iter().zip(t.offsets) {
                 items.push(objects::Drawable { anchor: objects::anchor_at(map, layout, t.hex, offset), depth: 0, sprite, hot: *hot });

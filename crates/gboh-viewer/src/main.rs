@@ -315,8 +315,12 @@ struct Viewer {
     sound: sound::Sound,
     /// Levels whose canvas is out of date with the battle.
     stale: [bool; 3],
-    /// A move being animated: unit, path, and when it started.
-    walking: Option<(usize, Vec<gboh_game::hex::Hex>, Instant)>,
+    /// A move being animated: unit, path, and when it started; and the moves
+    /// waiting their turn.
+    walking: Option<(usize, Vec<gboh_game::hex::Hex>, bool, Instant, f32)>,
+    queued: std::collections::VecDeque<(usize, Vec<gboh_game::hex::Hex>, bool)>,
+    /// Demo: when the next computer leader may play.
+    next_step: Instant,
     press: Option<PhysicalPosition<f64>>,
     base_palette: Palette,
     gpu: Option<Gpu>,
@@ -374,17 +378,16 @@ impl Viewer {
             return;
         }
         let scene = &self.scenes[self.level];
-        let views = match &self.walking {
-            Some((u, path, start)) => {
-                let t = start.elapsed().as_secs_f32() / WALK_HEX;
-                let i = (t as usize).min(path.len().saturating_sub(2));
-                let frac = (t - i as f32).clamp(0.0, 1.0);
-                let frame = (start.elapsed().as_secs_f32() / WALK_FRAME) as usize;
-                p.views_walking(scene, Some((*u, path[i], path[i + 1], frac, frame)))
-            }
-            None => p.views(),
-        };
-        let mut canvas = scene.compose(&views, &p.flagged());
+        let pending: Vec<_> = self.queued.iter().cloned().collect();
+        let walking = self.walking.as_ref().map(|(u, path, running, start, per_hex)| {
+            let t = start.elapsed().as_secs_f32() / per_hex;
+            let i = (t as usize).min(path.len().saturating_sub(2));
+            let frac = (t - i as f32).clamp(0.0, 1.0);
+            let frame = (start.elapsed().as_secs_f32() / WALK_FRAME) as usize;
+            (*u, path[i], path[i + 1], frac, frame, *running)
+        });
+        let views = p.views_walking(scene, walking, &pending);
+        let mut canvas = scene.compose_with(&views, &p.flagged(), &p.corpses);
         play::light(&mut canvas, scene, &p.lit(), &self.base_palette);
         if let Some(g) = &self.gpu {
             g.update_level(self.level, &canvas);
@@ -393,16 +396,23 @@ impl Viewer {
         self.stale[self.level] = false;
     }
 
+    /// Start the next queued walk: quicker the more are waiting, so the
+    /// computer's turns do not drag.
+    fn next_walk(&mut self) -> Option<(usize, Vec<gboh_game::hex::Hex>, bool, Instant, f32)> {
+        let per_hex = WALK_HEX / (1.0 + self.queued.len() as f32 / 4.0);
+        self.queued.pop_front().map(|(u, p, r)| (u, p, r, Instant::now(), per_hex))
+    }
+
     /// The battle changed: play its sounds, start any walk, and redraw.
     fn changed(&mut self) {
         if let Some(p) = &mut self.play {
+            p.take_log();
             for e in p.events.drain(..) {
                 self.sound.play(e);
             }
-            if let Some((u, path)) = p.walks.drain(..).next_back()
-                && path.len() >= 2
-            {
-                self.walking = Some((u, path, Instant::now()));
+            self.queued.extend(p.walks.drain(..).filter(|(_, path, _)| path.len() >= 2));
+            if self.walking.is_none() {
+                self.walking = self.next_walk();
             }
         }
         self.stale = [true; 3];
@@ -576,9 +586,21 @@ impl ApplicationHandler for Viewer {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         // a walking unit: redraw until it arrives
-        if let Some((_, path, start)) = &self.walking {
-            if start.elapsed().as_secs_f32() >= WALK_HEX * (path.len() - 1) as f32 {
-                self.walking = None;
+        // demo: when the animations are done, play the next computer leader
+        if self.walking.is_none()
+            && self.queued.is_empty()
+            && self.play.as_ref().is_some_and(|p| p.demo)
+            && self.next_step <= Instant::now()
+        {
+            if self.play.as_mut().is_some_and(|p| p.step_computer()) {
+                self.changed();
+            }
+            self.next_step = Instant::now() + std::time::Duration::from_millis(400);
+        }
+        if let Some((_, path, _, start, per_hex)) = &self.walking {
+            if start.elapsed().as_secs_f32() >= per_hex * (path.len() - 1) as f32 {
+                // next queued move, if any
+                self.walking = self.next_walk();
             }
             self.stale = [true; 3];
             self.refresh();
@@ -629,7 +651,7 @@ fn eif_title_index(dir: &Path) -> std::collections::HashMap<String, String> {
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let Some(data_dir) = args.get(1).map(PathBuf::from) else {
-        bail!("usage: gboh-viewer <DATA dir> [MAP or SCN file] [ai]");
+        bail!("usage: gboh-viewer <DATA dir> [MAP or SCN file] [ai|demo]");
     };
     let file = args.get(2).map_or("CHAERONE.SCN", String::as_str);
     let mut load = |name: &str| find_ci(&data_dir, name).and_then(|p| std::fs::read(p).ok());
@@ -658,16 +680,20 @@ fn main() -> Result<()> {
         .collect::<Result<Vec<_>, _>>()?;
     let canvases: Vec<Canvas> = scenes.iter().map(|s| s.compose(&views, &flagged)).collect();
     // `ai` after the file: the computer plays the visitor army with its
-    // first plan
-    let ai = match (args.get(3).map(String::as_str), &scenario) {
-        (Some("ai"), Some(s)) => {
-            let plan = s.visitor_ai.first().context("no AI plan")?;
-            let mut read = |name: &str| load(name).map(|d| String::from_utf8_lossy(&d).into_owned());
-            let script = gboh_game::ai::Script::load(plan, &mut read).map_err(|e| anyhow::anyhow!("{e}"))?;
-            Some((s.visitor.nation, gboh_game::ai::Machine::new(script)))
+    // first plan; `demo`: it plays both, paced by the viewer
+    let mut ai = Vec::new();
+    if let (Some(mode @ ("ai" | "demo")), Some(s)) = (args.get(3).map(String::as_str), &scenario) {
+        let mut read = |name: &str| load(name).map(|d| String::from_utf8_lossy(&d).into_owned());
+        let mut sides = vec![(s.visitor.nation, &s.visitor_ai)];
+        if mode == "demo" {
+            sides.push((s.home.nation, &s.home_ai));
         }
-        _ => None,
-    };
+        for (nation, plans) in sides {
+            let plan = plans.first().context("no AI plan")?;
+            let script = gboh_game::ai::Script::load(plan, &mut read).map_err(|e| anyhow::anyhow!("{e}"))?;
+            ai.push((nation, gboh_game::ai::Machine::new(script)));
+        }
+    }
     let play = scenario.as_ref().map(|s| play::Play::new(gboh_game::game::Game::new(s, map.clone(), 1), ai));
     let level = 1;
     let centre = [canvases[level].width as f32 / 2.0, canvases[level].height as f32 / 2.0];
@@ -680,6 +706,8 @@ fn main() -> Result<()> {
         sound: sound::Sound::new(&data_dir),
         stale: [false; 3],
         walking: None,
+        queued: Default::default(),
+        next_step: Instant::now(),
         press: None,
         base_palette,
         gpu: None,

@@ -58,7 +58,8 @@ moves the whole group); Enter finishes the leader (his shocks are fought), M
 finishes him and tries for momentum. Sounds come from the game's own WAV
 files. Add `ai` after the
 scenario to have the computer play the visitor army with the original's AI
-scripts; `gboh-tools ai <DATA> <SCN> <turns>` lets them play both sides.
+scripts, or `demo` to watch it play both armies (one leader at a time, once
+the previous moves have been shown); set `GBOH_MUTE=1` to silence it; `gboh-tools ai <DATA> <SCN> <turns>` lets them play both sides.
 
 ## License
 

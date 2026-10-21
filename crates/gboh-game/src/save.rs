@@ -126,7 +126,9 @@ fn order(battle: &Battle, home: u8) -> (Vec<(usize, bool)>, Vec<usize>) {
         battle.units[u].missile.is_some() && MoveClass::of_type(battle.units[u].type_id) != Some(MoveClass::Chariot)
     };
     let combat = units.iter().filter(|&&u| battle.units[u].leader.is_none()).map(|&u| (u, missile(u))).collect();
-    let leaders = units.into_iter().filter(|&u| battle.units[u].leader.is_some()).collect();
+    // leaders are saved in plain scenario order (not by side)
+    let mut leaders: Vec<usize> = units.into_iter().filter(|&u| battle.units[u].leader.is_some()).collect();
+    leaders.sort_by_key(|&u| battle.units[u].source);
     (combat, leaders)
 }
 
@@ -251,6 +253,14 @@ mod tests {
             .map(|u| crate::combat::rout_points(u.type_id, u.tq, u.leader.map_or(0, |r| r.initiative)))
             .sum();
         println!("rout points lost (both armies): {lost}");
+        for &(u, sv) in &saved {
+            if !sv.gone && ![2, 3, 4, 6, 7, 8].contains(&sv.facing) {
+                println!("odd facing {}: {} at {}", sv.facing, battle.units[u].name, sv.hex);
+            }
+            if std::env::var("GBOH_LIST").is_ok() && battle.units[u].nation == 2 && !sv.gone {
+                println!("{:24} hex {:4} facing {} hits {} routed {} mp {}", battle.units[u].name, sv.hex, sv.facing, sv.hits, sv.routed, sv.mp);
+            }
+        }
         assert!(turn(&d).is_some());
         let active = active_this_turn(&d);
         println!("active this turn: {active:?}");

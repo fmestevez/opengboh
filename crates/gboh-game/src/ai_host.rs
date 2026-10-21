@@ -324,8 +324,7 @@ impl<'a> AiHost<'a> {
         if !self.charge(u) {
             return 0;
         }
-        let map = self.game.map.clone();
-        match orders::move_to(&mut self.game.battle, &map, u, to, &mut self.game.rng) {
+        match self.game.order_move(u, to) {
             Ok(_) => 2,
             Err(_) => 0,
         }
@@ -582,7 +581,7 @@ impl Host for AiHost<'_> {
                 if !self.charge(u) {
                     return Some(0);
                 }
-                let ok = orders::volley(&mut self.game.battle, u, t, &mut self.game.rng).is_ok();
+                let ok = self.game.order_volley(u, t).is_ok();
                 if ok {
                     self.game.spend(u, false);
                 }

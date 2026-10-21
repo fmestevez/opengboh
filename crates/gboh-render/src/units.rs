@@ -83,6 +83,25 @@ pub struct UnitSprites {
     routed: Vec<(Sprite, (i32, i32))>,
     /// Walking frames per screen facing (strips `N`…`NW`).
     walking: Vec<Vec<(Sprite, (i32, i32))>>,
+    /// Running (routed) frames per screen facing (`RoutN`… or `RN`…).
+    running: Vec<Vec<(Sprite, (i32, i32))>>,
+    /// Fallen men: killed in shock, by missiles, trampled (strips `Shock`,
+    /// `Arrow`, `Trample`).
+    corpses: [Vec<(Sprite, (i32, i32))>; 3],
+}
+
+/// A fallen man on the battlefield.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Corpse {
+    pub hex: (usize, usize),
+    /// Whose art (unit type).
+    pub type_id: usize,
+    /// 0 shock, 1 missile, 2 trampled.
+    pub kind: usize,
+    /// Which cel of the strip.
+    pub cel: usize,
+    /// Zoom-in pixels from the hex centre.
+    pub offset: (i32, i32),
 }
 
 impl UnitSprites {
@@ -105,8 +124,14 @@ impl UnitSprites {
             .or_else(|| running("Rout"))
             .or_else(|| running("R"))
             .unwrap_or_else(|| standing.clone());
-        let walking = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"].iter().map(|d| cels(d).unwrap_or_default()).collect();
-        Some(Self { standing, routed, walking })
+        const DIRS: [&str; 8] = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+        let walking = DIRS.iter().map(|d| cels(d).unwrap_or_default()).collect();
+        let running = DIRS
+            .iter()
+            .map(|d| cels(&format!("Rout{d}")).or_else(|| cels(&format!("R{d}"))).unwrap_or_default())
+            .collect();
+        let corpses = ["Shock", "Arrow", "Trample"].map(|n| cels(n).unwrap_or_default());
+        Some(Self { standing, routed, walking, running, corpses })
     }
 }
 
@@ -152,6 +177,13 @@ pub struct UnitView {
     pub walk: Option<(usize, (i32, i32))>,
 }
 
+/// The drawable for a fallen man, if the art has that kind.
+pub fn corpse_drawable<'a>(map: &Map, layout: &Layout, c: &Corpse, art: &'a UnitSprites) -> Option<Drawable<'a>> {
+    let cels = &art.corpses[c.kind.min(2)];
+    let (sprite, hot) = cels.get(c.cel % cels.len().max(1))?;
+    Some(Drawable { anchor: anchor_at(map, layout, c.hex, c.offset), depth: 0, sprite, hot: *hot })
+}
+
 impl UnitView {
     /// The view of a scenario unit, if it is on the map and has a type.
     pub fn of_scenario(map: &Map, id: usize, unit: &Unit) -> Option<Self> {
@@ -172,7 +204,8 @@ pub fn drawables<'a>(map: &Map, layout: &Layout, unit: &UnitView, art: &'a UnitS
     let (hex, ty) = (unit.hex, unit.type_id);
     let facing = screen_facing(unit.facing);
     let walking = unit.walk.and_then(|(frame, _)| {
-        let cels = art.walking.get(facing - 1)?;
+        let set = if unit.routed { &art.running } else { &art.walking };
+        let cels = set.get(facing - 1).filter(|c| !c.is_empty()).or_else(|| art.walking.get(facing - 1))?;
         cels.get(frame % cels.len().max(1))
     });
     let poses = if unit.routed { &art.routed } else { &art.standing };
