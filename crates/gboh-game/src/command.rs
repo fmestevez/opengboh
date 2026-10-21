@@ -14,7 +14,8 @@ use crate::battle::Battle;
 use gboh_formats::crt::BorlandRand;
 use gboh_formats::scn::battle_index;
 
-/// Units (not leaders) the leader at `leader` can order, by index.
+/// Units (not leaders) the leader at `leader` can order, by index. Routed
+/// units count (the only order they take is a rally).
 pub fn commanded(battle: &Battle, leader: usize) -> Vec<usize> {
     let l = &battle.units[leader];
     let Some(ratings) = l.leader else { return Vec::new() };
@@ -28,7 +29,7 @@ pub fn commanded(battle: &Battle, leader: usize) -> Vec<usize> {
         .filter(|&i| {
             let u = &battle.units[i];
             u.leader.is_none()
-                && u.state == crate::battle::UnitState::Fighting
+                && u.state != crate::battle::UnitState::Gone
                 && u.side == l.side
                 && (in_range(u, l, ratings.command_range)
                     || subordinates.iter().any(|&s| {

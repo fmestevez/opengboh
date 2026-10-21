@@ -16,6 +16,8 @@ pub enum Refused {
     /// The turn would put a two-hex unit's hex off the map or on another
     /// unit.
     Blocked,
+    /// Routed units take no order but a rally.
+    Routed,
 }
 
 /// Facing after one 60° turn: left is anticlockwise (3 → 2 → 8 → 7 → 6 →
@@ -33,6 +35,9 @@ pub fn turned(facing: u8, left: bool) -> u8 {
 /// left turn its main hex stays and the second hex swings, on a right turn
 /// the second hex stays and the main hex swings.
 pub fn turn(battle: &mut Battle, map: &Map, unit: usize, left: bool) -> Result<(), Refused> {
+    if battle.units[unit].state == UnitState::Routed {
+        return Err(Refused::Routed);
+    }
     let u = &battle.units[unit];
     let free = u.turned && MoveClass::of_type(u.type_id) == Some(MoveClass::Skirmisher);
     if !free && u.mp < 1 {
@@ -82,8 +87,17 @@ pub fn move_to(
     to: Hex,
     rng: &mut BorlandRand,
 ) -> Result<Vec<(usize, i32)>, Refused> {
+    if battle.units[unit].state == UnitState::Routed {
+        return Err(Refused::Routed);
+    }
     let mp = battle.units[unit].mp;
     let path = path_to(battle, map, unit, mp, to).ok_or(Refused::Unreachable)?;
+    // moving again after momentum: one cohesion hit, once a turn
+    let u = &mut battle.units[unit];
+    if u.reordered && !u.reorder_hit {
+        u.reorder_hit = true;
+        u.hits += 1;
+    }
     let costs = reachable(battle, map, unit, mp);
     let mut fire = Vec::new();
     for h in path {
@@ -194,6 +208,9 @@ fn reacting(battle: &Battle, unit: usize) -> Vec<usize> {
 pub fn volley(battle: &mut Battle, shooter: usize, target: usize, rng: &mut BorlandRand) -> Result<i32, Refused> {
     let s = &battle.units[shooter];
     let t = &battle.units[target];
+    if s.state == UnitState::Routed {
+        return Err(Refused::Routed);
+    }
     let Some((weapon, left)) = s.missile else { return Err(Refused::Unreachable) };
     let range = s.hex.distance(t.hex);
     if s.fired || left == 0 || !arc(s.hex, s.facing, weapon.range()).contains(&t.hex) {
@@ -355,6 +372,9 @@ mod tests {
             missile: None,
             fired: false,
             wounded: false,
+            reordered: false,
+            reorder_hit: false,
+            done: false,
         }
     }
 

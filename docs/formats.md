@@ -878,23 +878,117 @@ them):
   an enemy zone of control.
 * **`AttemptToRally(unit)`:** counts the order, then the rally rule.
 
+* **Who may take orders** (`FUN_005235b8`, at every leader's activation,
+  for the player too): a unit of his side in command range that has not
+  spent movement points this turn and is not done. The list is fixed for the
+  activation. A shock order (`Attack`) or a recovery takes the unit off it
+  and marks it done for the turn; an AI volley takes it off. So a unit moved
+  by one leader cannot be ordered by the next.
 * **Group list and `CanBeOrdered`:** the group list is the leader's whole
   group, in command range or not (`GetUnitsOutOfRange` filters it with
   `InCommandRange`); `CanBeOrdered` is true for units in his command and for
   the leader himself until he has moved (`MoveLeader` asks it first).
-* **Moving a unit** (`FUN_00538e7c`): a unit ordered again after another
-  leader ordered it this turn takes 1 cohesion hit when it moves (the
-  "ordered again" penalty; not applied yet).
+* **Moving a unit** (`FUN_00538e7c`): a unit flagged "ordered again"
+  takes 1 cohesion hit when it moves, once per turn (see momentum below).
 
-Not traced: `Attack`, `Fire`, `EnemyWithinRange`, `FindClosestEnemyToFire`,
-`FindHurtingUnit` and leader movement; `gboh_game::ai_host` writes them from
-their names and use.
+* **`Attack(unit, hex)`:** attacks everyone in the unit's zone of control,
+  the unit on `hex` as primary target; always returns 1; the unit is done.
+* **`Fire(unit, hex)`:** fires if the hex is among the unit's targets.
+* **`FindClosestEnemyToFire(unit)`:** the nearest of those targets.
+* **`EnemyWithinRange(unit, r)`:** any enemy, leaders included, within `r`.
+* **`FindHurtingUnit()`:** over every friendly unit on the map, the nearest
+  routed one if the leader's initiative is over 3, else the nearest with
+  cohesion hits.
 
-**AI against AI**, 30 turns, each side's first plan: Granicus ends turn 19
-in a Macedonian win (Persians 95/90 rout points); Gaugamela ends turn 17 in
-a Persian win (Macedonians 152/150). Hydaspes, Chaeronea and Issus run 30
-turns without a verdict. At Hydaspes the Indian plans keep sending their
-leaders to goal hexes (`GenericMove(1016)` until an Indian unit stands on
-1016) that the Macedonian line blocks; units already next to the enemy
-report "could not move", as the original's `MoveToward` would, so whether
-the original stalls the same way is not yet checked.
+* **Leader movement** (`FUN_00561d02`, step cost `FUN_005655da`): any of
+  the six directions within his remaining movement; a step costs 1 + the
+  height difference and is impossible across an impassable side or two or
+  more levels; terrain does not matter. He may not enter a hex holding an
+  enemy or next to one, and may end only in an empty hex. `MoveToward` sends
+  him to the target if he can end there, else to the nearest hex he can.
+
+**AI against AI**, each side's first plan, up to 30 turns:
+
+| battle | result |
+|---|---|
+| Granicus | Macedonians win, turn 7 |
+| Hydaspes | Indians win, turn 6 |
+| Chaeronea | Macedonians win, turn 9 |
+| Gaugamela | Persians win, turn 8 |
+| Lyginus | Danubians win, turn 8 |
+| Pelium | Danubians win, turn 7 |
+| Samarkand | Persians win, turn 9 |
+| Issus, Arigaeum, Jaxartes | no verdict in 30 turns |
+
+**Checked against the original** (Hydaspes, Wine). The original allows
+only one computer army (the Leader Control dialog flips the other to
+Player), so the comparison is the Macedonian AI against Indians that give
+no orders (`gboh-tools ai … HYDASPES.SCN 2 home names`), read from the
+original's Running Commentary. The original played the first plan in the
+scenario's list (`MHYDAS3`). Over two turns the same leaders move the same
+units: Alexander's Sogdia runs into India 3's javelins; Craterus moves
+Prmsida, Arachos and Companions (Craterus); Coenus's Companions (Demetrius)
+and Agema Companions draw javelins; Antigenes moves the Cleitus, Gorgias,
+Attalus and Meleager phalanxes; Tauron's Macedonia 1 archers advance on
+India 1. Activation order and dice differ (the original's random seed is
+not reproduced).
+
+**Longer run, same setup (7 turns).** Rout points lost at each turn end,
+Macedonians / Indians:
+
+| turn | original | rewrite |
+|---|---|---|
+| 3 | 0 / 9 | 0 / 0 |
+| 4 | 15 / 20 | 0 / 2 |
+| 5 | 57 / 20 | 6 / 4 |
+| 6 | 57 / 22 | 7 / 4 |
+| 7 | 66 / 22 | 7 / 4 |
+
+The original is far bloodier. On its turn 4 the Antigenes phalanxes charge
+the elephant line and Meleager, Cleitus and Coenus rout at once; most of
+the Macedonian loss then comes from failed rallies (terminal routs of
+phalanxes, 14 rout points each). In the rewrite the same attack happens
+but costs the phalanxes almost nothing, so the melee against elephants (or
+the check before contact) differs and needs checking from an identical
+position. Routed elephants rampage in the original (now implemented, see
+`Game::rampage`).
+
+The commentary also showed that **AI leaders always try for momentum**, and
+that after a successful momentum the leader's units move again, those that
+had already moved taking the "ordered again" cohesion hit (Craterus's
+Prmsida, Arachos and Companions; Antigenes's four phalanxes). The rewrite
+now does both (`Game::momentum_refresh`; 🟡 the original's
+`FUN_0052b2e2` restores movement and clears "done", but the message that
+triggers it is not traced). Two
+script behaviours that look like bugs are the original's: `AttackInZOC`
+attacks at the first occupied hex in front even if the unit there is a
+friend, and units next to the enemy they were sent at report "could not
+move".
+
+## Saved games (`*.alx`) 🟡 units only
+
+The original autosaves during play (`DATA/Autosave.alx`). The file starts
+with a title (`Autosaved Game: Hydaspes; Turn #8; Spitaces`) and the
+scenario file name, then the Running Commentary text, then the sprites'
+state (art titles), then the logical units, then activation state and the
+AI plan files in use (`mhydas3.ai`). `gboh_game::save` reads the units:
+
+* **Order:** combat units of the home army in scenario order, then the
+  visitor's, then the leaders the same way.
+* **Base record** (`FUN_00529e9f`), 2-byte values unless noted: movement
+  left, unknown, done, ordered again, unknown, a flag adding one trailing
+  value, hex (`x * 100 + y`), second hex, facing (4 bytes), out of the
+  battle.
+* **Combat units** (`FUN_00536c6a`) add hits, routed and two unknown
+  values (with the flag above: one more value and a counted list); missile
+  units (`FUN_0056c1ee`) add missiles left and two unknown values. Chariots
+  save the missile values or not depending on their class (not decoded;
+  the reader takes whichever form lets the next record parse).
+* **Leaders** (`FUN_005622d4`): a flag with 20 bytes of activation state,
+  a flag with the four ratings, a chain of named entries, then the base
+  record. A killed leader keeps a stale record with no valid hex.
+
+The section is found by its shape (the first offset where every record
+parses). Checked: the turn-8 autosave of the Hydaspes comparison gives 66
+and 22 rout points lost, as the original's Game Overview showed.
+`gboh-tools ai … save=F` starts a match from a save.

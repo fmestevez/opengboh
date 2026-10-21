@@ -10,18 +10,18 @@
 //! `HexOccupancy`, `IsLeader`, `IsEnemy`, `InCommandRange`, `CanBeOrdered`,
 //! `AssignList`, `Random`, `GetTurnNum`, `Recover`, the order count (one
 //! per new unit), `Direction`, `IsInGeneralDir`, `Rotate`, `TurnToAttack`,
-//! `AnyoneToCombat`, `CanMove`, `FindClosestEnemyToAttack` and
-//! `MoveToward`'s choice of hex follow the original's code (ties between
+//! `AnyoneToCombat`, `CanMove`, `FindClosestEnemyToAttack`, `Attack`,
+//! `Fire`, `EnemyWithinRange`, `FindHurtingUnit` and `MoveToward`'s choice
+//! of hex follow the original's code (ties between
 //! equally good hexes are broken by position here; the original's order is
 //! its internal set order). 🟡
-//! The others are written from their names and how the scripts use them;
-//! their code (unit methods) is not traced yet.
+//! Leader movement follows the original's code too.
 
 use crate::ai::Host;
 use crate::battle::{UnitState, neighbour};
 use crate::game::Game;
 use crate::hex::Hex;
-use crate::movement::{MoveClass, arc, forward, in_enemy_zoc, on_map, reachable};
+use crate::movement::{MoveClass, arc, forward, leader_moves, on_map, reachable};
 use crate::orders;
 
 /// Script nation numbers for the scenario's nation bytes (the original's
@@ -145,8 +145,9 @@ impl<'a> AiHost<'a> {
             .collect()
     }
 
-    /// Whether `unit` can take an order now: a unit in the leader's
-    /// command, or the leader himself if he has not moved.
+    /// Whether `unit` can take an order now (`CanBeOrdered`, the unit's
+    /// flag set at activation): a unit in the leader's command that had not
+    /// moved, not yet done; or the leader himself if he has not moved.
     fn can_be_ordered(&self, unit: usize) -> bool {
         if Some(unit) == self.leader() {
             return !self.leader_moved;
@@ -332,29 +333,27 @@ impl<'a> AiHost<'a> {
         }
     }
 
-    /// Leaders move up to nine hexes in any direction, never into an enemy
-    /// zone of control or an occupied hex (🟡 terrain is ignored).
+    /// A leader moves to `target` if he can end there, else to the hex he
+    /// can end in nearest it (see `movement::leader_moves`); once per
+    /// activation.
     fn move_leader(&mut self, target: Hex, l: usize) -> i32 {
-        if self.leader_moved || !self.charge(l) {
+        if self.leader_moved {
             return 0;
         }
-        let side = self.game.battle.units[l].side;
-        let mut here = self.game.battle.units[l].hex;
-        let start = here;
-        for _ in 0..9 {
-            let next = here.neighbours().into_iter().filter(|&n| {
-                on_map(&self.game.map, n)
-                    && !in_enemy_zoc(&self.game.battle, side, n)
-                    && self.game.battle.units.iter().all(|o| o.state == UnitState::Gone || o.hex != n || o.side == side)
-            });
-            match next.min_by_key(|n| n.distance(target)) {
-                Some(n) if n.distance(target) < here.distance(target) => here = n,
-                _ => break,
-            }
+        let here = self.game.battle.units[l].hex;
+        let mp = self.game.battle.units[l].mp;
+        let options = leader_moves(&self.game.battle, &self.game.map, l, mp);
+        let to = if options.contains(&target) {
+            target
+        } else {
+            *options.iter().min_by_key(|h| (h.distance(target), h.x, h.y)).unwrap_or(&here)
+        };
+        if to == here || !self.charge(l) {
+            return 0;
         }
         self.leader_moved = true;
-        self.game.battle.units[l].hex = here;
-        if here == start { 0 } else { 2 }
+        self.game.battle.units[l].hex = to;
+        2
     }
 
     /// `AnyoneToCombat` (the original's priorities): among enemies the unit
@@ -558,24 +557,32 @@ impl Host for AiHost<'_> {
                     .min_by_key(|&e| (self.game.battle.units[e].hex.distance(s.hex), e))
                     .map_or(-1, |e| hex_id(self.game.battle.units[e].hex))
             }),
+            // any enemy, leaders included, within the radius
             "enemywithinrange" => self.unit(arg(0)).is_some_and(|u| {
-                let here = self.game.battle.units[u].hex;
-                self.enemies_of(u).any(|e| self.game.battle.units[e].hex.distance(here) <= arg(1))
+                let b = &self.game.battle;
+                let (here, side) = (b.units[u].hex, b.units[u].side);
+                b.units.iter().any(|o| o.side != side && o.state != UnitState::Gone && o.hex.distance(here) <= arg(1))
             }) as i32,
             "turntoattack" => self.unit(arg(0)).map_or(-1, |u| self.turn_to_attack(u)),
             "canattack" => match (self.unit(arg(0)), hex_of(arg(1))) {
                 (Some(u), Some(h)) => self.game.in_front(u).iter().any(|&e| self.game.battle.hexes(e).contains(&h)) as i32,
                 _ => 0,
             },
+            // attacks everyone in its zone of control, the unit on `hex` (if
+            // any) as the primary target; always 1
             "attack" => {
-                let (Some(u), Some(h)) = (self.unit(arg(0)), hex_of(arg(1))) else { return Some(0) };
-                let Some(t) = self.game.in_front(u).into_iter().find(|&e| self.game.battle.hexes(e).contains(&h)) else {
-                    return Some(0);
-                };
-                if !self.charge(u) {
-                    return Some(0);
+                let (Some(u), h) = (self.unit(arg(0)), hex_of(arg(1))) else { return Some(1) };
+                let front = self.game.in_front(u);
+                let target = front.iter().copied().find(|&e| h.is_some_and(|h| self.game.battle.hexes(e).contains(&h))).or(front.first().copied());
+                if let Some(t) = target
+                    && self.charge(u)
+                {
+                    self.game.designate_shock(u, t);
                 }
-                self.game.designate_shock(u, t) as i32
+                if self.can_be_ordered(u) {
+                    self.game.spend(u, true);
+                }
+                1
             }
             "fire" => {
                 let (Some(u), Some(h)) = (self.unit(arg(0)), hex_of(arg(1))) else { return Some(0) };
@@ -583,7 +590,11 @@ impl Host for AiHost<'_> {
                 if !self.charge(u) {
                     return Some(0);
                 }
-                orders::volley(&mut self.game.battle, u, t, &mut self.game.rng).is_ok() as i32
+                let ok = orders::volley(&mut self.game.battle, u, t, &mut self.game.rng).is_ok();
+                if ok {
+                    self.game.spend(u, false);
+                }
+                ok as i32
             }
             "attempttorally" => {
                 let (Some(u), Some(l)) = (self.unit(arg(0)), self.leader()) else { return Some(0) };
@@ -617,16 +628,28 @@ impl Host for AiHost<'_> {
                 }
                 let ini = self.game.battle.units[l].leader.map_or(0, |r| r.initiative);
                 orders::recover(&mut self.game.battle, u, ini, &mut self.game.rng);
+                self.game.spend(u, true);
                 1
             }
+            // every friendly unit on the map: the nearest routed one if the
+            // leader's initiative is over 3, else the nearest with hits
             "findhurtingunit" => {
+                let Some(l) = self.leader() else { return Some(-1) };
                 let b = &self.game.battle;
-                self.group
-                    .iter()
-                    .copied()
-                    .max_by_key(|&u| (b.units[u].state == UnitState::Routed, b.units[u].hits))
-                    .filter(|&u| b.units[u].hits > 0)
-                    .map_or(-1, |u| hex_id(b.units[u].hex))
+                let (lh, side) = (b.units[l].hex, b.units[l].side);
+                let ini = b.units[l].leader.map_or(0, |r| r.initiative);
+                let nearest = |routed: bool| {
+                    b.units
+                        .iter()
+                        .filter(|o| o.side == side && o.leader.is_none() && o.state != UnitState::Gone)
+                        .filter(|o| if routed { o.state == UnitState::Routed } else { o.state == UnitState::Fighting && o.hits > 0 })
+                        .min_by_key(|o| o.hex.distance(lh))
+                        .map(|o| hex_id(o.hex))
+                };
+                match (ini > 3, nearest(true)) {
+                    (true, Some(h)) => h,
+                    _ => nearest(false).unwrap_or(-1),
+                }
             }
             _ => return None,
         })

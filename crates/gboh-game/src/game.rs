@@ -9,7 +9,7 @@ use crate::activation::Activation;
 use crate::battle::{Battle, UnitState};
 use crate::combat::{LeaderCasualty, rout_points};
 use crate::command::commanded;
-use crate::orders::{CommandPoints, resupply};
+use crate::orders::{self, CommandPoints, resupply};
 use crate::rout::{Flight, flee};
 use crate::shock::{self, Outcome};
 use gboh_formats::crt::BorlandRand;
@@ -34,6 +34,8 @@ pub struct Game {
     pub points: Option<CommandPoints>,
     /// Units resupplied at this activation (they may not be ordered).
     pub resupplied: Vec<usize>,
+    /// Units the active leader may still order, fixed at activation.
+    orderable_now: Vec<usize>,
     /// Shocks designated by the active leader.
     pub shocks: Vec<Designation>,
 }
@@ -61,6 +63,7 @@ impl Game {
             ],
             points: None,
             resupplied: Vec::new(),
+            orderable_now: Vec::new(),
             shocks: Vec::new(),
         }
     }
@@ -84,14 +87,27 @@ impl Game {
             }
             None => Vec::new(),
         };
+        // who may take orders is fixed now (the original's FUN_005235b8):
+        // units in command that have not moved this turn and are not done
+        self.orderable_now = leader.map_or_else(Vec::new, |l| commanded(&self.battle, l));
+        let b = &self.battle;
+        let resupplied = &self.resupplied;
+        self.orderable_now.retain(|&u| b.units[u].mp == b.units[u].max_mp && !b.units[u].done && !resupplied.contains(&u));
         leader
+    }
+
+    /// `unit` may take no more orders this activation; `done` also keeps it
+    /// from being ordered again this turn (after a shock or a recovery).
+    pub fn spend(&mut self, unit: usize, done: bool) {
+        self.orderable_now.retain(|&u| u != unit);
+        if done {
+            self.battle.units[unit].done = true;
+        }
     }
 
     /// Units the active leader can order.
     pub fn orderable(&self) -> Vec<usize> {
-        let mut units = self.activation.active().map_or_else(Vec::new, |l| commanded(&self.battle, l));
-        units.retain(|u| !self.resupplied.contains(u));
-        units
+        self.orderable_now.clone()
     }
 
     /// Designate a shock for resolution when the leader finishes.
@@ -124,6 +140,9 @@ impl Game {
         let u = &self.battle.units[unit];
         let front = self.in_front(unit);
         let t = &self.battle.units[target];
+        if u.state == UnitState::Routed {
+            return false;
+        }
         let skirmisher = crate::movement::MoveClass::of_type(u.type_id) == Some(crate::movement::MoveClass::Skirmisher);
         let soft = matches!(t.type_id, 22 | 23) || t.state == UnitState::Routed;
         if !front.contains(&target) || (skirmisher && u.type_id != 42 && !soft) {
@@ -162,8 +181,30 @@ impl Game {
             }
             outcomes.push(out);
         }
+        let before = self.activation.active();
         let next = self.activation.next(&self.battle, momentum, &mut self.rng);
+        if let (Some(l), true) = (next, next == before) {
+            self.momentum_refresh(l);
+        }
         (outcomes, self.activate(next))
+    }
+
+    /// A successful momentum: the leader's units get their movement back
+    /// and may be ordered again; one that has already moved this turn takes
+    /// a cohesion hit the first time it moves again ("ordered again"). 🟡
+    /// Modelled on the original's commentary at Hydaspes; the original
+    /// restores movement and clears "done" in `FUN_0052b2e2`, but the
+    /// message that triggers it is not traced.
+    fn momentum_refresh(&mut self, leader: usize) {
+        for u in commanded(&self.battle, leader) {
+            let unit = &mut self.battle.units[u];
+            if unit.mp < unit.max_mp {
+                unit.reordered = true;
+            }
+            unit.mp = unit.max_mp;
+            unit.turned = false;
+            unit.done = false;
+        }
     }
 
     /// Apply a leader casualty: finished for the turn; wounded (command
@@ -247,8 +288,75 @@ impl Game {
         )
     }
 
+    /// A routed elephant rampages, then is out of the battle (the original's
+    /// `FUN_00544b65`): up to four legs; each rolls `rand() % 10`, 7–9
+    /// ending the rampage, else charging three hexes N (0, 1), NE (2), SE
+    /// (3), S (4), SW (5) or NW (6), until it runs off the map. Every unit
+    /// in a hex it enters takes 1 cohesion hit if the elephant comes in
+    /// through its front, 2 otherwise (cavalry, lancers and chariots always
+    /// 2; routed units, chariots and oxybeles none); cavalry and leaders
+    /// may withdraw first, and a leader who cannot is killed. Units it
+    /// breaks rout. Returns the units it hit.
+    pub fn rampage(&mut self, elephant: usize) -> Vec<usize> {
+        use crate::movement::MoveClass::*;
+        self.battle.units[elephant].state = UnitState::Routed;
+        let mut here = self.battle.units[elephant].hex;
+        let mut hit = Vec::new();
+        'legs: for _ in 0..4 {
+            let side = match self.rng.next() % 10 {
+                0 | 1 => 1,
+                2 => 2,
+                3 => 4,
+                4 => 5,
+                5 => 6,
+                6 => 8,
+                _ => break,
+            };
+            for _ in 0..3 {
+                let Some(next) = crate::battle::neighbour(here, side).filter(|&h| crate::movement::on_map(&self.map, h)) else {
+                    break 'legs;
+                };
+                let at: Vec<usize> = (0..self.battle.units.len())
+                    .filter(|&u| u != elephant && self.battle.units[u].state != UnitState::Gone && self.battle.hexes(u).contains(&next))
+                    .collect();
+                for u in at {
+                    let o = self.battle.units[u].clone();
+                    let class = crate::movement::MoveClass::of_type(o.type_id);
+                    if o.leader.is_some() {
+                        if !orders::withdraw(&mut self.battle, &self.map, u, elephant, &mut self.rng) {
+                            self.battle.units[u].state = UnitState::Gone;
+                        }
+                        continue;
+                    }
+                    let horse = matches!(class, Some(HeavyCavalry | LightCavalry | Lancer));
+                    if horse && orders::withdraw(&mut self.battle, &self.map, u, elephant, &mut self.rng) {
+                        continue;
+                    }
+                    if o.state == UnitState::Routed || matches!(class, Some(Chariot | Oxybeles)) {
+                        continue;
+                    }
+                    let frontal = crate::shock::angle(o.hex, o.facing, here) == 0;
+                    let n = if frontal && !horse { 1 } else { 2 };
+                    self.battle.units[u].hits += n;
+                    hit.push(u);
+                    let o = &self.battle.units[u];
+                    if o.hits >= o.tq as i32 {
+                        self.rout(u, 2);
+                    }
+                }
+                here = next;
+            }
+        }
+        self.battle.units[elephant].state = UnitState::Gone;
+        hit
+    }
+
     /// Rout a unit: flee `steps` hexes, or leave the battle.
     pub fn rout(&mut self, unit: usize, steps: u32) {
+        if crate::movement::MoveClass::of_type(self.battle.units[unit].type_id) == Some(crate::movement::MoveClass::Elephant) {
+            self.rampage(unit);
+            return;
+        }
         self.battle.units[unit].state = UnitState::Routed;
         let (path, gone) = match flee(&self.battle, &self.map, unit, steps) {
             Flight::Moved(p) => (p, false),
@@ -281,6 +389,9 @@ impl Game {
         for u in &mut self.battle.units {
             u.mp = u.max_mp;
             u.turned = false;
+            u.reordered = false;
+            u.reorder_hit = false;
+            u.done = false;
         }
         self.activation.turn += 1;
         self.verdict()
@@ -341,6 +452,9 @@ mod tests {
             missile: None,
             fired: false,
             wounded: false,
+            reordered: false,
+            reorder_hit: false,
+            done: false,
         }
     }
 
@@ -363,6 +477,7 @@ mod tests {
             armies: [(2, 10), (1, 6)],
             points: None,
             resupplied: Vec::new(),
+            orderable_now: Vec::new(),
             shocks: Vec::new(),
         }
     }
@@ -415,6 +530,41 @@ mod tests {
         assert_eq!(g.shocks[0].1, vec![1, 2]);
         // not behind
         assert!(!g.designate_shock(0, 3));
+    }
+
+    #[test]
+    fn momentum_lets_moved_units_go_again_at_a_cost() {
+        let r = LeaderRatings { charisma: 1, command_range: 9, initiative: 3, personal_combat: 1 };
+        let mut g = game(vec![unit(4, 2, Hex::new(2, 2), Some(r)), unit(31, 2, Hex::new(4, 4), None)]);
+        g.battle.units[1].mp = 1;
+        g.momentum_refresh(0);
+        assert_eq!(g.battle.units[1].mp, 5);
+        let m = g.map.clone();
+        crate::orders::move_to(&mut g.battle, &m, 1, Hex::new(5, 4), &mut BorlandRand::new(1)).unwrap();
+        assert_eq!(g.battle.units[1].hits, 1);
+        // only once a turn
+        crate::orders::move_to(&mut g.battle, &m, 1, Hex::new(6, 4), &mut BorlandRand::new(1)).unwrap();
+        assert_eq!(g.battle.units[1].hits, 1);
+    }
+
+    #[test]
+    fn routed_elephants_rampage_and_leave() {
+        let mut g = game(vec![unit(23, 1, Hex::new(6, 6), None)]);
+        // surround it so any direction hits someone
+        for n in Hex::new(6, 6).neighbours() {
+            g.battle.units.push(unit(31, 2, n, None));
+        }
+        g.battle.units[0].tq = 6;
+        let mut any = false;
+        for seed in 1..20 {
+            let mut h = g.battle.clone();
+            std::mem::swap(&mut h, &mut g.battle);
+            g.rng = BorlandRand::new(seed);
+            any |= !g.rampage(0).is_empty();
+            assert_eq!(g.battle.units[0].state, UnitState::Gone);
+            std::mem::swap(&mut h, &mut g.battle);
+        }
+        assert!(any);
     }
 
     #[test]

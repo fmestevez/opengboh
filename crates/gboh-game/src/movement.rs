@@ -107,6 +107,49 @@ fn elevation(map: &Map, h: Hex) -> i32 {
 
 /// Movement points to step from `from` into its neighbour in direction
 /// `dir` for a unit of class `class`, or `None` if the terrain forbids it.
+/// A leader's step (the original's `FUN_005655da`): 1 + the height
+/// difference, impossible across an impassable side or up or down two
+/// levels or more; the terrain does not matter.
+pub fn leader_step_cost(map: &Map, from: Hex, dir: usize) -> Option<i32> {
+    let to = from.neighbours()[dir];
+    if !on_map(map, to) || map.side_features(from.x as usize, from.y as usize, SIDES[dir]).contains(&IMPASSABLE_SIDE) {
+        return None;
+    }
+    let d = (elevation(map, from).max(1) - elevation(map, to).max(1)).abs();
+    (d < 2).then_some(d + 1)
+}
+
+/// Where a leader can end a move with `points` (the original's
+/// `FUN_00561d02`): any of the six directions, never into a hex holding an
+/// enemy or next to one, ending only in an empty hex (or staying put).
+pub fn leader_moves(battle: &Battle, map: &Map, leader: usize, points: i32) -> Vec<Hex> {
+    let l = &battle.units[leader];
+    let enemy_at = |h: Hex| battle.units.iter().any(|u| u.side != l.side && u.state != UnitState::Gone && u.hex == h);
+    let blocked = |h: Hex| enemy_at(h) || h.neighbours().into_iter().any(enemy_at);
+    let mut best: HashMap<Hex, i32> = HashMap::from([(l.hex, 0)]);
+    let mut heap = BinaryHeap::from([(0i32, l.hex.x, l.hex.y)]);
+    while let Some((neg, x, y)) = heap.pop() {
+        let (spent, here) = (-neg, Hex::new(x, y));
+        if best.get(&here).is_some_and(|&b| b < spent) {
+            continue;
+        }
+        for d in 0..6 {
+            let Some(c) = leader_step_cost(map, here, d) else { continue };
+            let to = here.neighbours()[d];
+            let total = spent + c;
+            if total > points || blocked(to) || best.get(&to).is_some_and(|&b| b <= total) {
+                continue;
+            }
+            best.insert(to, total);
+            heap.push((-total, to.x, to.y));
+        }
+    }
+    let empty = |h: &Hex| battle.units.iter().enumerate().all(|(i, u)| i == leader || u.state == UnitState::Gone || u.hex != *h);
+    let mut out: Vec<Hex> = best.into_keys().filter(|h| *h != l.hex && empty(h)).collect();
+    out.push(l.hex);
+    out
+}
+
 pub fn step_cost(map: &Map, class: MoveClass, from: Hex, dir: usize) -> Option<i32> {
     let to = from.neighbours()[dir];
     if !on_map(map, to) {
@@ -328,7 +371,23 @@ mod tests {
             missile: None,
             fired: false,
             wounded: false,
+            reordered: false,
+            reorder_hit: false,
+            done: false,
         }
+    }
+
+    #[test]
+    fn leaders_keep_away_from_enemies() {
+        let map = flat_map(12, 12);
+        let mut l = unit(4, 2, Hex::new(3, 5), 3);
+        l.leader = Some(crate::battle::LeaderRatings { charisma: 1, command_range: 4, initiative: 3, personal_combat: 1 });
+        let battle = Battle { units: vec![l, unit(31, 1, Hex::new(6, 5), 7), unit(31, 2, Hex::new(3, 4), 3)] };
+        let m = leader_moves(&battle, &map, 0, 2);
+        // any direction, two steps, but not next to the enemy nor onto a friend
+        assert!(m.contains(&Hex::new(1, 5)) && m.contains(&Hex::new(3, 7)));
+        assert!(!m.contains(&Hex::new(5, 5)) && !m.contains(&Hex::new(3, 4)));
+        assert!(m.contains(&Hex::new(3, 5)));
     }
 
     #[test]

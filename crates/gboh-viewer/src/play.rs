@@ -51,7 +51,7 @@ impl Play {
                 println!("AI error: {e}");
             }
             println!("computer: {name}");
-            self.finish_one();
+            self.finish_one(true);
         }
     }
 
@@ -182,14 +182,14 @@ impl Play {
         if self.over {
             return false;
         }
-        self.finish_one();
+        self.finish_one(false);
         self.computer_turns();
         true
     }
 
-    fn finish_one(&mut self) {
+    fn finish_one(&mut self, momentum: bool) {
         self.selected = None;
-        let (outcomes, next) = self.game.finish_leader(false);
+        let (outcomes, next) = self.game.finish_leader(momentum);
         let routed: usize = outcomes.iter().map(|o| o.routed.len() + o.eliminated.len()).sum();
         self.leader = next;
         if next.is_none() {

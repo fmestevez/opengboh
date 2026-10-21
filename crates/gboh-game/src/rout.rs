@@ -136,6 +136,9 @@ mod tests {
             missile: None,
             fired: false,
             wounded: false,
+            reordered: false,
+            reorder_hit: false,
+            done: false,
         }
     }
 

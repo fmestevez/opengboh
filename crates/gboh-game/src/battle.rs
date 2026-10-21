@@ -63,6 +63,13 @@ pub struct Unit {
     pub fired: bool,
     /// Leaders: wounded (a second wound kills) and finished for the turn.
     pub wounded: bool,
+    /// Given movement again by momentum after moving this turn: its next
+    /// move costs a cohesion hit (once).
+    pub reordered: bool,
+    pub reorder_hit: bool,
+    /// Done for the turn (after a shock order or a recovery): no leader
+    /// may order it again.
+    pub done: bool,
 }
 
 /// Where a unit stands in the battle.
@@ -160,6 +167,9 @@ impl Battle {
                     missile,
                     fired: false,
                     wounded: false,
+                    reordered: false,
+                    reorder_hit: false,
+                    done: false,
                 })
             })
             .collect();

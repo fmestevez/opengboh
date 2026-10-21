@@ -11,9 +11,11 @@
 //!   reach, optionally after turning it left or right.
 //! * `turns <DATA dir> <SCN file> <n>`: play n turns with no orders (the
 //!   turn loop: activation order, routs, victory check).
-//! * `ai <DATA dir> <SCN file> <n> [v]`: both armies played by the
-//!   original's AI scripts (each side's first plan) for n turns; `v` also
-//!   prints the scripts' debug output.
+//! * `ai <DATA dir> <SCN file> <n> [v] [home|visitor] [plan=N]`: armies
+//!   played by the original's AI scripts for n turns; `v` prints the
+//!   scripts' debug output, `home`/`visitor` plays only that army (the
+//!   other gives no orders), `plan=N` uses each side's Nth plan, `save=F`
+//!   starts from the original's saved game F (at its turn).
 //! * `render <DATA dir> <MAP or SCN file> <out.png> [in|normal|out]`: draw a
 //!   map (or a scenario's map with its units) with the faithful renderer.
 
@@ -59,7 +61,7 @@ fn main() -> Result<()> {
         Some("units") if args.len() == 4 => units(Path::new(&args[2]), &args[3]),
         Some("command") if args.len() == 4 => command(Path::new(&args[2]), &args[3]),
         Some("turns") if args.len() == 5 => turns(Path::new(&args[2]), &args[3], args[4].parse()?),
-        Some("ai") if args.len() >= 5 => ai(Path::new(&args[2]), &args[3], args[4].parse()?, args.get(5).map(String::as_str)),
+        Some("ai") if args.len() >= 5 => ai(Path::new(&args[2]), &args[3], args[4].parse()?, &args[5..]),
         Some("moves") if (5..=6).contains(&args.len()) => {
             moves(Path::new(&args[2]), &args[3], &args[4], args.get(5).map_or("", String::as_str))
         }
@@ -229,7 +231,15 @@ fn turns(data_dir: &Path, scn_file: &str, n: u32) -> Result<()> {
     Ok(())
 }
 
-fn ai(data_dir: &Path, scn_file: &str, n: u32, verbose: Option<&str>) -> Result<()> {
+fn ai(data_dir: &Path, scn_file: &str, n: u32, opts: &[String]) -> Result<()> {
+    let verbose = opts.iter().any(|o| o == "v");
+    // `home` / `visitor`: only that army is played; the other gives no orders
+    let only = opts.iter().find_map(|o| match o.as_str() {
+        "home" => Some(0),
+        "visitor" => Some(1),
+        _ => None,
+    });
+    let plan_no: usize = opts.iter().find_map(|o| o.strip_prefix("plan=")?.parse().ok()).unwrap_or(1);
     use gboh_game::ai::{Machine, Script};
     use gboh_game::battle::UnitState;
     use gboh_game::game::{Game, Verdict};
@@ -237,27 +247,52 @@ fn ai(data_dir: &Path, scn_file: &str, n: u32, verbose: Option<&str>) -> Result<
     let map = Map::parse(&fs::read(find_ci(data_dir, &scn.map_file)?)?)?;
     let mut load = |name: &str| find_ci(data_dir, name).ok().and_then(|p| fs::read(p).ok()).map(|d| String::from_utf8_lossy(&d).into_owned());
     let plan = |files: &[String], load: &mut dyn FnMut(&str) -> Option<String>| -> Result<Machine> {
-        let f = files.first().context("no AI plan")?;
+        let f = files.get(plan_no - 1).or(files.first()).context("no AI plan")?;
         println!("plan {f}");
         Ok(Machine::new(Script::load(f, load).map_err(|e| anyhow::anyhow!("{e}"))?))
     };
     let mut machines = [plan(&scn.home_ai, &mut load)?, plan(&scn.visitor_ai, &mut load)?];
     let mut game = Game::new(&scn, map, 1);
-    for turn in 1..=n {
+    let mut first = 1;
+    if let Some(path) = opts.iter().find_map(|o| o.strip_prefix("save=")) {
+        let data = fs::read(path)?;
+        let saved = gboh_game::save::read(&data, &game.battle, scn.home.nation).map_err(|e| anyhow::anyhow!("{}", e.0))?;
+        gboh_game::save::apply(&mut game.battle, &saved);
+        let t = gboh_game::save::turn(&data).unwrap_or(1);
+        game.activation.turn = t - 1;
+        first = t as u32;
+        println!("loaded {path}: turn {t}, rout points {} vs {}", game.rout_points(0), game.rout_points(1));
+    }
+    for turn in first..first + n {
         let mut next = game.begin_turn();
         while let Some(l) = next {
             let side = game.battle.units[l].side;
-            let m = &mut machines[if side == game.armies[0].0 { 0 } else { 1 }];
+            let army = if side == game.armies[0].0 { 0 } else { 1 };
+            let m = &mut machines[army];
             let before: Vec<_> = game.battle.units.iter().map(|u| (u.hex, u.facing)).collect();
-            let log = game.ai_orders(m).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let hits_before: Vec<i32> = game.battle.units.iter().map(|u| u.hits).collect();
+            let log = if only.is_none_or(|o| o == army) { game.ai_orders(m).map_err(|e| anyhow::anyhow!("{e}"))? } else { Vec::new() };
             let moved = game.battle.units.iter().zip(&before).filter(|(u, b)| (u.hex, u.facing) != **b).count();
             let used = game.points.as_ref().map_or(0, |p| p.used);
+            let moved_names: Vec<String> = game
+                .battle
+                .units
+                .iter()
+                .zip(&before)
+                .zip(&hits_before)
+                .filter(|((u, b), _)| (u.hex, u.facing) != **b)
+                .map(|((u, _), h)| if u.hits > *h { format!("{} (+{} hits)", u.name, u.hits - h) } else { u.name.clone() })
+                .collect();
             let shocks = game.shocks.len();
             let name = game.battle.units[l].name.clone();
-            let (out, n2) = game.finish_leader(false);
+            // the AI always tries for momentum (the original's commentary)
+            let (out, n2) = game.finish_leader(only.is_none_or(|o| o == army));
             let routed: usize = out.iter().map(|o| o.routed.len() + o.eliminated.len()).sum();
             println!("turn {turn} {name:24} orders {used:2}  units moved/turned {moved:2}  shocks {shocks}  routed {routed}");
-            if verbose.is_some() {
+            if opts.iter().any(|o| o == "names") && !moved_names.is_empty() {
+                println!("    moved: {}", moved_names.join(", "));
+            }
+            if verbose {
                 for line in log {
                     println!("    {line}");
                 }
@@ -279,7 +314,8 @@ fn ai(data_dir: &Path, scn_file: &str, n: u32, verbose: Option<&str>) -> Result<
             routed(game.armies[1].0)
         );
         if let Verdict::Won(a) = verdict {
-            println!("army {a} wins");
+            let names = ["Greeks", "Persians", "Macedonians", "Indians", "Danubians", "Scythians"];
+            println!("{} win", names.get(game.armies[a].0 as usize).unwrap_or(&"?"));
             break;
         }
     }
