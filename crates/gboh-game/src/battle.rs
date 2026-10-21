@@ -81,11 +81,18 @@ pub enum UnitState {
     /// Out of the battle: eliminated or terminally routed (its rout points
     /// count against its army).
     Gone,
+    /// Left the map by a scenario's exit (Pelium); not a loss.
+    Exited,
 }
 
 impl Unit {
     /// Whether the unit covers two hexes: the phalanx and double-sized
     /// hoplites.
+    /// Still on the battlefield (fighting or routed).
+    pub fn on_field(&self) -> bool {
+        matches!(self.state, UnitState::Fighting | UnitState::Routed)
+    }
+
     pub fn two_hex(&self) -> bool {
         matches!(self.type_id, 17 | 18)
     }
@@ -181,7 +188,7 @@ impl Battle {
         self.units
             .iter()
             .enumerate()
-            .filter(|(_, u)| u.leader.is_some() && u.state != UnitState::Gone)
+            .filter(|(_, u)| u.leader.is_some() && u.on_field())
             .map(|(i, _)| i)
     }
 

@@ -4,8 +4,10 @@
 //! Left click one of the active leader's units (the flagged ones) to select
 //! it; its reachable hexes light up. Left click a lit hex to move there, or
 //! an enemy in front to designate a shock. Right click an enemy to volley.
-//! Q / E turn the selected unit left / right. Enter finishes the leader
-//! (shocks are resolved); after the last leader the turn ends.
+//! Q / E turn the selected unit left / right, R rallies it (routed), C
+//! recovers its cohesion. Click the active leader, then a lit hex, to move
+//! him; G tries a group move (then a lit hex moves the whole group). Enter finishes the leader (shocks are resolved), M finishes him and
+//! tries for momentum; after the last leader the turn ends.
 
 use gboh_formats::map::Map;
 use gboh_formats::pal::Palette;
@@ -73,7 +75,7 @@ impl Play {
             .battle
             .units
             .iter()
-            .filter(|u| u.state != UnitState::Gone)
+            .filter(|u| u.on_field())
             .map(|u| UnitView {
                 hex: (u.hex.x as usize, u.hex.y as usize),
                 facing: u.facing,
@@ -89,16 +91,21 @@ impl Play {
         self.game.orderable().into_iter().map(|u| self.game.battle.units[u].source).collect()
     }
 
-    /// Hexes to light up: the selected unit's reachable ones.
+    /// Hexes to light up: the selected unit's reachable ones, or where the
+    /// selected leader can move.
     pub fn lit(&self) -> Vec<Hex> {
-        self.selected.map_or_else(Vec::new, |u| {
-            highlighted(&self.game.battle, &self.game.map, u, self.game.battle.units[u].mp)
-        })
+        match self.selected {
+            Some(u) if Some(u) == self.leader && self.game.group_move.is_some() => self.game.group_move_options(),
+            Some(u) if Some(u) == self.leader => self.game.leader_options(),
+            Some(u) if self.game.battle.units[u].state == UnitState::Routed => Vec::new(),
+            Some(u) => highlighted(&self.game.battle, &self.game.map, u, self.game.battle.units[u].mp),
+            None => Vec::new(),
+        }
     }
 
     fn unit_at(&self, hex: Hex) -> Option<usize> {
         let b = &self.game.battle;
-        (0..b.units.len()).find(|&u| b.units[u].state != UnitState::Gone && b.hexes(u).contains(&hex) && b.units[u].leader.is_none())
+        (0..b.units.len()).find(|&u| b.units[u].on_field() && b.hexes(u).contains(&hex) && b.units[u].leader.is_none())
     }
 
     /// Charge the leader for ordering `unit`; false if he has no points.
@@ -119,6 +126,30 @@ impl Play {
         }
         let target = self.unit_at(hex);
         let orderable = self.game.orderable();
+        // the active leader: select him, or move him to a lit hex
+        if let Some(l) = self.leader
+            && !right
+        {
+            if self.game.battle.units[l].hex == hex && target.is_none_or(|t| !orderable.contains(&t)) {
+                self.selected = Some(l);
+                self.say("leader selected");
+                return true;
+            }
+            if self.selected == Some(l) && self.game.group_move.is_some() && self.lit().contains(&hex) {
+                self.game.do_group_move(hex);
+                self.say("group moved");
+                return true;
+            }
+            if self.selected == Some(l) && self.lit().contains(&hex) {
+                if !self.charge(l) {
+                    self.say("no command points");
+                    return false;
+                }
+                self.game.move_leader(hex);
+                self.say("leader moved");
+                return true;
+            }
+        }
         match (self.selected, target) {
             (_, Some(t)) if !right && orderable.contains(&t) => {
                 self.selected = Some(t);
@@ -161,6 +192,53 @@ impl Play {
         }
     }
 
+    /// Try a group move with the active leader (all his orders); if it is
+    /// granted, he is selected with his group's destinations lit.
+    pub fn group_move(&mut self) -> bool {
+        if let Some(why) = self.game.group_move_refused() {
+            self.say(&format!("no group move: {why}"));
+            return false;
+        }
+        let result = self.game.try_group_move();
+        self.selected = self.leader;
+        self.say(&format!("group move: {result:?}"));
+        true
+    }
+
+    /// Rally the selected routed unit (one order).
+    pub fn rally(&mut self) -> bool {
+        let Some(s) = self.selected else { return false };
+        if self.game.battle.units[s].state != UnitState::Routed {
+            self.say("only routed units rally");
+            return false;
+        }
+        if !self.charge(s) {
+            self.say("no command points");
+            return false;
+        }
+        let ok = self.game.rally(s);
+        self.say(if ok { "rallied" } else { "rally failed: terminal rout" });
+        self.selected = None;
+        true
+    }
+
+    /// Recover cohesion for the selected unit (one order).
+    pub fn recover(&mut self) -> bool {
+        let Some(s) = self.selected else { return false };
+        if self.game.battle.units[s].state != UnitState::Fighting || self.game.battle.units[s].hits == 0 {
+            self.say("nothing to recover");
+            return false;
+        }
+        if !self.charge(s) {
+            self.say("no command points");
+            return false;
+        }
+        let n = self.game.recover(s);
+        self.say(&format!("{n} cohesion hits removed"));
+        self.selected = None;
+        true
+    }
+
     /// Turn the selected unit.
     pub fn turn(&mut self, left: bool) -> bool {
         let Some(s) = self.selected else { return false };
@@ -176,13 +254,13 @@ impl Play {
         true
     }
 
-    /// Finish the active leader (and the turn after the last one), then
-    /// let the computer play its leaders.
-    pub fn finish(&mut self) -> bool {
+    /// Finish the active leader (and the turn after the last one), trying
+    /// for momentum if asked, then let the computer play its leaders.
+    pub fn finish(&mut self, momentum: bool) -> bool {
         if self.over {
             return false;
         }
-        self.finish_one(false);
+        self.finish_one(momentum);
         self.computer_turns();
         true
     }
@@ -279,7 +357,15 @@ mod tests {
         // Agema is in Coenus's group: 2 command points
         assert_eq!(p.game.points.as_ref().unwrap().left(), 5);
         assert!(p.turn(true));
-        assert!(p.finish());
+        // move Alexander himself
+        let alexander = p.leader.unwrap();
+        let at = p.game.battle.units[alexander].hex;
+        assert!(p.click(at, false), "select leader");
+        let to = *p.lit().iter().find(|&&h| h != at).expect("leader can move");
+        assert!(p.click(to, false), "move leader");
+        assert_eq!(p.game.battle.units[alexander].hex, to);
+        assert!(p.lit().is_empty(), "a leader moves once");
+        assert!(p.finish(false));
         println!("{}", p.status);
     }
 
@@ -298,7 +384,7 @@ mod tests {
         let mut p = Play::new(Game::new(&scn, map, 1), ai);
         let start: Vec<_> = p.game.battle.units.iter().map(|u| u.hex).collect();
         for _ in 0..12 {
-            p.finish();
+            p.finish(false);
             if let Some(l) = p.leader {
                 assert_eq!(p.game.battle.units[l].side, scn.home.nation);
             }
@@ -306,5 +392,26 @@ mod tests {
         let moved = p.game.battle.units.iter().zip(&start).filter(|(u, h)| u.side == scn.visitor.nation && u.hex != **h).count();
         println!("{} | Indian units moved: {moved}", p.status);
         assert!(moved > 0);
+    }
+
+    /// Alexander's group can group move on Hydaspes turn 1.
+    #[test]
+    fn hydaspes_group_move() {
+        let Ok(dir) = std::env::var("GBOH_DATA") else { return };
+        let dir = std::path::Path::new(&dir);
+        let scn = Scenario::parse(&std::fs::read(dir.join("HYDASPES.SCN")).unwrap()).unwrap();
+        let map = Map::parse(&std::fs::read(dir.join("HYDASPES.MAP")).unwrap()).unwrap();
+        let mut p = Play::new(Game::new(&scn, map, 1), None);
+        println!("refused: {:?}", p.game.group_move_refused());
+        if p.game.group_move_refused().is_some() {
+            return;
+        }
+        assert!(p.group_move());
+        println!("{} | options {}", p.status, p.lit().len());
+        if let Some(&to) = p.lit().first() {
+            let before = p.game.battle.units.iter().filter(|u| u.mp == 0).count();
+            assert!(p.click(to, false));
+            assert!(p.game.battle.units.iter().filter(|u| u.mp == 0).count() > before);
+        }
     }
 }

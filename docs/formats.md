@@ -796,7 +796,19 @@ Also in the loop (🟡 from the manual unless noted):
 * **Routing through friends:** friendly units on a routed unit's path take
   one cohesion hit.
 
-Not yet: rampaging elephants and a computer opponent.
+* **Group move** (`FUN_00564572`; conditions from the manual): before
+  any other order, if every unit of the leader's group faces the same way,
+  is in command and is more than two hexes from any enemy. `rand() % 100`
+  below `(initiative − 2) × 20 + 30` grants a full group move, below
+  `(initiative − 2) × 20 + 50` a one-hex one (capped at 100); either way it
+  takes all his orders and rules out momentum. The group then steps
+  together through the two front sides of its facing, as far as the
+  slowest unit allows, never into an enemy zone of control. Every attempt
+  marks the leader; at his next activation the mark extends a streak
+  (`FUN_00565fa0`; reset if he did not try, or was in personal combat). With
+  a streak of one the roll is 30 lower; with two or more it is 0, a sure
+  pass (the manual's "Alexander is always able to complete a one-hex group
+  move with the correct conditions").
 
 ## AI scripts (`*.AI`) ✅ language / 🟡 built-ins
 
@@ -986,6 +998,13 @@ games, which with the replay above looks like the original's spread
 rather than a difference in rules.
 `gboh-tools ai … save=F seed=N` runs these replays.
 
+A leader may try for momentum only if he gave at least one order in that
+activation, did not group move and is on the map (`CanAttemptMomentum`,
+sent at the end of his orders, `FUN_00564374`). Every unit restores its
+movement and clears "done" on `BeginLeaderOrdersPhase` (`FUN_0052b2e2`);
+how that combines with the orderable rule and the "ordered again" flag in
+the original is not fully traced.
+
 The commentary also showed that **AI leaders always try for momentum**, and
 that after a successful momentum the leader's units move again, those that
 had already moved taking the "ordered again" cohesion hit (Craterus's
@@ -1025,3 +1044,31 @@ The section is found by its shape (the first offset where every record
 parses). Checked: the turn-8 autosave of the Hydaspes comparison gives 66
 and 22 rout points lost, as the original's Game Overview showed.
 `gboh-tools ai … save=F` starts a match from a save.
+
+## Victory 🟡 (`FUN_0054d45b`, `FUN_0054c265`, `FUN_0054d85c`)
+
+Checked at the end of each turn, the Macedonian army being the original's
+first side:
+
+1. **Rout levels:** an army whose lost rout points reach its level loses;
+   if both have, the one less far past its level wins, and a tie goes
+   against the Macedonians (the manual says for them).
+2. **Leaders:** if neither has broken, a killed Alexander loses the battle
+   for the Macedonians and a killed Darius for the Persians (`FUN_0054c265`
+   matches leader names).
+3. **Turn limits:** the Macedonians lose if no army has broken by the end
+   of turn 10 at Chaeronea, Lyginus, Pelium, Granicus, the Jaxartes,
+   Arigaeum and Hydaspes (the manual says Hydaspes has none), turn 5 at
+   Samarkand and turn 7 at Paraitacene; Issus and Gaugamela have none.
+4. **Pelium:** unrouted Macedonian units on the west edge (column 0, rows
+   5–20) leave across the Apsos, scoring their TQ; once 50 points have
+   gone, a Macedonian leader leaving there scores 1000, an immediate
+   Macedonian win. (Checked here as each leader finishes; the original
+   checks per unit.)
+
+Not found yet: the Jaxartes condition (the Scythians win if no unrouted
+Macedonian unit is north of the river by the end of turn 4).
+
+AI against AI with these rules (each side's first plan): every battle but
+Issus ends within 10 turns; Arigaeum and the Jaxartes end on the turn limit
+(Indian and Scythian wins).

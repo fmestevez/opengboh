@@ -51,7 +51,7 @@ pub fn flee(battle: &Battle, map: &Map, unit: usize, steps: u32) -> Flight {
         }
         let free = |h: Hex, allow_friends: bool| {
             battle.units.iter().enumerate().all(|(i, o)| {
-                i == unit || o.state == crate::battle::UnitState::Gone || o.hex != h || (allow_friends && o.side == u.side)
+                i == unit || !o.on_field() || o.hex != h || (allow_friends && o.side == u.side)
             })
         };
         let mut next = None;

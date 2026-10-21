@@ -21,7 +21,7 @@ use crate::ai::Host;
 use crate::battle::{UnitState, neighbour};
 use crate::game::Game;
 use crate::hex::Hex;
-use crate::movement::{MoveClass, arc, forward, leader_moves, on_map, reachable};
+use crate::movement::{MoveClass, arc, forward, on_map, reachable};
 use crate::orders;
 
 /// Script nation numbers for the scenario's nation bytes (the original's
@@ -119,8 +119,6 @@ pub struct AiHost<'a> {
     group_pos: usize,
     /// Set when the script calls `FinishLeader`.
     pub finished: bool,
-    /// Whether the leader has moved this activation.
-    pub leader_moved: bool,
     /// Debug output from `write` / `watch`.
     pub log: Vec<String>,
 }
@@ -128,7 +126,7 @@ pub struct AiHost<'a> {
 impl<'a> AiHost<'a> {
     pub fn new(game: &'a mut Game) -> Self {
         let group = Self::group_of(game);
-        Self { game, lists: Vec::new(), group, group_pos: 0, finished: false, leader_moved: false, log: Vec::new() }
+        Self { game, lists: Vec::new(), group, group_pos: 0, finished: false, log: Vec::new() }
     }
 
     /// The active leader's group: the units sharing his group number,
@@ -140,7 +138,7 @@ impl<'a> AiHost<'a> {
         (0..b.units.len())
             .filter(|&u| {
                 let o = &b.units[u];
-                o.leader.is_none() && o.side == b.units[l].side && o.group == b.units[l].group && o.state != UnitState::Gone
+                o.leader.is_none() && o.side == b.units[l].side && o.group == b.units[l].group && o.on_field()
             })
             .collect()
     }
@@ -150,7 +148,7 @@ impl<'a> AiHost<'a> {
     /// moved, not yet done; or the leader himself if he has not moved.
     fn can_be_ordered(&self, unit: usize) -> bool {
         if Some(unit) == self.leader() {
-            return !self.leader_moved;
+            return !self.game.leader_moved;
         }
         self.game.orderable().contains(&unit)
     }
@@ -337,12 +335,8 @@ impl<'a> AiHost<'a> {
     /// can end in nearest it (see `movement::leader_moves`); once per
     /// activation.
     fn move_leader(&mut self, target: Hex, l: usize) -> i32 {
-        if self.leader_moved {
-            return 0;
-        }
         let here = self.game.battle.units[l].hex;
-        let mp = self.game.battle.units[l].mp;
-        let options = leader_moves(&self.game.battle, &self.game.map, l, mp);
+        let options = self.game.leader_options();
         let to = if options.contains(&target) {
             target
         } else {
@@ -351,9 +345,7 @@ impl<'a> AiHost<'a> {
         if to == here || !self.charge(l) {
             return 0;
         }
-        self.leader_moved = true;
-        self.game.battle.units[l].hex = to;
-        2
+        self.game.move_leader(to) as i32 * 2
     }
 
     /// `AnyoneToCombat` (the original's priorities): among enemies the unit
@@ -449,7 +441,7 @@ impl Host for AiHost<'_> {
             "hexoccupancy" => {
                 let Some(h) = hex_of(arg(0)) else { return Some(-1) };
                 let b = &self.game.battle;
-                let mut at: Vec<usize> = (0..b.units.len()).filter(|&u| b.units[u].state != UnitState::Gone && b.hexes(u).contains(&h)).collect();
+                let mut at: Vec<usize> = (0..b.units.len()).filter(|&u| b.units[u].on_field() && b.hexes(u).contains(&h)).collect();
                 at.sort_by_key(|&u| b.units[u].leader.is_some());
                 at.first().map_or(-1, |&u| u as i32)
             }
@@ -543,7 +535,7 @@ impl Host for AiHost<'_> {
                 let (here, side) = (b.units[u].hex, b.units[u].side);
                 b.units
                     .iter()
-                    .filter(|o| o.side != side && o.leader.is_none() && o.state != UnitState::Gone)
+                    .filter(|o| o.side != side && o.leader.is_none() && o.on_field())
                     .min_by_key(|o| (o.hex.distance(here), o.hex.x, o.hex.y))
                     .map_or(-1, |o| hex_id(o.hex))
             }),
@@ -561,7 +553,7 @@ impl Host for AiHost<'_> {
             "enemywithinrange" => self.unit(arg(0)).is_some_and(|u| {
                 let b = &self.game.battle;
                 let (here, side) = (b.units[u].hex, b.units[u].side);
-                b.units.iter().any(|o| o.side != side && o.state != UnitState::Gone && o.hex.distance(here) <= arg(1))
+                b.units.iter().any(|o| o.side != side && o.on_field() && o.hex.distance(here) <= arg(1))
             }) as i32,
             "turntoattack" => self.unit(arg(0)).map_or(-1, |u| self.turn_to_attack(u)),
             "canattack" => match (self.unit(arg(0)), hex_of(arg(1))) {
@@ -597,38 +589,19 @@ impl Host for AiHost<'_> {
                 ok as i32
             }
             "attempttorally" => {
-                let (Some(u), Some(l)) = (self.unit(arg(0)), self.leader()) else { return Some(0) };
-                let (state, tq, hits) = {
-                    let unit = &self.game.battle.units[u];
-                    (unit.state, unit.tq, unit.hits)
-                };
+                let Some(u) = self.unit(arg(0)) else { return Some(0) };
                 // the original counts the order before trying
-                if !self.charge(u) || state != UnitState::Routed {
-                    return Some(0);
-                }
-                let ini = self.game.battle.units[l].leader.map_or(0, |r| r.initiative);
-                let rng = &mut self.game.rng;
-                match crate::rout::rally(tq, hits, ini, || rng.next() % 10) {
-                    Some(h) => {
-                        let unit = &mut self.game.battle.units[u];
-                        unit.hits = h;
-                        unit.state = UnitState::Fighting;
-                        1
-                    }
-                    None => {
-                        self.game.battle.units[u].state = UnitState::Gone;
-                        0
-                    }
-                }
-            }
-            "recover" => {
-                let (Some(u), Some(l)) = (self.unit(arg(0)), self.leader()) else { return Some(0) };
                 if !self.charge(u) {
                     return Some(0);
                 }
-                let ini = self.game.battle.units[l].leader.map_or(0, |r| r.initiative);
-                orders::recover(&mut self.game.battle, u, ini, &mut self.game.rng);
-                self.game.spend(u, true);
+                self.game.rally(u) as i32
+            }
+            "recover" => {
+                let Some(u) = self.unit(arg(0)) else { return Some(0) };
+                if !self.charge(u) {
+                    return Some(0);
+                }
+                self.game.recover(u);
                 1
             }
             // every friendly unit on the map: the nearest routed one if the
@@ -641,7 +614,7 @@ impl Host for AiHost<'_> {
                 let nearest = |routed: bool| {
                     b.units
                         .iter()
-                        .filter(|o| o.side == side && o.leader.is_none() && o.state != UnitState::Gone)
+                        .filter(|o| o.side == side && o.leader.is_none() && o.on_field())
                         .filter(|o| if routed { o.state == UnitState::Routed } else { o.state == UnitState::Fighting && o.hits > 0 })
                         .min_by_key(|o| o.hex.distance(lh))
                         .map(|o| hex_id(o.hex))

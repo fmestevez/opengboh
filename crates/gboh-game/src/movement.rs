@@ -124,7 +124,7 @@ pub fn leader_step_cost(map: &Map, from: Hex, dir: usize) -> Option<i32> {
 /// enemy or next to one, ending only in an empty hex (or staying put).
 pub fn leader_moves(battle: &Battle, map: &Map, leader: usize, points: i32) -> Vec<Hex> {
     let l = &battle.units[leader];
-    let enemy_at = |h: Hex| battle.units.iter().any(|u| u.side != l.side && u.state != UnitState::Gone && u.hex == h);
+    let enemy_at = |h: Hex| battle.units.iter().any(|u| u.side != l.side && u.on_field() && u.hex == h);
     let blocked = |h: Hex| enemy_at(h) || h.neighbours().into_iter().any(enemy_at);
     let mut best: HashMap<Hex, i32> = HashMap::from([(l.hex, 0)]);
     let mut heap = BinaryHeap::from([(0i32, l.hex.x, l.hex.y)]);

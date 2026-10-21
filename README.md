@@ -51,8 +51,11 @@ Given a scenario, the viewer also plays the battle hot seat (both sides by
 hand, early and incomplete): the window title shows the turn, the active
 leader and his command points. Click one of his flagged units to select it
 and light its reachable hexes; click a lit hex to move, or an enemy in front
-to designate a shock; right click an enemy to volley; Q/E turn the unit;
-Enter finishes the leader (his shocks are fought). Add `ai` after the
+to designate a shock; right click an enemy to volley; Q/E turn the unit,
+R rallies it, C recovers its cohesion; click the active leader and then a
+lit hex to move him; G tries a group move (all his orders; a lit hex then
+moves the whole group); Enter finishes the leader (his shocks are fought), M
+finishes him and tries for momentum. Add `ai` after the
 scenario to have the computer play the visitor army with the original's AI
 scripts; `gboh-tools ai <DATA> <SCN> <turns>` lets them play both sides.
 

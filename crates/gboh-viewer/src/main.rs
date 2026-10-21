@@ -9,8 +9,9 @@
 //! Keys: arrows/WASD or drag to scroll, wheel to scroll, 1/2/3 = zoom in /
 //! normal / out, +/- = pixel scale, space = toggle water animation, Esc =
 //! quit. With a scenario the battle can be played hot seat (see `play`):
-//! click units and hexes, Q/E to turn, right click to volley, Enter to
-//! finish a leader.
+//! click units and hexes, Q/E to turn, R to rally, C to recover, right
+//! click to volley, G to try a group move, Enter to finish a leader (M: and
+//! try for momentum).
 
 mod play;
 
@@ -456,7 +457,7 @@ impl ApplicationHandler for Viewer {
                     Key::Named(NamedKey::ArrowDown) => self.scroll(0.0, STEP),
                     Key::Named(NamedKey::Space) => self.animate = !self.animate,
                     Key::Named(NamedKey::Enter) => {
-                        if self.play.as_mut().is_some_and(|p| p.finish()) {
+                        if self.play.as_mut().is_some_and(|p| p.finish(false)) {
                             self.changed();
                         }
                     }
@@ -468,6 +469,26 @@ impl ApplicationHandler for Viewer {
                         "1" => self.set_level(0),
                         "2" => self.set_level(1),
                         "3" => self.set_level(2),
+                        "m" => {
+                            if self.play.as_mut().is_some_and(|p| p.finish(true)) {
+                                self.changed();
+                            }
+                        }
+                        "g" => {
+                            if self.play.as_mut().is_some_and(|p| p.group_move()) {
+                                self.changed();
+                            }
+                        }
+                        "r" => {
+                            if self.play.as_mut().is_some_and(|p| p.rally()) {
+                                self.changed();
+                            }
+                        }
+                        "c" => {
+                            if self.play.as_mut().is_some_and(|p| p.recover()) {
+                                self.changed();
+                            }
+                        }
                         "q" | "e" => {
                             if self.play.as_mut().is_some_and(|p| p.turn(c.eq_ignore_ascii_case("q"))) {
                                 self.changed();

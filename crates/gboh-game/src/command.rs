@@ -29,7 +29,7 @@ pub fn commanded(battle: &Battle, leader: usize) -> Vec<usize> {
         .filter(|&i| {
             let u = &battle.units[i];
             u.leader.is_none()
-                && u.state != crate::battle::UnitState::Gone
+                && u.on_field()
                 && u.side == l.side
                 && (in_range(u, l, ratings.command_range)
                     || subordinates.iter().any(|&s| {
