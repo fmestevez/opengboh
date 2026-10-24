@@ -1,0 +1,504 @@
+//! Setting up a battle as the original does: the start screen, choosing the
+//! scenario, and choosing which side the computer plays.
+//!
+//! The screens are drawn from the game's own art (`DIALOG.EIF`,
+//! `DLGBTN.EIF`, `BACKGND.EIF`, `CAMPAIGN.EIF` and the `MSSANS.EIF` font)
+//! laid out by the dialog templates in `alex.exe` (`STARTGAME`, `SCENARIO`,
+//! `INTRODLG`), whose dialog units are 7/4 pixels across and 13/8 down (so
+//! the start screen fills its 640 × 480 bitmap). Battle names and
+//! descriptions come from the executable's string table; the battles' places
+//! on the scenario map are the original's (`FUN_0059d56b`).
+
+use gboh_formats::pe::{Dialog, Resources};
+use gboh_render::{Canvas, Sprite};
+use std::path::Path;
+
+/// The battles in the original's order, with their scenario files.
+pub const SCENARIOS: [&str; 11] = [
+    "CHAERONE.SCN",
+    "LYGINUS.SCN",
+    "PELIUM.SCN",
+    "GRANICUS.SCN",
+    "ISSUS.SCN",
+    "GAUGAMEL.SCN",
+    "SAMARKAN.SCN",
+    "JAXARTES.SCN",
+    "ARIGAEUM.SCN",
+    "HYDASPES.SCN",
+    "PARAIT.SCN",
+];
+
+/// Where each battle's name is on the scenario map, `(x, y, w, h)` in
+/// pixels (the original's table).
+const PLACES: [(i32, i32, i32, i32); 11] = [
+    (38, 80, 79, 11),
+    (50, 38, 56, 11),
+    (29, 55, 61, 11),
+    (64, 67, 67, 11),
+    (119, 86, 41, 11),
+    (162, 88, 79, 11),
+    (242, 41, 82, 11),
+    (274, 30, 67, 11),
+    (283, 64, 68, 11),
+    (297, 76, 70, 11),
+    (211, 135, 91, 11),
+];
+
+/// Where each battle's label cel (`CAMPAIGN.EIF` strip `Battles`) lies in
+/// its place: it matches the name painted on the map there exactly.
+const LABEL_AT: [(i32, i32); 10] = [(9, 2), (9, 2), (10, 2), (9, 2), (9, 2), (9, 2), (2, 2), (1, 2), (1, 2), (2, 2)];
+
+/// String table ids of the battle names, and of their description lines.
+const NAME_IDS: [u16; 11] = [93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 80];
+const DESCRIPTION_IDS: [&[u16]; 11] =
+    [&[127, 128], &[129, 130], &[131, 132], &[133, 134], &[135], &[136, 137], &[138], &[139], &[140, 141], &[142], &[81, 82]];
+
+/// Dialog units to pixels.
+fn px((x, y): (i16, i16)) -> (i32, i32) {
+    (x as i32 * 7 / 4, y as i32 * 13 / 8)
+}
+
+/// Which screen is up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Screen {
+    Start,
+    Scenario { selected: Option<usize> },
+    /// Who plays each side (home, visitor): the computer or not.
+    Sides { battle: usize, computer: [bool; 2] },
+    /// The armies' rout levels (home, visitor) and the difficulty for the
+    /// home army (0 easy, 1 normal, 2 hard, 3 custom).
+    Rout { battle: usize, computer: [bool; 2], levels: [u16; 2], difficulty: usize },
+}
+
+/// The armies' rout levels for a difficulty, from the scenario's (home,
+/// visitor): easy gives the home army a quarter more and the visitor a
+/// quarter less, hard the other way round (measured in the original:
+/// Issus' 135 and 135 become 168 and 101).
+pub fn rout_levels(base: [u16; 2], difficulty: usize) -> [u16; 2] {
+    let more = |l: u16| (l as u32 * 5 / 4) as u16;
+    let less = |l: u16| (l as u32 * 3 / 4) as u16;
+    match difficulty {
+        0 => [more(base[0]), less(base[1])],
+        2 => [less(base[0]), more(base[1])],
+        _ => base,
+    }
+}
+
+/// What a click did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    Nothing,
+    Redraw,
+    Quit,
+    /// Play this scenario, the computer taking the sides marked (home,
+    /// visitor), with these rout levels.
+    Play { scenario: &'static str, computer: [bool; 2], levels: [u16; 2] },
+}
+
+pub struct Setup {
+    pub screen: Screen,
+    font: crate::ui::Font,
+    /// The brightest yellow of the palette, for the chosen battle.
+    yellow: u8,
+    button: Vec<Sprite>,
+    big_button: Vec<Sprite>,
+    radio: Vec<Sprite>,
+    start_art: Option<Sprite>,
+    map_art: Option<Sprite>,
+    marble: Option<Sprite>,
+    labels: Vec<Sprite>,
+    names: Vec<String>,
+    descriptions: Vec<Vec<String>>,
+    /// The two sides' names (home, visitor) of each battle, and their rout
+    /// levels.
+    sides: Vec<[String; 2]>,
+    rout: Vec<[u16; 2]>,
+    start: Option<Dialog>,
+    scenario: Option<Dialog>,
+    intro: Option<Dialog>,
+    rout_dialog: Option<Dialog>,
+}
+
+impl Setup {
+    /// The setup screens, from the game's `DATA` directory (and `alex.exe`
+    /// beside it, for text and layouts).
+    pub fn new(data_dir: &Path) -> Self {
+        use crate::ui::{cels, eif, first};
+        let dialog = eif(data_dir, "DIALOG.EIF");
+        let buttons = eif(data_dir, "DLGBTN.EIF");
+        let campaign = eif(data_dir, "CAMPAIGN.EIF");
+        let back = eif(data_dir, "BACKGND.EIF");
+        let yellow = crate::find_ci(data_dir, "GAME.PAL")
+            .and_then(|p| std::fs::read(p).ok())
+            .and_then(|d| gboh_formats::pal::Palette::parse(&d).ok())
+            .map_or(251, |pal| {
+                (10..246).min_by_key(|&i| {
+                    let [r, g, b] = pal.colors[i];
+                    (255 - r as i32).pow(2) + (230 - g as i32).pow(2) + (b as i32).pow(2)
+                }).unwrap_or(251) as u8
+            });
+        let exe = data_dir.parent().and_then(|p| crate::find_ci(p, "ALEX.EXE")).and_then(|p| std::fs::read(p).ok());
+        let res = exe.and_then(|d| Resources::parse(&d).ok());
+        let string = |id: u16| res.as_ref().and_then(|r| r.string(id));
+        let names = SCENARIOS
+            .iter()
+            .zip(NAME_IDS)
+            .map(|(file, id)| string(id).unwrap_or_else(|| file.trim_end_matches(".SCN").to_string()))
+            .collect();
+        let descriptions = DESCRIPTION_IDS.iter().map(|ids| ids.iter().filter_map(|&id| string(id)).collect()).collect();
+        // nation bytes 0 Greek, 1 Persian, 2 Macedonian, 3 Indian, 4
+        // Danubian, 5 Scythian; the string table has Greek, Macedonian,
+        // Persian, Danubian, Indian, Scythian from string 31
+        let nation = |n: u8| {
+            const ORDER: [u16; 6] = [0, 2, 1, 4, 3, 5];
+            ORDER.get(n as usize).and_then(|&k| string(31 + k)).unwrap_or_else(|| format!("Nation {n}"))
+        };
+        let scenarios: Vec<_> = SCENARIOS
+            .iter()
+            .map(|f| {
+                crate::find_ci(data_dir, f)
+                    .and_then(|p| std::fs::read(p).ok())
+                    .and_then(|d| gboh_formats::scn::Scenario::parse(&d).ok())
+            })
+            .collect();
+        let sides = scenarios
+            .iter()
+            .map(|scn| scn.as_ref().map_or_else(|| ["Home".into(), "Visitor".into()], |s| [nation(s.home.nation), nation(s.visitor.nation)]))
+            .collect();
+        let rout = scenarios
+            .iter()
+            .map(|scn| scn.as_ref().map_or([100, 100], |s| [s.home.rout_level as u16, s.visitor.rout_level as u16]))
+            .collect();
+        Self {
+            screen: Screen::Start,
+            font: crate::ui::Font::load(data_dir),
+            yellow,
+            button: cels(&buttons, "Pushbutton"),
+            big_button: cels(&buttons, "Big Pushbutton"),
+            radio: cels(&buttons, "Radio"),
+            start_art: first(&dialog, "Start Game"),
+            map_art: first(&dialog, "Campaign Map"),
+            marble: first(&back, "Blocks"),
+            labels: cels(&campaign, "Battles"),
+            names,
+            descriptions,
+            sides,
+            rout,
+            start: res.as_ref().and_then(|r| r.dialog("STARTGAME")),
+            scenario: res.as_ref().and_then(|r| r.dialog("SCENARIO")),
+            intro: res.as_ref().and_then(|r| r.dialog("INTRODLG")),
+            rout_dialog: res.as_ref().and_then(|r| r.dialog("ARMYROUTDLG")),
+        }
+    }
+
+    fn text_width(&self, text: &str) -> i32 {
+        self.font.width(text)
+    }
+
+    fn text(&self, canvas: &mut Canvas, text: &str, x: i32, y: i32) {
+        self.font.draw(canvas, text, x, y);
+    }
+
+    /// A push button at `rect` (dialog units) with its caption (the `&`
+    /// marking the shortcut left out).
+    fn button(&self, canvas: &mut Canvas, rect: (i16, i16, i16, i16), caption: &str) {
+        let (x, y) = px((rect.0, rect.1));
+        let (w, h) = px((rect.2, rect.3));
+        let art = if w > 120 { &self.big_button } else { &self.button };
+        if let Some(b) = art.first() {
+            canvas.blit(b, x + (w - b.width as i32) / 2, y + (h - b.height as i32) / 2);
+        }
+        let caption: String = caption.chars().filter(|&c| c != '&').collect();
+        self.text(canvas, &caption, x + (w - self.text_width(&caption)) / 2, y + (h - 11) / 2);
+    }
+
+    /// The control of `dialog` under pixel `(x, y)`, by id.
+    fn control_at(dialog: &Option<Dialog>, x: i32, y: i32) -> Option<u16> {
+        dialog.as_ref()?.controls.iter().find_map(|c| {
+            let (cx, cy) = px((c.rect.0, c.rect.1));
+            let (w, h) = px((c.rect.2, c.rect.3));
+            (x >= cx && x < cx + w && y >= cy && y < cy + h).then_some(c.id)
+        })
+    }
+
+    /// A marble canvas the size of `dialog`.
+    fn marble_canvas(&self, dialog: &Option<Dialog>, fallback: (i16, i16)) -> Canvas {
+        let (w, h) = px(dialog.as_ref().map_or(fallback, |d| d.size));
+        let mut canvas = Canvas::new(w as usize, h as usize, 0);
+        if let Some(m) = &self.marble {
+            canvas.tile(m, 0, 0);
+        }
+        canvas
+    }
+
+    /// The screen as it looks now.
+    pub fn canvas(&self) -> Canvas {
+        match self.screen {
+            Screen::Start => {
+                let mut canvas = Canvas::new(640, 480, 0);
+                if let Some(a) = &self.start_art {
+                    canvas.blit(a, 0, 0);
+                }
+                for c in self.start.iter().flat_map(|d| &d.controls) {
+                    self.button(&mut canvas, c.rect, &c.text);
+                }
+                canvas
+            }
+            Screen::Scenario { selected } => {
+                let mut canvas = Canvas::new(405, 396, 0);
+                if let Some(a) = &self.map_art {
+                    canvas.blit(a, 0, 0);
+                }
+                // the battle not painted on the map has its name written
+                let (x, y, _, _) = PLACES[10];
+                self.text(&mut canvas, &self.names[10].to_uppercase(), x, y);
+                if let Some(k) = selected {
+                    // the chosen battle's name stands out (🟡 how the
+                    // original marks it is not traced: here in yellow)
+                    let (x, y, _, _) = PLACES[k];
+                    if let (Some(l), Some(&(dx, dy))) = (self.labels.get(k), LABEL_AT.get(k)) {
+                        let mut lit = l.clone();
+                        for p in lit.pixels.iter_mut().filter(|p| **p != 0) {
+                            *p = self.yellow;
+                        }
+                        canvas.blit(&lit, x + dx, y + dy);
+                    } else if k == 10 {
+                        self.text(&mut canvas, &self.names[10].to_uppercase(), x + 1, y);
+                    }
+                    // and its description is on the scroll
+                    self.text(&mut canvas, &self.names[k], 70, 196);
+                    let mut line_y = 214;
+                    for line in &self.descriptions[k] {
+                        for part in wrap(line, 255, |t| self.text_width(t)) {
+                            self.text(&mut canvas, &part, 70, line_y);
+                            line_y += 12;
+                        }
+                    }
+                }
+                for c in self.scenario.iter().flat_map(|d| &d.controls) {
+                    // `More…` and `Units…` lie outside the dialog
+                    if c.rect.0 < 229 {
+                        self.button(&mut canvas, c.rect, &c.text);
+                    }
+                }
+                canvas
+            }
+            Screen::Sides { battle, computer } => {
+                let mut canvas = self.marble_canvas(&self.intro, (195, 115));
+                for c in self.intro.iter().flat_map(|d| &d.controls) {
+                    let (x, y) = px((c.rect.0, c.rect.1));
+                    match c.id {
+                        1 => self.button(&mut canvas, c.rect, &c.text),
+                        101 | 102 => self.text(&mut canvas, &self.sides[battle][(c.id - 101) as usize], x, y),
+                        103..=106 => {
+                            let side = ((c.id - 103) / 2) as usize;
+                            let on = computer[side] == (c.id % 2 == 1);
+                            if let Some(r) = self.radio.get(on as usize) {
+                                canvas.blit(r, x, y);
+                            }
+                            self.text(&mut canvas, &c.text, x + 16, y);
+                        }
+                        _ => self.text(&mut canvas, &c.text, x, y),
+                    }
+                }
+                canvas
+            }
+            Screen::Rout { battle, levels, difficulty, .. } => {
+                let mut canvas = self.marble_canvas(&self.rout_dialog, (184, 168));
+                // the armies' names and spinners, laid out as in the
+                // original (drawn by its code, not the template)
+                for (side, &centre) in ROUT_COLUMNS.iter().enumerate() {
+                    let name = &self.sides[battle][side];
+                    self.text(&mut canvas, name, centre - self.text_width(name) / 2, 16);
+                    let (x, y, w, h) = spinner(centre);
+                    frame(&mut canvas, (x, y, w, h));
+                    let value = levels[side].to_string();
+                    self.text(&mut canvas, &value, x + (w - 16 - self.text_width(&value)) / 2, y + (h - 11) / 2);
+                    frame(&mut canvas, (x + w - 16, y, 16, h / 2));
+                    frame(&mut canvas, (x + w - 16, y + h / 2, 16, h - h / 2));
+                    self.text(&mut canvas, "+", x + w - 11, y + 1);
+                    self.text(&mut canvas, "-", x + w - 10, y + h / 2 + 1);
+                }
+                let label = format!("{} Difficulty Level", self.sides[battle][0]);
+                let width = canvas.width as i32;
+                self.text(&mut canvas, &label, (width - self.text_width(&label)) / 2, 100);
+                for c in self.rout_dialog.iter().flat_map(|d| &d.controls) {
+                    let (x, y) = px((c.rect.0, c.rect.1));
+                    match c.id {
+                        10..=13 => {
+                            let on = difficulty == (c.id - 10) as usize;
+                            if let Some(r) = self.radio.get(on as usize) {
+                                canvas.blit(r, x, y);
+                            }
+                            let caption: String = c.text.chars().filter(|&ch| ch != '&').collect();
+                            self.text(&mut canvas, &caption, x + 16, y);
+                        }
+                        _ => self.button(&mut canvas, c.rect, &c.text),
+                    }
+                }
+                canvas
+            }
+        }
+    }
+
+    /// A click at pixel `(x, y)` of the screen.
+    pub fn click(&mut self, x: i32, y: i32) -> Outcome {
+        match self.screen {
+            Screen::Start => match Self::control_at(&self.start, x, y) {
+                Some(106) => {
+                    self.screen = Screen::Scenario { selected: None };
+                    Outcome::Redraw
+                }
+                Some(2) => Outcome::Quit,
+                _ => Outcome::Nothing,
+            },
+            Screen::Scenario { selected } => {
+                if let Some(k) = PLACES.iter().position(|&(px, py, w, h)| x >= px && x < px + w && y >= py && y < py + h) {
+                    self.screen = Screen::Scenario { selected: Some(k) };
+                    return Outcome::Redraw;
+                }
+                match Self::control_at(&self.scenario, x, y) {
+                    Some(1) if selected.is_some() => {
+                        // the computer plays the visitor by default
+                        self.screen = Screen::Sides { battle: selected.unwrap(), computer: [false, true] };
+                        Outcome::Redraw
+                    }
+                    Some(2) => {
+                        self.screen = Screen::Start;
+                        Outcome::Redraw
+                    }
+                    _ => Outcome::Nothing,
+                }
+            }
+            Screen::Sides { battle, mut computer } => match Self::control_at(&self.intro, x, y) {
+                Some(id @ 103..=106) => {
+                    computer[((id - 103) / 2) as usize] = id % 2 == 1;
+                    self.screen = Screen::Sides { battle, computer };
+                    Outcome::Redraw
+                }
+                Some(1) => {
+                    self.screen = Screen::Rout { battle, computer, levels: rout_levels(self.rout[battle], 1), difficulty: 1 };
+                    Outcome::Redraw
+                }
+                _ => Outcome::Nothing,
+            },
+            Screen::Rout { battle, computer, mut levels, .. } => {
+                // the spinners' arrows: a level up or down, making it custom
+                for (side, &centre) in ROUT_COLUMNS.iter().enumerate() {
+                    let (sx, sy, w, h) = spinner(centre);
+                    if x >= sx + w - 16 && x < sx + w && y >= sy && y < sy + h {
+                        levels[side] = if y < sy + h / 2 { levels[side].saturating_add(1) } else { levels[side].saturating_sub(1).max(1) };
+                        self.screen = Screen::Rout { battle, computer, levels, difficulty: 3 };
+                        return Outcome::Redraw;
+                    }
+                }
+                match Self::control_at(&self.rout_dialog, x, y) {
+                    Some(id @ 10..=13) => {
+                        let difficulty = (id - 10) as usize;
+                        if difficulty < 3 {
+                            levels = rout_levels(self.rout[battle], difficulty);
+                        }
+                        self.screen = Screen::Rout { battle, computer, levels, difficulty };
+                        Outcome::Redraw
+                    }
+                    Some(1) => Outcome::Play { scenario: SCENARIOS[battle], computer, levels },
+                    _ => Outcome::Nothing,
+                }
+            }
+        }
+    }
+}
+
+/// The centres of the two armies' columns on the rout level dialog, and
+/// where their spinners are (pixels, as measured on the original).
+const ROUT_COLUMNS: [i32; 2] = [88, 245];
+
+fn spinner(centre: i32) -> (i32, i32, i32, i32) {
+    (centre - 28, 49, 56, 35)
+}
+
+/// A one-pixel dark frame around `rect`.
+fn frame(canvas: &mut Canvas, (x, y, w, h): (i32, i32, i32, i32)) {
+    let mut put = |px: i32, py: i32| {
+        if px >= 0 && py >= 0 && (px as usize) < canvas.width && (py as usize) < canvas.height {
+            canvas.pixels[py as usize * canvas.width + px as usize] = 0xf8;
+        }
+    };
+    for i in x..x + w {
+        put(i, y);
+        put(i, y + h - 1);
+    }
+    for j in y..y + h {
+        put(x, j);
+        put(x + w - 1, j);
+    }
+}
+
+/// `text` broken into lines no wider than `width`.
+fn wrap(text: &str, width: i32, measure: impl Fn(&str) -> i32) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let candidate = if line.is_empty() { word.to_string() } else { format!("{line} {word}") };
+        if measure(&candidate) > width && !line.is_empty() {
+            lines.push(std::mem::replace(&mut line, word.to_string()));
+        } else {
+            line = candidate;
+        }
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Goes through the screens; runs only with `GBOH_DATA` set.
+    #[test]
+    fn sets_up_a_battle() {
+        let Ok(dir) = std::env::var("GBOH_DATA") else { return };
+        let mut s = Setup::new(Path::new(&dir));
+        let start = s.canvas();
+        assert_eq!((start.width, start.height), (640, 480));
+        // Start Battle: (93, 257) dialog units, 90 × 14
+        let (x, y) = px((93 + 45, 257 + 7));
+        assert_eq!(s.click(x, y), Outcome::Redraw);
+        assert_eq!(s.screen, Screen::Scenario { selected: None });
+        // Issus on the map, then OK
+        assert_eq!(s.click(130, 90), Outcome::Redraw);
+        assert_eq!(s.screen, Screen::Scenario { selected: Some(4) });
+        let _ = s.canvas();
+        let (x, y) = px((34 + 25, 221 + 7));
+        assert_eq!(s.click(x, y), Outcome::Redraw);
+        let _ = s.canvas();
+        // OK on Leader Control, then Easy and OK on the rout levels
+        let (x, y) = px((70 + 25, 94 + 7));
+        assert_eq!(s.click(x, y), Outcome::Redraw);
+        assert_eq!(s.screen, Screen::Rout { battle: 4, computer: [false, true], levels: [135, 135], difficulty: 1 });
+        let (x, y) = px((72 + 5, 76 + 6));
+        assert_eq!(s.click(x, y), Outcome::Redraw);
+        let (x, y) = px((34 + 25, 148 + 7));
+        assert_eq!(s.click(x, y), Outcome::Play { scenario: "ISSUS.SCN", computer: [false, true], levels: [168, 101] });
+        if let Ok(out) = std::env::var("GBOH_SHOTS") {
+            for (name, screen) in [
+                ("start", Screen::Start),
+                ("scenario", Screen::Scenario { selected: Some(4) }),
+                ("sides", Screen::Sides { battle: 4, computer: [false, true] }),
+                ("rout", Screen::Rout { battle: 4, computer: [false, true], levels: [168, 101], difficulty: 0 }),
+            ] {
+                s.screen = screen;
+                let c = s.canvas();
+                let pal = gboh_formats::pal::Palette::parse(&std::fs::read(Path::new(&dir).join("GAME.PAL")).unwrap()).unwrap();
+                let rgba = c.to_rgba(&pal);
+                let mut ppm = format!("P6 {} {} 255\n", c.width, c.height).into_bytes();
+                for p in rgba.chunks(4) {
+                    ppm.extend_from_slice(&p[..3]);
+                }
+                std::fs::write(format!("{out}/setup_{name}.ppm"), ppm).unwrap();
+            }
+        }
+    }
+}

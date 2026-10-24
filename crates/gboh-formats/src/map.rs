@@ -106,9 +106,11 @@ impl Map {
     }
 
     /// Doubled-grid coordinates of hex `(x, y)`'s centre. Grid column 0 is
-    /// unused.
+    /// unused. The column is the original's `id / 50 + 2` with
+    /// `id = 100x + y`: `2x + 2`, but one more from `y = 50` on (only
+    /// Paraitacene is that tall).
     pub fn hex_cell(x: usize, y: usize) -> (i32, i32) {
-        ((x * 2 + 2) as i32, (y * 4 + 2 + (x & 1) * 2) as i32)
+        (((x * 100 + y) / 50 + 2) as i32, (y * 4 + 2 + (x & 1) * 2) as i32)
     }
 
     pub fn cell(&self, gx: i32, gy: i32) -> &[u16] {
@@ -135,6 +137,12 @@ impl Map {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grid_column_steps_at_y_50() {
+        assert_eq!(Map::hex_cell(3, 49), (8, 200));
+        assert_eq!(Map::hex_cell(3, 50), (9, 204));
+    }
 
     #[test]
     fn parses_minimal_map() {

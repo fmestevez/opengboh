@@ -157,15 +157,53 @@ pub struct Layout {
     pub rows: usize,
     pub cols: usize,
     pub zoom: Zoom,
+    /// The reversed view: the map turned half round.
+    pub reversed: bool,
 }
 
 impl Layout {
     pub fn new(map: &Map, zoom: Zoom) -> Self {
-        Self { rows: map.width, cols: map.height, zoom }
+        Self { rows: map.width, cols: map.height, zoom, reversed: false }
     }
 
+    /// The layout of the reversed view.
+    pub fn reversed(map: &Map, zoom: Zoom) -> Self {
+        Self { reversed: true, ..Self::new(map, zoom) }
+    }
+
+    /// The map hex of block `(r, c)`. Normally row `r` is map column `x` and
+    /// the columns run up the map; reversed (`FUN_0045cc35`), rows run back
+    /// from the last map column and columns down the map, a map column's
+    /// odd-ness pushing it one block right. Either way the first block of
+    /// an unshifted row has no hex.
     pub fn to_map(&self, r: usize, c: usize) -> (usize, usize) {
-        (r, self.cols - 1 - c)
+        if self.reversed {
+            let x = self.rows - 1 - r;
+            (x, c.saturating_sub(x & 1))
+        } else {
+            (r, self.cols - 1 - c)
+        }
+    }
+
+    /// The block `(r, c)` of map hex `(x, y)`.
+    pub fn to_tile(&self, x: usize, y: usize) -> (usize, usize) {
+        if self.reversed { (self.rows - 1 - x, y + (x & 1)) } else { (x, self.cols - 1 - y) }
+    }
+
+    /// The map side shown as screen side `side` (turned half round when
+    /// reversed).
+    pub fn side(&self, side: Side) -> Side {
+        if !self.reversed {
+            return side;
+        }
+        let i = Side::ALL.iter().position(|&s| s == side).unwrap_or(0);
+        Side::ALL[(i + 3) % 6]
+    }
+
+    /// The facing to draw for scenario facing `facing`: turned four screen
+    /// steps when reversed (the original's `FUN_0044ea4d(f, 4)`).
+    pub fn facing(&self, facing: u8) -> u8 {
+        if self.reversed { (facing + 4) % 8 } else { facing }
     }
 
     pub fn shifted(r: usize) -> bool {
@@ -270,8 +308,8 @@ pub fn block_cel(mask: Option<usize>, elevation: u8, rng: &mut BorlandRand) -> u
 /// Stream pieces for one hex as `(cel, offset index)` pairs, in the order
 /// the original attaches them (`FUN_0044f689`). Side pieces use cels 0..6 and
 /// [`Zoom::stream_sides`]; joins use cels 6..15 and [`Zoom::stream_joins`].
-fn stream_pieces(map: &Map, x: usize, y: usize) -> Vec<(usize, bool)> {
-    let has = |side| map.side_features(x, y, side).contains(&STREAM);
+fn stream_pieces(map: &Map, layout: &Layout, x: usize, y: usize) -> Vec<(usize, bool)> {
+    let has = |side| map.side_features(x, y, layout.side(side)).contains(&STREAM);
     let (mut a, mut b, mut c) = (0, 0, 0);
     if has(Side::SE) {
         a += 1;
@@ -416,7 +454,7 @@ impl Painter<'_> {
     /// levels down (`FUN_0045e26a`).
     fn cliffs(&mut self, r: usize, c: usize) {
         let zoom = self.layout.zoom;
-        let (w, _, face) = zoom.block();
+        let (w, h, _) = zoom.block();
         let step = zoom.level_step();
         let z = self.elev((r, c));
         let [left, _, _, right] = self.layout.neighbours(r, c);
@@ -424,7 +462,8 @@ impl Painter<'_> {
         let (px, py) = self.origin(r, c);
         let index = r * self.layout.cols + c;
         let slice = (index % 3) as i32 * w;
-        let y = py + face * 3 / 4 + 2;
+        // ¾ of the whole block's height (not of its top face) below the origin
+        let y = py + h * 3 / 4 + 2;
         let two_down = (r + 2 < self.layout.rows).then_some((r + 2, c));
         let raised = |n: Option<(usize, usize)>| n.is_some_and(|n| self.elev(n) == z + 1);
         // (lower elevation, drop, dy) for the left and right halves
@@ -528,7 +567,7 @@ impl Painter<'_> {
         if let Some(cel) = self.road_cel(r, c) {
             self.canvas.blit(&self.art.roads[cel], px, py);
         }
-        for (cel, side) in stream_pieces(self.map, x, y) {
+        for (cel, side) in stream_pieces(self.map, &self.layout, x, y) {
             let (dx, dy) = if side { zoom.stream_sides()[cel] } else { zoom.stream_joins()[cel - 6] };
             self.canvas.blit(&self.art.streams[cel], px + dx, py + dy);
         }
@@ -544,7 +583,11 @@ impl Painter<'_> {
 /// `strip_offset` is added to the elevation to choose the block strip (0 =
 /// `River`, 1 = `Land1`, ...); the original sets it per battle.
 pub fn render(map: &Map, art: &TerrainArt, zoom: Zoom, strip_offset: usize, seed: u32) -> Canvas {
-    let layout = Layout::new(map, zoom);
+    render_view(map, art, Layout::new(map, zoom), strip_offset, seed)
+}
+
+/// As [`render`], in `layout`'s view.
+pub fn render_view(map: &Map, art: &TerrainArt, layout: Layout, strip_offset: usize, seed: u32) -> Canvas {
     let (w, h) = layout.canvas_size();
     let mut p = Painter {
         map,
@@ -564,7 +607,7 @@ pub fn render(map: &Map, art: &TerrainArt, zoom: Zoom, strip_offset: usize, seed
             });
             if rocks && count > 0 {
                 let cel = (p.rng.next() % count) as usize;
-                p.river_rocks.insert((x, layout.cols - 1 - y), cel);
+                p.river_rocks.insert(layout.to_tile(x, y), cel);
             }
         }
     }
@@ -585,4 +628,36 @@ pub fn render(map: &Map, art: &TerrainArt, zoom: Zoom, strip_offset: usize, seed
         }
     }
     p.canvas
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The reversed view puts hex `(x, y)` where the original's
+    /// `FUN_0045cc35` does (tile index `i` of a map `w` wide and `h` tall:
+    /// column `w - 1 - i / h`, row `i % h - (x & 1)`), and maps back.
+    #[test]
+    fn reversed_blocks() {
+        let map = Map { name: String::new(), width: 33, height: 45, hex_id_origin: 1000, unk_b: 0, elevation: vec![1; 33 * 45], cells: Vec::new() };
+        let normal = Layout::new(&map, Zoom::Normal);
+        let reversed = Layout::reversed(&map, Zoom::Normal);
+        for r in 0..reversed.rows {
+            for c in 0..reversed.cols {
+                if c == 0 && !Layout::shifted(r) {
+                    continue;
+                }
+                let i = r * map.height + c;
+                let x = map.width - 1 - i / map.height;
+                let y = i % map.height - (x & 1);
+                assert_eq!(reversed.to_map(r, c), (x, y));
+                assert_eq!(reversed.to_tile(x, y), (r, c));
+                assert_eq!(normal.to_tile(normal.to_map(r, c).0, normal.to_map(r, c).1), (r, c));
+            }
+        }
+        // turned half round: the first column's top hex is now bottom right
+        assert_eq!(reversed.to_tile(0, 0), (32, 0));
+        assert_eq!(reversed.side(Side::N), Side::S);
+        assert_eq!(reversed.facing(1), 5);
+    }
 }

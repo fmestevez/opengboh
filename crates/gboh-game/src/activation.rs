@@ -117,6 +117,11 @@ impl Activation {
         self.leaders.iter().position(|&u| battle.units[u].name.contains(name))
     }
 
+    /// Whether the active leader may still try for momentum (twice at most).
+    pub fn momentum_left(&self) -> bool {
+        self.current.is_some() && self.momentum < 2
+    }
+
     /// End the active leader's activation and pick the next. If
     /// `wants_momentum`, the leader first tries to go again: he succeeds
     /// with `(initiative + 1) × 8` percent on the first try and `× 5` on the

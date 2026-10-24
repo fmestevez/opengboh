@@ -6,7 +6,9 @@
 //! data and sprites into pixels.
 
 pub mod battlefield;
+pub mod missiles;
 pub mod objects;
+pub mod runaways;
 pub mod terrain;
 pub mod units;
 

@@ -65,9 +65,16 @@ pub enum Happened {
     /// A unit (or leader) walked through these hexes, from where it was;
     /// `running` when routed.
     Moved { unit: usize, path: Vec<crate::hex::Hex>, running: bool },
-    Volley { shooter: usize, weapon: crate::missile::Weapon, hit: bool },
-    /// A unit lost men: `count` cohesion hits taken on `hex`, of `kind`.
-    Casualties { unit: usize, hex: crate::hex::Hex, kind: Casualty, count: i32 },
+    Volley { shooter: usize, target: usize, weapon: crate::missile::Weapon, hit: bool },
+    /// A unit lost men: `count` cohesion hits taken on `hex`, of `kind`,
+    /// facing `facing`, `hits` in all after them.
+    Casualties { unit: usize, hex: crate::hex::Hex, facing: u8, kind: Casualty, count: i32, hits: i32 },
+    /// A unit was destroyed where it stood (its men all fall).
+    Eliminated { unit: usize, hex: crate::hex::Hex, facing: u8 },
+    /// A unit broke and routs (its men throw down their arms).
+    Routed { unit: usize },
+    /// A shock combat is fought (its casualties follow).
+    Shock { attackers: Vec<usize>, defenders: Vec<usize> },
 }
 
 /// How men fell (the unit art's corpse strips).
@@ -180,7 +187,8 @@ impl Game {
         let end = self.battle.units[unit].hex;
         let hits: i32 = fire.iter().map(|&(_, h)| h).sum();
         if hits > 0 {
-            self.log.push(Happened::Casualties { unit, hex: end, kind: Casualty::Arrow, count: hits });
+            let (facing, total) = (self.battle.units[unit].facing, self.battle.units[unit].hits);
+            self.log.push(Happened::Casualties { unit, hex: end, facing, kind: Casualty::Arrow, count: hits, hits: total });
         }
         let mut walked = vec![start];
         for h in path {
@@ -198,11 +206,11 @@ impl Game {
         let weapon = self.battle.units[shooter].missile.map(|m| m.0);
         let hits = orders::volley(&mut self.battle, shooter, target, &mut self.rng)?;
         if let Some(weapon) = weapon {
-            self.log.push(Happened::Volley { shooter, weapon, hit: hits > 0 });
+            self.log.push(Happened::Volley { shooter, target, weapon, hit: hits > 0 });
         }
         if hits > 0 {
-            let hex = self.battle.units[target].hex;
-            self.log.push(Happened::Casualties { unit: target, hex, kind: Casualty::Arrow, count: hits });
+            let o = &self.battle.units[target];
+            self.log.push(Happened::Casualties { unit: target, hex: o.hex, facing: o.facing, kind: Casualty::Arrow, count: hits, hits: o.hits });
         }
         Ok(hits)
     }
@@ -496,15 +504,18 @@ impl Game {
         let mut outcomes = Vec::new();
         for (attackers, defenders) in std::mem::take(&mut self.shocks) {
             let target_hex = defenders.first().map(|&d| self.battle.units[d].hex);
+            self.log.push(Happened::Shock { attackers: attackers.iter().map(|a| a.0).collect(), defenders: defenders.clone() });
             let out = shock::resolve(&mut self.battle, &attackers, &defenders, &mut self.rng);
             for &(u, h) in &out.hits {
                 if h > 0 {
-                    let hex = self.battle.units[u].hex;
-                    self.log.push(Happened::Casualties { unit: u, hex, kind: Casualty::Shock, count: h });
+                    let o = &self.battle.units[u];
+                    self.log.push(Happened::Casualties { unit: u, hex: o.hex, facing: o.facing, kind: Casualty::Shock, count: h, hits: o.hits });
                 }
             }
             for &u in &out.eliminated {
-                self.battle.units[u].state = UnitState::Gone;
+                let o = &mut self.battle.units[u];
+                o.state = UnitState::Gone;
+                self.log.push(Happened::Eliminated { unit: u, hex: o.hex, facing: o.facing });
             }
             for &u in &out.routed {
                 self.rout(u, 2);
@@ -528,6 +539,13 @@ impl Game {
             self.momentum_refresh(l);
         }
         (outcomes, self.activate(next))
+    }
+
+    /// Whether the active leader may try for momentum when he finishes: he
+    /// gave an order this activation, not a group move, and has tried fewer
+    /// than twice (the original's `CanAttemptMomentum`).
+    pub fn can_attempt_momentum(&self) -> bool {
+        self.points.as_ref().is_some_and(|p| p.used > 0) && self.group_move.is_none() && self.activation.momentum_left()
     }
 
     /// A successful momentum: the leader's units get their movement back
@@ -562,7 +580,11 @@ impl Game {
                     r.personal_combat = r.personal_combat.saturating_sub(2);
                 }
             }
-            _ => u.state = UnitState::Gone,
+            _ => {
+                u.state = UnitState::Gone;
+                let (hex, facing) = (u.hex, u.facing);
+                self.log.push(Happened::Eliminated { unit: leader, hex, facing });
+            }
         }
     }
 
@@ -678,8 +700,8 @@ impl Game {
                     let n = if frontal && !horse { 1 } else { 2 };
                     self.battle.units[u].hits += n;
                     hit.push(u);
-                    let hex = self.battle.units[u].hex;
-                    self.log.push(Happened::Casualties { unit: u, hex, kind: Casualty::Trample, count: n });
+                    let o = &self.battle.units[u];
+                    self.log.push(Happened::Casualties { unit: u, hex: o.hex, facing: o.facing, kind: Casualty::Trample, count: n, hits: o.hits });
                     let o = &self.battle.units[u];
                     if o.hits >= o.tq as i32 {
                         self.rout(u, 2);
@@ -690,7 +712,9 @@ impl Game {
             }
         }
         self.log.push(Happened::Moved { unit: elephant, path: trail, running: true });
-        self.battle.units[elephant].state = UnitState::Gone;
+        let o = &mut self.battle.units[elephant];
+        o.state = UnitState::Gone;
+        self.log.push(Happened::Eliminated { unit: elephant, hex: o.hex, facing: o.facing });
         hit
     }
 
@@ -699,6 +723,9 @@ impl Game {
         if crate::movement::MoveClass::of_type(self.battle.units[unit].type_id) == Some(crate::movement::MoveClass::Elephant) {
             self.rampage(unit);
             return;
+        }
+        if self.battle.units[unit].state == UnitState::Fighting {
+            self.log.push(Happened::Routed { unit });
         }
         self.battle.units[unit].state = UnitState::Routed;
         let (path, gone) = match flee(&self.battle, &self.map, unit, steps) {

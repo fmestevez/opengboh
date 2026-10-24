@@ -159,7 +159,7 @@ pub fn anchor_at(map: &Map, layout: &Layout, hex: (usize, usize), offset: (i32, 
     let zoom = layout.zoom;
     let (w, h, _) = zoom.block();
     let (x, y) = hex;
-    let (r, c) = (x, layout.cols - 1 - y);
+    let (r, c) = layout.to_tile(x, y);
     let (bx, by) = layout.block_origin(r, c);
     let z = map.elevation_at(x, y) as i32;
     let s = zoom.scale();

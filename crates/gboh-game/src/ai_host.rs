@@ -53,7 +53,9 @@ fn hex_of(id: i32) -> Option<Hex> {
 /// grid points `(2x + 2, 4y + 2 + 2·(x odd))`, and the ratio of the
 /// distances across and down picks the angle).
 pub fn angle(a: Hex, b: Hex) -> Option<i32> {
-    let grid = |h: Hex| (2 * h.x + 2, 4 * h.y + 2 * (h.x & 1) + 2);
+    // the original's grid point (`FUN_004b1c4a`): column `id / 50 + 2`, one
+    // more than `2x + 2` from y = 50 on (see `Map::hex_cell`)
+    let grid = |h: Hex| ((100 * h.x + h.y).div_euclid(50) + 2, 4 * h.y + 2 * (h.x & 1) + 2);
     let ((ax, ay), (bx, by)) = (grid(a), grid(b));
     let (dx, dy) = (bx - ax, by - ay);
     if dx == 0 && dy == 0 {
@@ -647,5 +649,9 @@ mod tests {
         assert_eq!(direction(h, Hex::new(4, 8)), 6); // due south counts as SW
         assert!(in_cone(h, n[0], 2) && in_cone(h, n[1], 2) && !in_cone(h, n[2], 2));
         assert!(in_cone(h, n[0], 8));
+        // from y = 50 on the original's grid column is one more, so the step
+        // north across y = 50 (only on Paraitacene) reads as just west of north
+        assert_eq!(angle(Hex::new(4, 50), Hex::new(4, 49)), Some(23));
+        assert_eq!(angle(Hex::new(4, 51), Hex::new(4, 50)), Some(0));
     }
 }

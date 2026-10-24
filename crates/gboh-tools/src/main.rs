@@ -70,17 +70,20 @@ fn main() -> Result<()> {
         Some("moves") if (5..=6).contains(&args.len()) => {
             moves(Path::new(&args[2]), &args[3], &args[4], args.get(5).map_or("", String::as_str))
         }
-        Some("render") if (5..=7).contains(&args.len()) => render(
+        Some("render") if (5..=10).contains(&args.len()) => render(
             Path::new(&args[2]),
             &args[3],
             Path::new(&args[4]),
             args.get(5).map_or("normal", String::as_str),
-            args.get(6).and_then(|a| a.strip_prefix("save=")),
+            args[5..].iter().find_map(|a| a.strip_prefix("save=")),
+            args[5..].iter().any(|a| a == "static-water"),
+            args[5..].iter().any(|a| a == "grid"),
+            args[5..].iter().any(|a| a == "reversed"),
         ),
         _ => bail!(
             "usage: gboh-tools extract <DATA dir> <out dir> | strips <EIF file> | maps <DATA dir> | scenarios <DATA dir> | units <DATA dir> <SCN file> \
              | command <DATA dir> <SCN file> | turns <DATA dir> <SCN file> <n> \
-             | moves <DATA dir> <SCN file> <unit name> [l|r...] | render <DATA dir> <MAP|SCN file> <out.png> [in|normal|out] [save=F]"
+             | moves <DATA dir> <SCN file> <unit name> [l|r...] | render <DATA dir> <MAP|SCN file> <out.png> [in|normal|out] [save=F] [static-water] [grid] [reversed]"
         ),
     }
 }
@@ -423,7 +426,11 @@ fn extract(data_dir: &Path, out_dir: &Path) -> Result<()> {
 }
 
 /// Battle order in the original's scenario table (string ids 93..102, 80).
-fn render(data_dir: &Path, file: &str, out: &Path, zoom: &str, save: Option<&str>) -> Result<()> {
+/// `static_water` keeps the water at its `GAME.PAL` colours, as the original
+/// shows it on a true-colour display (its palette animation then has no
+/// effect), for comparing with captures.
+#[allow(clippy::too_many_arguments)]
+fn render(data_dir: &Path, file: &str, out: &Path, zoom: &str, save: Option<&str>, static_water: bool, grid: bool, reversed: bool) -> Result<()> {
     let zoom = match zoom {
         "in" => Zoom::In,
         "normal" => Zoom::Normal,
@@ -441,7 +448,11 @@ fn render(data_dir: &Path, file: &str, out: &Path, zoom: &str, save: Option<&str
     let units = scenario.as_ref().map_or_else(Vec::new, |s| s.units.clone());
     let map = Map::parse(&load(&map_file).with_context(|| format!("{map_file} not found"))?)?;
     let flagged = scenario.as_ref().map_or_else(Vec::new, |s| gboh_game::command::opening_flags(s, &map, 1));
-    let pal = battlefield::palette(&mut load)?;
+    let pal = if static_water {
+        Palette::parse(&load("GAME.PAL").context("GAME.PAL not found")?)?
+    } else {
+        battlefield::palette(&mut load)?
+    };
     let titles = eif_title_index(data_dir)?;
     let mut load_title =
         |title: &str| titles.get(title).and_then(|n| fs::read(data_dir.join(n)).ok());
@@ -465,11 +476,23 @@ fn render(data_dir: &Path, file: &str, out: &Path, zoom: &str, save: Option<&str
                     id: u.source,
                     routed: u.state == gboh_game::battle::UnitState::Routed,
                     walk: None,
+                    hits: u.hits.max(0) as u16,
+                    tq: u.tq,
+                    act: None,
+                fallen: None,
                 })
                 .collect();
             let types: Vec<usize> = views.iter().map(|v| v.type_id).collect();
             let scene = battlefield::Scene::build(&map_file, &map, zoom, &pal, 1, &types, &mut load, &mut load_title)?;
             scene.compose(&views, &[])
+        }
+        _ if grid || reversed => {
+            let views: Vec<gboh_render::units::UnitView> =
+                units.iter().enumerate().filter_map(|(i, u)| gboh_render::units::UnitView::of_scenario(&map, i, u)).collect();
+            let types: Vec<usize> = views.iter().map(|v| v.type_id).collect();
+            let mut scene = battlefield::Scene::build_view(&map_file, &map, zoom, reversed, &pal, 1, &types, &mut load, &mut load_title)?;
+            scene.grid_on = grid;
+            scene.compose(&views, &flagged)
         }
         _ => battlefield::render(&map_file, &map, zoom, &pal, 1, &units, &flagged, &mut load, &mut load_title)?,
     };

@@ -51,8 +51,43 @@ Ops 3 and 4 appear under arrows, javelins and some units; most likely shadow
 and/or translucency via a remap table. To confirm from the renderer.
 
 `WALKANIM.EIF` ("Walking Animation Data") is *not* an image container: it holds
-per-unit-type movement data (names such as `Foot`, `Mounted`, `Phalanx` and
-float factors). ❓
+how each man of each kind of unit walks (`gboh_formats::walkanim`; loaded
+by `FUN_004f7eeb`, records by `FUN_0052c5a7`, `FUN_0052c316`, `FUN_0052bea7`):
+
+```text
+file    := title[128] i16 kind_count i16 record_count kind*
+kind    := name[128] i16 count i32 unknown u32 next_kind_offset record{count}
+record  := name[128] facing{8}
+facing  := step{10} i16 x i16 y
+step    := leg{3}
+leg     := (i16 x, i16 y){3} i32 ms{3}
+```
+
+Kinds: `Foot`, `Mounted`, `Companion`, `Thessalian`, `Leader`, `Elephant`,
+`Chariot`, `Phalanx`, `Oxybeles`, each with one record per man of the
+formation plus one. A facing's point is the man's place (zoom-in pixels;
+the first man on foot facing NE is at (−22, −6), as in the formation table);
+its ten steps are by the screen direction of the step, each with three
+variants of up to three waypoints and the milliseconds to reach each. The
+presentation walks each man along these (`FUN_004ee88a`, on the move
+command `0x1c`), multiplying the times by 1, or when routed by a factor per
+class (`0x60f8e0`: 0.67 for foot and phalanx, 0.9 mounted, 0.5 elephants, 1
+otherwise). A plain step (the first variant) takes about 975 ms on foot,
+1083 ms for the phalanx, 609 ms mounted, 487 ms for a leader, 808 ms for
+elephants, 696 ms for chariots and 1975 ms for the oxybeles. In the plain
+variant the first waypoint is relative to the hex being left (toward its
+edge) and the second is the man's place in the next hex, relative to it;
+the man faces the step's direction (the walking strip `base + direction`).
+The rewrite times each walk from these (the slowest man's step, averaged over
+the path) and walks each man along his plain variant (the places match the
+formation tables exactly for foot, horse and phalanx; elephants and
+chariots differ by a few pixels and use the data's own). The variant is
+chosen by the two hexes' levels (`FUN_004ee88a`, the landscape's level call
+`0xd4` on the hex left and the next): the first on the level, the second
+going down, the third going up; the last two have three waypoints with a
+250 ms middle leg. The rewrite does the same, timing each step by its
+variant; 🟡 which hex the middle waypoint is measured from is inferred from
+the data (going down the hex left, going up the next).
 
 ## GAME.PAL: palette ✅
 
@@ -79,8 +114,18 @@ to their `GAME.PAL` colours. Per frame (RGB):
 | 210 | 75,105,135 | 80,110,140 | 85,115,145 | 70,100,130 |
 
 The four water colours are close together, so rivers look almost flat in
-game even though the `River` cels have ripple texture. The frame rate is not
-yet known.
+game even though the `River` cels have ripple texture. The animator steps
+five times a second (its timer callback is registered at rate 5 by
+`FUN_004249cd`).
+
+The animator works through `AnimatePalette` (`FUN_00424934`), which only
+changes the screen on a 256-colour palette display. On a true-colour display
+(Wine, and likely any modern Windows) it has no visible effect and the water
+keeps its `GAME.PAL` colours, with their stronger ripple contrast: every
+capture of the original under Wine shows indices 205/207–210 at their file
+values. The rewrite animates, as a 256-colour display of the time would;
+`gboh-tools render … static-water` renders with the plain `GAME.PAL` for
+comparing with captures.
 
 The five remap tables map a palette index to another index:
 
@@ -91,6 +136,196 @@ The five remap tables map a palette index to another index:
 | 2 | ×1.39, brighter | highlight |
 | 3 | ×1.19, brighter | highlight |
 | 4 | ×1.31, brighter | highlight |
+
+## Executable resources (`alex.exe`) 🟡
+
+`gboh_formats::pe` reads the executable's string table (`RT_STRING`) and
+dialog templates (`RT_DIALOG`, all of class `EruditeDialog`, font MS Sans
+Serif 8). A dialog unit is 7/4 pixels across and 13/8 down: `STARTGAME`
+(367 × 295 units) fills the 640 × 480 `Start Game` bitmap and `SCENARIO`
+(229 × 243) the 405 × 396 `Campaign Map` one (`DIALOG.EIF`); 90-unit buttons
+use `DLGBTN.EIF`'s `Big Pushbutton`, 50-unit ones its `Pushbutton`.
+
+**Choosing a scenario** (`FUN_0059d56b`): each battle, in the scenario table's
+order, has a clickable place on the map (pixels): Chaeronea (38, 80) 79 × 11,
+Lyginus (50, 38) 56 × 11, Pelium (29, 55) 61 × 11, Granicus (64, 67) 67 × 11,
+Issus (119, 86) 41 × 11, Gaugamela (162, 88) 79 × 11, Samarkand (242, 41)
+82 × 11, Jaxartes (274, 30) 67 × 11, Arigaeum (283, 64) 68 × 11, Hydaspes
+(297, 76) 70 × 11, Paraitacene (211, 135) 91 × 11. Names are strings 93–102
+and 80; descriptions 127–142 and 81–82 (one or two lines each). The
+`CAMPAIGN.EIF` `Battles` cels are the names painted on the map (exactly, 9 or
+10 px into the place for the western battles, 1–2 px for the eastern, 2 px
+down).
+
+**Who plays and the rout levels.** `INTRODLG` ("Leader Control") names the two
+armies from the nation strings 31–36 (Greek, Macedonian, Persian, Danubian,
+Indian, Scythian), which run in a different order from the scenario's nation
+bytes (0 Greek, 1 Persian, 2 Macedonian, 3 Indian, 4 Danubian, 5 Scythian).
+`ARMYROUTDLG` (`on_RoutLevels` → `FUN_004a2d78`, class `ROUTDLG.CPP`) shows
+each army's rout level in a spinner (the scenario's, e.g. Issus 135 and 135)
+and the home army's difficulty: in the original Easy gives the home army a
+quarter more and the visitor a quarter less (rounded down: 168 and 101),
+Hard the reverse, Normal the scenario's, Custom leaves the spinners to set
+(measured in game; the code doing it is not traced). The viewer's setup
+screens (`gboh-viewer` with no file) follow these;
+🟡 how the original marks the chosen battle is not traced (the viewer shows
+its name in yellow), and the font's second colour (index 252) is left out.
+
+## Battle window bars 🟡
+
+The toolbar (`FUN_0051eab8`) has twenty 24 × 22 buttons from `BUTTONS1`–`3.EIF`
+(four cels each: up, down, disabled, disabled down), centred at x 17 (File
+Open), 45 (Finish Leader, art `NextPhase`), 70 (Centre On Leader), 97, 122
+(rotate left, right), 147 (About Face), 171 (Missile Volley), 195 (Restore
+Cohesion), 219 (Rally), 243 (Unit Details), 272 (Overview), 296 (Hex Grid),
+320 (Reverse View, art `Rotate180`), 348, 373, 397 (Zoom In, Normal, Zoom
+Out), 425, 449, 475 (Tile Vertical, Tile Horizontal, Cascade) and 502 (Undo),
+in a 30 pixel marble strip (measured on the original). The status bar is
+`ALEXSB.EIF`'s `sbArt` (left cap, a 294 pixel middle that tiles, right cap,
+a 36 pixel divider), 50 pixels tall, in three panes. The overview map is the
+battle's strip of `OVERVIEW.EIF` (cel 0 the map on a scroll, cel 1 the same
+for the reversed view, cel 2 the bare map, which lies 30 × 26 pixels into the
+scroll; `Custom` is a placeholder), at the top right with the units as dots
+(home red, visitor blue) and the part in view outlined. The viewer draws all
+three over the battlefield (the scroll's shadow left out); clicking the
+overview map centres the view there and its button hides it; the buttons
+it has no action for are greyed, and 🟡 its pane texts (status, turn,
+zoom) are its own.
+
+## Unit details window 🟡
+
+`VIEWUNIT` (242 × 190 units, OK and Help) is drawn by `ViewUnitDlg`'s paint
+(`FUN_005a0ac9`) over the `Unit Overview` bitmap (`DIALOG.EIF`) in bold MS Sans
+Serif 8, labels from the string table with a colon (string 68): at x 60,
+values at x 160, rows y 79 Used This Turn (Yes/No), 96 Condition
+(Good/Routing), 113 Troop Quality, 130 Cohesion Hits, 147 Movement, 164 and
+181 Allowance and Remaining (labels at x 83), 198 Size; at x 251 Missile
+Information (y 79), Type, Range, Allowance, Remaining (y 96–147, values at x
+322: Archer, Slinger, Javelin or Bolts, else N/A). The viewer draws it in the
+same places with `MS8TEXT.EIF` (a bitmap MS Sans Serif 8 whose 93 glyphs
+start at `"`) in black; 🟡 the unit's name at the top and "used this turn"
+(moved, fired or done) are its own.
+
+## Combat results dialogs 🟡
+
+After a leader's shocks the original shows `OVERALLCOMBATRESULTS` (the
+`Overall Combat Results` bitmap; a list box, id 101 at (23, 22) 91 × 48
+units, of "Battle #n"); clicking a battle centres the map on it and
+double-clicking opens `SHOWCOMBATRESULTS` (314 × 135 units, the `Combat Results`
+bitmap with the column headings painted on), drawn by `FUN_0058c097`: from y
+100, a text line apart (16 pixels in captures), attackers' names at x 10
+(wrapped past 140 pixels, the rest at x 20 a line down) and their cohesion
+hits this combat, in all and still to rout (not below 0) at x 170, 210 and
+243; defenders' at x 290 (300), 445, 485 and 520. A name gets `* ` and/or
+`** ` before it from two per-unit flags; captures show `*` on units that
+routed (e.g. "* Agrian 1" with 0 to rout), so `**` is taken to be eliminated
+(🟡). The viewer shows both after the fights have been animated (a second
+click on a battle opens it, for the double-click), its own records of each
+shock giving the rows.
+
+## Game overview 🟡
+
+At the end of a turn the original shows `GAMEOVERVIEWDLG` (307 × 156 units:
+OK, and Army Details for each side) drawn by `FUN_0058f6de` on the `End of
+Game` bitmap: each army's nation (home on the left) in `CHISTEXT.EIF` capitals
+centred a quarter and three quarters across at y 30, and at x 40 and 330 from
+y 75, a line apart, "Army Rout Level (RP): n", "Rout Points Lost: n" and "Rout
+Points Remaining: n" (strings 75–77; remaining = level − lost). The chiselled
+capitals have two colours, white and blue (index 252): the viewer cuts them
+into the marble by lightening and darkening it through `GAME.PAL`'s remap
+tables (🟡 which tables the original uses is not traced). `MS8TEXT.EIF` runs
+from `!` with both brackets in one glyph (the `(` cel) and none for `)`.
+The viewer shows the overview after the combat results at each turn's end;
+🟡 Army Details is not wired.
+
+## Running commentary 🟡
+
+`INFODLG` ("Running Commentary", 164 × 47 units, no controls: a rich text box
+filled by `AddCommentary` messages) sits in the battle window's bottom right
+corner (254 × 110 pixels under Wine). Its sentences are in the executable's
+data with mark-up for bold names (`\b…\b`), e.g. "X is now active.", "X
+throws javelins at Y for n cohesion hits.", "Y is routing!", "Y is doing a
+terminal rout!", "Y is eliminated!", after "--- Turn #n ---". The viewer keeps
+its own commentary in that corner from the game's log (turns, the active
+leader, volleys, attacks, hits, routs, eliminations), 🟡 in its own words.
+
+## Army details 🟡
+
+The Game Overview's Army Details buttons (102 home, on the left; 101
+visitor) open `ARMYDETAILSDLG` (197 × 289 units, Close and Help, column heads
+Name, TQ, Hits, Elim. and Rout Pts) on the `Army Details` bitmap (346 × 470).
+Its paint (`FUN_00583de7`) writes in bold MS Sans Serif 8 "<nation> Army"
+centred on x 170 at y 52, then at x 28 from y 76, 24 apart, strings 123–126:
+the rout level, the percentage of it eliminated (eliminated capped at the
+level), the TQ routing and the rout points eliminated (the same figure as the
+overview's rout points lost). Below, a read-only rich edit at (16, 276), 309 ×
+132, is filled by `FUN_005845f7`: for each unit its name in bold (cut to 23
+characters), a tab, TQ, a tab, hits; then each leader with `-` for both; a
+line out of the battle continues with a tab, `X`, a tab and its rout points.
+The tab stops are 189, 216, 243 and 270 pixels. 🟡 What "TQ Routing" counts is
+not traced; the viewer sums the TQ of the army's routing units.
+
+## Dialogs during play 🟡
+
+Several of the original's dialogs have no art of their own, just static
+texts filled in at run time and buttons on the `EruditeDialog` background:
+`MOMENTUMDLG` ("Would you like to attempt momentum?", Yes 1 / No 2, asked
+when a leader who may try for momentum, `CanAttemptMomentum`, finishes),
+`INITIATIVERESULTS` (its result in static 101), `RALLYDLG` (statics 101–103,
+OK, Help), `MISSILERESULTS` (statics 101 and 102, OK, the check box 201
+"Never show this again") and `LEADERALMOSTFINISHED` (all its text in the
+template; Finish 101 and the check box 17 "Don't show this again", which is
+also the Finish Leader Dialog preference). The viewer draws them from their
+templates on the game's marble with a caption bar; 🟡 their run-time
+sentences are in the executable's data, and the viewer words its own.
+
+## End of game 🟡
+
+When an army reaches its rout level, `FUN_004aeda7` starts the end music and
+shows `ENDOFGAMEDLG` (271 × 289 units: Overview 101, View Field 102, Close),
+class `EndOfGameDlg` (`FUN_0058ed4c`), whose paint draws nothing but its
+bitmap from `EOGDLG.EIF` ("End Of Game Bitmaps"): `<People> Victory` (475 ×
+470, "You are victorious") or `<People> Defeat` (460 × 470, "You have been
+defeated"; the dialog is moved and narrowed 15 pixels to fit) for the
+Macedonian, Persian, Greek, Danubian and Indian peoples. It is a victory when
+a human played the winning side, or when no human played. Overview sends
+`GameOverview`; View Field closes it to look over the field. 🟡 The
+constructor loads the Macedonian pair and stores the other nation's name
+without (as far as traced) using it; the viewer shows the player's own
+nation (the Scythians with the Persian pictures).
+
+## Reverse view
+
+Map > Reverse View (command 223, the toolbar's Reverse View button) flips bit
+4 of the battle view's flags (beside the zoom bits) and rebuilds the
+landscape: the battlefield turned half round. The landscape's tile `i` (of
+a map `w` hexes wide and `h` tall, `FUN_0045cc35`) is normally hex
+`(i / h, h - 1 - i % h)`; reversed it is `x = w - 1 - i / h`,
+`y = i % h - (x & 1)`. Every map is an odd number of columns wide, so a map
+column's odd-ness pushes it down one tile: in both views the first tile of
+an unshifted row has no hex, and the last hex of each odd column is not
+shown. Directions turn with it: hex sides by three, screen facings by four
+(`FUN_0044ea4d(f, 4)`), as in the tree and stone scatter's side checks.
+Towns have their own reversed placement and use their art's second strip:
+Chaeronea at hex 202 with offset (380, 51); Pelium at hex 602 with the 11
+offsets of the table at `0x618334`. The overview uses the turned scroll
+(`OVERVIEW.EIF` cel 1). Checked against the original at Chaeronea: the
+units, stream, coast and town line up exactly; 🟡 the plain blocks' random
+cels do not, as the original rebuilds the landscape with its random
+generator wherever the game has left it. The viewer keeps the same spot in
+the middle of the window and turns corpses already lying (their offsets
+negated, dropped spears four steps).
+
+## Hex grid 🟡
+
+`HEXGRID.EIF` ("Hex Grid", zoom in), `HEXGRID2.EIF` (half size) and the
+quarter-size art each hold 16 cels of a hex's right-hand edges, by the same
+neighbour mask the terrain blocks use (bent where a neighbour stands higher);
+the landscape layer keeps them with the battle arrows (`FUN_0050bbeb`). The
+viewer's Hex Grid button draws, over the terrain and under the units, each
+block's cel at its raised origin (🟡 the original's choice of cel is not
+traced). The Missile Volley button (enabled while the selected unit can shoot)
+arms a volley that the next click on an enemy fires.
 
 ## Other files ❓
 
@@ -121,7 +356,10 @@ bytes left over. `EIFFILE.MAP` is a different file (resource index).
   `(2x + 2, 4y + 2 + 2*(x & 1))` (grid column 0 is unused). This was checked
   by drawing minor streams and matching them pixel for pixel against the
   running game; an earlier reading without the `+2` offsets put every
-  feature one hex off. Its six sides are the cells at offsets
+  feature one hex off. The original computes the column as `id / 50 + 2`
+  (`id = 100x + y`, `FUN_004b1c4a`), so from `y = 50` on it is `2x + 3`;
+  only Paraitacene (65 hexes tall) reaches that, and its woods there are
+  only found with this rule (checked in game). Its six sides are the cells at offsets
   N `(0,-2)`, NE `(1,-1)`, SE `(1,1)`, S `(0,2)`, SW `(-1,1)`, NW `(-1,-1)`.
 * Hex ids (used by scenarios) are `hex_id_origin + x*100 + y`; the origin is
   1000, or 3600 for Lyginus and Pelium. `unk_b` is mostly 1.
@@ -195,7 +433,9 @@ hexes match exactly wherever the random variant agrees.
   elevation>`, cel `drop - 2`; cliff cels are three blocks wide and the hex
   uses the block-wide slice `index % 3` (index = row × columns + column), left
   half towards lower-left, right half towards lower-right. Placed at the
-  block's top-left + (0 or w/2, ¾·face + 2). If the same-row neighbour on that
+  block's top-left + (0 or w/2, ¾·block h + 2) (the block's full height,
+  not its top face: checked against river banks at Issus and Samarkand,
+  where the whole cliff face with its foam line shows, 79–90% pixel-exact). If the same-row neighbour on that
   side is exactly one level higher, the drop is +1 and the cliff moves up one
   level. Shifted rows in the last column (no lower-right) use the lower of
   lower-left and the hex two rows down for the right half; likewise column 0
@@ -409,6 +649,102 @@ Infantry and phalanx figures also carry a per-facing draw depth. The renderer
 sorts all objects by anchor row, then depth; the original's exact rule is
 not confirmed.
 
+## Missile volleys 🟡
+
+A missile unit's presentation (`FUN_0052e6a0`, handler `FUN_0052ee77` on
+`MissileFire`) animates every standing figure:
+
+* **Shooting.** Each man plays his shooting strip for the facing (`MN`…`MNW`,
+  names from the table at `0x627994`): cel 0, cel 1 for five frames, cel 2,
+  cel 3 for six frames, then `Standing`.
+* **Missiles.** Each man gets his own missile sprite from the set picked when
+  the unit is built (`Arrows`, `Javelins`, `Bolt`, `Stone`, three sizes each,
+  loaded by `FUN_004bfcfc` into `0x64fc28`). It shows the 1×1 `Default` cel
+  while the man draws, then cel 0 of the strip for the facing (`N`…`NW`,
+  table `0x6279b4`) on the way up and cel 1 on the way down (due south keeps
+  `S` cel 0), then `Default` again. Its path runs from a per-direction
+  launch point by the man, with `10 − rand() % 21` of scatter on each axis,
+  over a midpoint lifted by a per-direction amount (e.g. (0, −20) north,
+  (−5, −10) north-east), to the target.
+* 🟡 The frames are moved by the original's sprite motion engine, whose
+  timing is not traced. The rewrite releases the missiles on the release cel
+  and flies them at a fixed speed (a fifth of a block per frame) along a
+  parabola lifted by a quarter block plus a quarter of the distance, landing
+  on random men of the target, and plays the volley after the moves queued
+  before it.
+
+## Shock combat animation 🟡
+
+On `CombatAnimate` (`FUN_004e77de`) a unit marks the sides, relative to its
+front, where enemies in contact stand (`FUN_004e4b1a` gives the direction to
+each), works out each man's exposed side (`FUN_004e6d66`: of those sides, the
+one his table entry is lowest for, if under his threshold), picks the men to
+fall, and calls each living man's fight animation (`FUN_004eb617`, vtable
+slot `0x68`). Only exposed men fight, turned toward their exposed side; the
+others stand, unless they are among those who fall:
+
+* **Strips.** The fight strips are `CN`…`CNW` where the art has them (light
+  and medium infantry, hoplites, light cavalry), else the walking strips
+  (the base set at `+0xf6` by `FUN_004e42d3`). Cels: 0–4 in and 4–0 out for
+  the mounted classes (`+0x108` 8–12, `FUN_004eb5d9`), 0–3 and 3–0 for the
+  phalanx (class 3), otherwise 1, 2, 3 in and 3, 3, 2, 2, 1, 1 out.
+* **Motion.** After a pause of 2 + `rand() % 5` frames each man steps toward
+  the enemy by a per-direction amount (zoom-in pixels, N … NW: (0, −10),
+  (20, −12), (30, 0), (20, 12), (0, 10), (−20, 12), (−30, 0), (−20, −12);
+  tables `0x60da02`/`0x60da12`) with scatter of `10 − rand() % 21`,
+  `5 − rand() % 11`, in `640 − rand() % 81` ms, then swings between his place
+  and twice the step every 1800 ms.
+* **Deaths.** The k-th of n men to fall goes down at `(2k + 1) × 7200 / 2n`
+  ms, his sprite turning into a body. A dying cavalryman leaves a riderless
+  horse running off in a random direction 15% of the time (`Horse`,
+  `Cataphracted Horse`); a dying chariot 25% of the time leaves a runaway
+  (`Running Chariot`, or `Chariot Dragging Persian/Indian`).
+
+**Who falls.** The handler keeps its own random generator, seeded with the
+figure count every time (`FUN_0057a3be`: `state × 16807 mod 0x47483647` in 32
+bits, scaled to 0–99 by `FUN_0057a362`), so the same unit in the same
+situation always loses the same men. It visits the living men in turn and
+takes one when a roll is under `100 / figures`. In shock (`CombatAnimate`)
+it first marks each man exposed if, for a side where an enemy stands
+(relative to the unit's front: 1 front, clockwise to 8), his entry in the
+formation's table (`0x60d768` phalanx, `0x60d8d0` infantry, `0x60d960`
+mounted, `0x60d9cc` elephants and chariots; 9 values per figure, the first
+a threshold) is under the threshold, i.e. he stands on that side; it then
+rolls twice per man, taking an exposed man on the first roll, or anyone on
+the second once a whole round has passed. Other hits (`CohesionHit`) roll
+once per man with no exposure test. The rewrite does the same
+(`units::pick_fallen`), keeping which men are down per unit; men stand up
+again when a unit recovers cohesion (🟡 which rise first is not traced).
+
+The rewrite plays each shock as a fight (`Happened::Shock`, then its
+casualties) with these strips, cels, steps and death times, only the exposed
+men fighting (single figures turn toward the nearest enemy), the whole fight
+in the original's 7.2 s (sped up only while many animations wait).
+
+**Timing.** The original drives everything from one Windows timer
+(`SetTimer`, `FUN_0042def7`) whose period is the shortest of up to sixteen
+registered callbacks (`TimerCallback[16]`: `FUN_0043ac87` registers one at
+`n` per second, period `1000 / n` ms; each slot accumulates the base period
+and fires on reaching its own, `FUN_00439c6d`). The sprite layer
+(`AlexPhysicalLayer`, callback `FUN_00500310`) runs at 10 per second, so a
+sprite cel lasts 100 ms and the animation code's milliseconds (fights' 7200,
+600 and 1800 ms legs) are real time; the palette animator runs at 5 per
+second. The rewrite uses 100 ms cels for walking, shooting, fighting and
+throwing down arms. 🟡 How far a sprite moves per tick (walking and runaway
+speed) is not traced.
+
+**Runaways** (`FUN_0050ae12`). A loose horse or chariot sets off in a
+random direction (`rand() % 8 + 1`; due north or south veer one side) and
+runs until it would leave the map: at each hex it may keep on or veer one
+direction either way, never turning away from the nearest map edge (left:
+not E; right: not W; top: not SE/SW; bottom: not NE/NW), taking a road (or
+rocky riverbed, codes 12/13) if one is among them, else one at random
+(`rand() % 4`, skipping ruled-out ones). The rewrite follows these rules
+(`runaways::path`), starting each runaway as its man falls and running it at
+a fixed pace (🟡 0.12 s a hex; the original's speed is not traced) until it
+is off the map; the chariot choice uses both rolls (a dragging chariot is a
+quarter of the quarter).
+
 ## Routed units and debris 🟡
 
 Unit art carries, besides `Standing` and the walking strips `N`…`NW`, a
@@ -417,21 +753,66 @@ strips `RoutN`…`RoutNW` (infantry) or `RN`…`RNW` (cavalry, elephants), and
 `Drop…`, `Spear…`, `Shield`, `Helmet` pieces, and fallen men: `Shock`
 (killed in melee), `Arrow` (by missiles), `Trample` (by elephants) and
 `General` (a leader). `RDEBRIS.EIF` ("Generic Rout Debris") holds dropped
-bows, shields and spears. The viewer leaves a fallen man of the unit's own
-art for each cohesion hit (up to four at a time for infantry, two for
-cavalry, one for elephants, chariots and oxybeles) at a random spot in its hex,
-of the kind that caused it, and routed units run (running strips, facing the
-way they go), including off the map; 🟡 how many bodies the original drops
-and where is not measured. The rewrite draws routed
+bows, shields and spears. A man who falls does not play a death
+animation: the original swaps his own sprite for a body where he stands
+(`FUN_004e77de`), a random cel of the strip for how he died together with
+the `General` strip (`FUN_004e5a75`, kind at `+0x10e`: 1 shock, 2 missile,
+3 trampled; a destroyed unit, `UnitEliminated`, uses `General` only). The
+rewrite does the same for the men who drop out of the formation (below) and
+for every man of a destroyed unit, showing each fall after the animations
+queued before it. The `Drop…` strips are not deaths: a unit that routs plays
+them (each cel twice, the last once) as its men throw down their arms, then
+leaves its arms on the ground: per man a spear (`FUN_004e6128`; missile
+units `FUN_004de0f4`) and, on foot, a shield (`FUN_004e6413`), from the
+unit's own `Spear…`/`Shield`/`Shield U` strips or else the generic rout
+debris (`RDEBRIS*`), each a random cel, where the man stood plus an offset
+per facing. The offsets live in point tables built at start-up (code at
+`0x4f6d7c`, zeros in the file), per screen facing N, NE, SE, S, SW, NW in
+zoom-in pixels: spears for infantry (20,−40) (51,−11) (−35,−15) (−13,−32)
+(31,−19) (−42,−15), mounted (16,−43) (48,−18) (−32,−15) (−8,−30) (24,−26)
+(−16,−36), phalanx (−9,−63) (57,−16) (−43,−21) (−16,−46) (31,−28) (−67,−44);
+shields for unit types 11 and 37 (−17,−22) (−1,−18) (6,−23) (17,−17) (4,−9)
+(−13,−11), for 3 and 14 (−21,−4) (−21,−8) (13,9) (17,−9) (0,3) (−28,0), for the
+rest (−21,−4) (−19,−6) (5,−8) (17,−4) (2,5) (−23,−5). `Shield U` is used facing
+N, NE and SE, `Shield` facing S, SW and NW. The rewrite plays the drop when a
+unit first breaks (`Happened::Routed`), before it runs, and leaves the arms
+(`units::rout_debris`); facings whose strip is empty (`DropE`, `DropW` in the
+art) skip the drop. Archers (four presentation classes, vtables `0x6017b0`,
+`0x601850`, `0x6018f0`, `0x601990`, slot `0x5c` = `FUN_004c0da7`) drop a bow
+(generic `Bow` strip) instead of a spear, at N (−30,−30), NE (−20,−15),
+SE (−13,−29), S (−1,−26), SW (−17,−14), NW (−28,−20) (table `0x60dafe`);
+🟡 their second piece (slot `0x60`, `0x4c0ed7`/`0x4c7dd8`) is not traced, so
+the rewrite gives them no shield.
+
+**Spent missiles.** The landscape (`PointedAlexLandscape`, bus handler
+`FUN_00507937` → `FUN_005079e1`) leaves a spent missile from `Missile
+Debris` in the hex a missile falls on, unless it is water: weapon codes 1,
+2, 5, 6 use `Arrow`, 3 `Stone`, 4 and 7 `Javelin`, with a random cel, placed
+up and left of the hex anchor by `w/5 + rand() % (w/10)` and
+`h/4 + rand() % (h/8)` (javelins `h/3 + rand() % (h/6)`), `w`, `h` the block
+size. The rewrite leaves one per volley in the target's hex as the volley
+ends (🟡 the triggering message is not identified: one per volley is
+assumed; bolts use the arrow strip). Routed units run
+(running strips, facing the way they go), including off the map. The rewrite draws routed
 units in `StandingR`, else the first cel of their running strip for their
 facing; the formation is kept (the original's routed layout and the debris
 are not drawn yet). In the original, units also lose figures as they take
 hits: the presentation code marks figures as dying (`CombatAnimate`,
 `CohesionHit`, `UnitEliminated`; the figure state array at `+0x148`, 1
-dying, 2 dead) and they become bodies, so a worn unit stands thinner
-(Hypaspist 2, 7 hits on TQ 8, shows about half its 20 figures). How many
-die per hit comes with the message from the logical side and is not traced;
-the rewrite keeps full formations. `gboh-tools render … save=F` draws a saved game. In the
+dying, 2 dead) and they become bodies, so a worn unit stands thinner. The
+logical side sends `CohesionHit` with `p = hits × 100 / TQ`
+(`FUN_0057e4e2`); the presentation keeps `(figures − reserve) × p / 100`
+figures down, picking them at random (each living figure with chance
+1/figures per pass, favouring an "exposed" list from `FUN_004e6d66`), and
+`RestoreCohesion` stands them up again. The reserve (`+0xfe`) is set by the
+presentation class: 10 for the 20-figure class (`FUN_004d8bac`), 2 for the
+6-figure one (`FUN_004fa403`), 0 for single figures, 3 in the base class
+(`FUN_004e42d3`), so elephants and chariots (3 figures) never thin. A
+phalanx at 6 hits on TQ 7 keeps 12 of 20, as seen in the original. The
+rewrite applies this, removing figures in a fixed random order per unit
+(🟡 the exposed-side preference is not reproduced). Also from
+`FUN_0057e3d8`: a unit with the flag at `+0xbe` set cannot be brought to
+rout by hits (they stop at TQ − 1). `gboh-tools render … save=F` draws a saved game. In the
 viewer a moved unit walks along its path (0.2 s per hex, the walking strip
 for its facing; 🟡 the original's timing is not measured). The game logs
 moves and volleys (`Game::log`), so the computer's moves are walked and
@@ -896,7 +1277,7 @@ them):
 * **Order count:** the AI's own budget is initiative − orders given; each
   new unit ordered costs one, wherever it stands.
 * **`Direction(a, b)`:** hexes become grid points `(2x + 2, 4y + 2 + 2·(x
-  odd))`; the ratio of `|dy|` to `|dx|` (0, equal, under, 3×, under 3×,
+  odd))` (the same `FUN_004b1c4a`, with its extra column from `y = 50` on); the ratio of `|dy|` to `|dx|` (0, equal, under, 3×, under 3×,
   over) and the quadrant index a table of angles in 15° steps clockwise from
   north (the six neighbours sit at 0, 4, 8, 12, 16, 20). The angle ÷ 4 gives
   NE, E, SE, SW, W, NW, so due north counts as NE and due south as SW.

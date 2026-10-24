@@ -7,8 +7,10 @@ pub mod crt;
 pub mod eif;
 pub mod map;
 pub mod pal;
+pub mod pe;
 pub mod scn;
 pub mod units;
+pub mod walkanim;
 mod read;
 
 #[derive(Debug, thiserror::Error)]
