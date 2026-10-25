@@ -181,7 +181,7 @@ fn command(data_dir: &Path, scn_file: &str) -> Result<()> {
         let u = &battle.units[l];
         let r = u.leader.unwrap();
         println!("{} (initiative {}, range {}, line {}) at ({}, {})", u.name, r.initiative, r.command_range, r.personal_combat, u.hex.x, u.hex.y);
-        for i in commanded(&battle, l) {
+        for i in commanded(&battle, &map, l) {
             let c = &battle.units[i];
             println!("    {:24} group {:2} at ({}, {})", c.name, c.group, c.hex.x, c.hex.y);
         }
@@ -306,6 +306,27 @@ fn ai(data_dir: &Path, scn_file: &str, n: u32, opts: &[String]) -> Result<()> {
             let (out, n2) = game.finish_leader(only.is_none_or(|o| o == army));
             let routed: usize = out.iter().map(|o| o.routed.len() + o.eliminated.len()).sum();
             println!("turn {turn} {name:24} orders {used:2}  units moved/turned {moved:2}  shocks {shocks}  routed {routed}");
+            // `events`: what happened, in the original's commentary terms
+            if opts.iter().any(|o| o == "events") {
+                use gboh_game::game::Happened;
+                let n = |u: usize| game.battle.units[u].name.clone();
+                for e in std::mem::take(&mut game.log) {
+                    match e {
+                        Happened::Volley { shooter, target, .. } => println!("    {} volleys at {}", n(shooter), n(target)),
+                        Happened::Casualties { unit, count, hits, kind, .. } => println!("    {} takes {count} ({kind:?}), {hits} in all", n(unit)),
+                        Happened::Routed { unit } => println!("    {} is routing", n(unit)),
+                        Happened::Eliminated { unit, .. } => println!("    {} is eliminated", n(unit)),
+                        Happened::Shock { attackers, defenders } => println!(
+                            "    shock: {} -> {}",
+                            attackers.iter().map(|&u| n(u)).collect::<Vec<_>>().join(", "),
+                            defenders.iter().map(|&u| n(u)).collect::<Vec<_>>().join(", ")
+                        ),
+                        Happened::Moved { .. } => {}
+                    }
+                }
+            } else {
+                game.log.clear();
+            }
             if opts.iter().any(|o| o == "names") && !moved_names.is_empty() {
                 println!("    moved: {}", moved_names.join(", "));
             }

@@ -5,6 +5,7 @@ pub mod activation;
 pub mod ai;
 pub mod ai_host;
 pub mod battle;
+pub mod campaign;
 pub mod combat;
 pub mod command;
 pub mod game;

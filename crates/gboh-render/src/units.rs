@@ -775,22 +775,27 @@ pub fn figure_places(layout: &Layout, unit: &UnitView) -> Vec<FigurePlace> {
 /// Activation flag art (`Activation Unit Flags`): one pennant animation
 /// per nation and the pole.
 pub struct FlagSprites {
-    pennants: Vec<(Sprite, (i32, i32))>,
+    /// Each nation's pennant: its animation cels, with hot spots.
+    pennants: Vec<Vec<(Sprite, (i32, i32))>>,
     stem: (Sprite, (i32, i32)),
 }
 
+/// Original milliseconds a pennant cel shows (the sprite layer's 10 cels a
+/// second).
+pub const FLAG_CEL_MS: u64 = 100;
+
 impl FlagSprites {
     pub fn load(eif: &Eif) -> Option<Self> {
-        let first = |name: &str| -> Option<(Sprite, (i32, i32))> {
+        let all = |name: &str| -> Option<Vec<(Sprite, (i32, i32))>> {
             let s = eif.strips.iter().find(|s| s.name == name)?;
-            let c = s.cels.first()?;
-            Some((Sprite::from(c.decode().ok()?), (c.hot_x as i32, c.hot_y as i32)))
+            let cels: Vec<_> = s.cels.iter().filter_map(|c| Some((Sprite::from(c.decode().ok()?), (c.hot_x as i32, c.hot_y as i32)))).collect();
+            (!cels.is_empty()).then_some(cels)
         };
         let pennants = ["Macedonian Flag", "Persian Flag", "Indian Flag", "Greek Flag"]
             .into_iter()
-            .map(first)
+            .map(all)
             .collect::<Option<_>>()?;
-        Some(Self { pennants, stem: first("Stem")? })
+        Some(Self { pennants, stem: all("Stem")?.swap_remove(0) })
     }
 }
 
@@ -800,10 +805,11 @@ impl FlagSprites {
 const FLAG_BASE: (i32, i32) = (0, -12);
 const PENNANT: (i32, i32) = (1, -82);
 
-/// The pole and raised pennant (first animation frame) of `unit`'s flag.
-/// `jitter` is the unit's sideways offset, `5 - rand() % 11` in the
-/// original. The flag's ground shadow is not drawn yet.
-pub fn flag_drawables<'a>(map: &Map, layout: &Layout, unit: &UnitView, jitter: i32, art: &'a FlagSprites) -> Vec<Drawable<'a>> {
+/// The pole and pennant of `unit`'s flag, the pennant at animation cel
+/// `frame` (it waves through its strip's cels). `jitter` is the unit's
+/// sideways offset, `5 - rand() % 11` in the original. The flag's ground
+/// shadow is not drawn yet.
+pub fn flag_drawables<'a>(map: &Map, layout: &Layout, unit: &UnitView, jitter: i32, art: &'a FlagSprites, frame: usize) -> Vec<Drawable<'a>> {
     let hex = unit.hex;
     // pennant by nation: Macedonian, Persian (and allied), Indian, Greek
     // (and tribal)
@@ -815,7 +821,9 @@ pub fn flag_drawables<'a>(map: &Map, layout: &Layout, unit: &UnitView, jitter: i
     };
     let base = (FLAG_BASE.0 + jitter, FLAG_BASE.1);
     let (stem, stem_hot) = &art.stem;
-    let (flag, flag_hot) = &art.pennants[pennant];
+    let cels = &art.pennants[pennant];
+    // each flag waves out of step with its neighbours
+    let (flag, flag_hot) = &cels[(frame + unit.id) % cels.len()];
     // a walking unit's flag goes with it
     let shift = unit.walk.map_or((0, 0), |(_, s)| s);
     let moved = |(x, y): (i32, i32)| (x + shift.0, y + shift.1);

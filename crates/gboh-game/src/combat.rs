@@ -289,10 +289,11 @@ pub enum LeaderCasualty {
 
 /// The leader casualty roll after a shock. Each side's leader involved (the
 /// one with the highest first rating) rolls `rand() % 10` plus his fourth
-/// rating; the lower total loses, by the difference: 1–2 finished, 3–4
-/// wounded (killed if already wounded), 5–6 killed. A tie, or a difference
-/// of 7 or more, has no effect (the original only tests 1–6). Returns
-/// whether the attacking side's leader lost, and the effect.
+/// rating; the higher total is the one hurt (the original, at `0x4a9140`),
+/// by the difference: 1–2 finished, 3–4 wounded (killed if already
+/// wounded), 5–6 killed. A tie, or a difference of 7 or more, has no
+/// effect (the original only tests 1–6). Returns whether the attacking
+/// side's leader is hurt, and the effect.
 pub fn leader_casualty(
     attacker: (u16, u32),
     defender: (u16, u32),
@@ -300,7 +301,7 @@ pub fn leader_casualty(
 ) -> Option<(bool, LeaderCasualty)> {
     let a = attacker.1 as i32 + attacker.0 as i32;
     let d = defender.1 as i32 + defender.0 as i32;
-    let attacker_lost = a < d;
+    let attacker_lost = a > d;
     let effect = match (a - d).abs() {
         1 | 2 => LeaderCasualty::Finished,
         3 | 4 if !loser_wounded(attacker_lost) => LeaderCasualty::Wounded,
@@ -458,10 +459,11 @@ mod tests {
     #[test]
     fn leader_casualties() {
         let none = |_| false;
-        // (fourth rating, roll): totals 5 vs 7, the attacker's leader is finished
-        assert_eq!(leader_casualty((2, 3), (4, 3), none), Some((true, LeaderCasualty::Finished)));
-        assert_eq!(leader_casualty((7, 2), (0, 5), none), Some((false, LeaderCasualty::Wounded)));
-        assert_eq!(leader_casualty((7, 2), (0, 5), |_| true), Some((false, LeaderCasualty::Killed)));
+        // (fourth rating, roll): totals 5 vs 7, the defender's leader (the
+        // higher total) is finished
+        assert_eq!(leader_casualty((2, 3), (4, 3), none), Some((false, LeaderCasualty::Finished)));
+        assert_eq!(leader_casualty((7, 2), (0, 5), none), Some((true, LeaderCasualty::Wounded)));
+        assert_eq!(leader_casualty((7, 2), (0, 5), |_| true), Some((true, LeaderCasualty::Killed)));
         assert_eq!(leader_casualty((7, 9), (0, 0), none), None);
         assert_eq!(leader_casualty((3, 3), (3, 3), none), None);
     }

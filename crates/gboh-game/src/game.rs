@@ -24,6 +24,7 @@ type Snapshot = (Vec<(crate::hex::Hex, u8, i32, UnitState)>, usize, u16);
 pub type Designation = (Vec<(usize, bool)>, Vec<usize>);
 
 /// A battle being played.
+#[derive(Clone)]
 pub struct Game {
     pub battle: Battle,
     pub map: Map,
@@ -56,6 +57,9 @@ pub struct Game {
     group_streak: HashMap<usize, u8>,
     /// Shocks designated by the active leader.
     pub shocks: Vec<Designation>,
+    /// Rout points of leaders killed and replaced from the ranks (they
+    /// stay on the map), by nation.
+    pub fallen_leaders: Vec<(u8, u16)>,
 }
 
 /// Something that happened on the battlefield, for a front end to show
@@ -127,6 +131,7 @@ impl Game {
             group_tried: HashMap::new(),
             group_streak: HashMap::new(),
             shocks: Vec::new(),
+            fallen_leaders: Vec::new(),
         }
     }
 
@@ -157,19 +162,38 @@ impl Game {
             self.group_streak.insert(l, streak);
         }
         self.shocks.clear();
+        // every activation, a successful momentum too (`FUN_0054b4eb`
+        // broadcasting `BeginLeaderOrdersPhase`): every unit gets its
+        // movement back and may take orders again (`FUN_0052b2e2`,
+        // `FUN_00536b1a`); one that spent movement in an earlier order has
+        // been ordered this turn, and pays for being ordered again
         for u in &mut self.battle.units {
+            if u.mp < u.max_mp || u.fired {
+                u.reordered = true;
+            }
+            u.mp = u.max_mp;
+            u.done = false;
+            u.turned = false;
+            u.reorder_hit = false;
             u.fired = false;
         }
         self.resupplied = match leader {
             Some(l) => {
-                let units = commanded(&self.battle, l);
-                resupply(&mut self.battle, &units, &mut self.rng)
+                let units = commanded(&self.battle, &self.map, l);
+                let r = resupply(&mut self.battle, &units, &mut self.rng);
+                // more than two cost the leader a command point
+                if r.len() > 2
+                    && let Some(p) = &mut self.points
+                {
+                    p.used += 1;
+                }
+                r
             }
             None => Vec::new(),
         };
         // who may take orders is fixed now (the original's FUN_005235b8):
         // units in command that have not moved this turn and are not done
-        self.orderable_now = leader.map_or_else(Vec::new, |l| commanded(&self.battle, l));
+        self.orderable_now = leader.map_or_else(Vec::new, |l| commanded(&self.battle, &self.map, l));
         let b = &self.battle;
         let resupplied = &self.resupplied;
         self.orderable_now.retain(|&u| b.units[u].mp == b.units[u].max_mp && !b.units[u].done && !resupplied.contains(&u));
@@ -183,7 +207,30 @@ impl Game {
         let mp = self.battle.units[unit].mp;
         let path = crate::movement::path_to(&self.battle, &self.map, unit, mp, to).unwrap_or_default();
         let map = self.map.clone();
-        let fire = orders::move_to(&mut self.battle, &map, unit, to, &mut self.rng)?;
+        let positions: Vec<crate::hex::Hex> = self.battle.units.iter().map(|u| u.hex).collect();
+        let moved = orders::move_to(&mut self.battle, &map, unit, to, &mut self.rng)?;
+        let fire = moved.fire;
+        // units that withdrew leave any shock designated against them, and
+        // are seen backing off
+        for &w in &moved.withdrew {
+            for (_, defenders) in self.shocks.iter_mut() {
+                defenders.retain(|&d| d != w);
+            }
+            for (attackers, _) in self.shocks.iter_mut() {
+                attackers.retain(|&(a, _)| a != w);
+            }
+            self.log.push(Happened::Moved { unit: w, path: vec![positions[w], self.battle.units[w].hex], running: false });
+        }
+        self.shocks.retain(|(a, d)| !a.is_empty() && !d.is_empty());
+        // leaders hurt stepping away roll for a casualty (`FUN_00566549`:
+        // finished, then wounded on d100 under 50, else killed)
+        for &l in &moved.leaders_hit {
+            self.log.push(Happened::Moved { unit: l, path: vec![positions[l], self.battle.units[l].hex], running: false });
+            self.leader_casualty(l, LeaderCasualty::Finished, 0);
+            let roll = self.rng.next() % 100;
+            let effect = if roll < 50 { LeaderCasualty::Wounded } else { LeaderCasualty::Killed };
+            self.leader_casualty(l, effect, 1);
+        }
         let end = self.battle.units[unit].hex;
         let hits: i32 = fire.iter().map(|&(_, h)| h).sum();
         if hits > 0 {
@@ -247,7 +294,7 @@ impl Game {
     pub fn recover(&mut self, unit: usize) -> i32 {
         let Some(l) = self.activation.active() else { return 0 };
         let ini = self.battle.units[l].leader.map_or(0, |r| r.initiative);
-        let n = orders::recover(&mut self.battle, unit, ini, &mut self.rng);
+        let n = orders::recover(&mut self.battle, &self.map, unit, ini, &mut self.rng);
         self.spend(unit, true);
         n
     }
@@ -373,7 +420,7 @@ impl Game {
                     let blocked = self.battle.units.iter().enumerate().any(|(i, x)| {
                         x.on_field() && x.hex == to && !group.contains(&i) && i != l
                     });
-                    if spent + c > o.max_mp || blocked || in_enemy_zoc(&self.battle, o.side, to) {
+                    if spent + c > o.max_mp || blocked || in_enemy_zoc(&self.battle, &self.map, o.side, to) {
                         continue 'dir;
                     }
                     moved.push((u, to, spent + c));
@@ -474,18 +521,30 @@ impl Game {
     /// already attacked this phase, and joins a shock already on its
     /// target. Skirmishers cannot shock (the Agrianians can, and so can
     /// anyone against chariots or routed units). Returns false if refused.
-    pub fn designate_shock(&mut self, unit: usize, target: usize) -> bool {
+    /// Whether `unit` may shock `target`: in its front, and not a
+    /// skirmisher attacking anything but chariots or routed units.
+    pub fn can_shock(&self, unit: usize, target: usize) -> bool {
         let u = &self.battle.units[unit];
-        let front = self.in_front(unit);
         let t = &self.battle.units[target];
-        if u.state == UnitState::Routed {
+        if u.state == UnitState::Routed || u.side == t.side {
             return false;
         }
         let skirmisher = crate::movement::MoveClass::of_type(u.type_id) == Some(crate::movement::MoveClass::Skirmisher);
         let soft = matches!(t.type_id, 22 | 23) || t.state == UnitState::Routed;
-        if !front.contains(&target) || (skirmisher && u.type_id != 42 && !soft) {
+        self.in_front(unit).contains(&target) && !(skirmisher && u.type_id != 42 && !soft)
+    }
+
+    /// Whether `shooter` may volley at `target` now (nothing is changed).
+    pub fn can_volley(&self, shooter: usize, target: usize) -> bool {
+        orders::volley(&mut self.battle.clone(), shooter, target, &mut self.rng.clone()).is_ok()
+    }
+
+    pub fn designate_shock(&mut self, unit: usize, target: usize) -> bool {
+        if !self.can_shock(unit, target) {
             return false;
         }
+        let front = self.in_front(unit);
+        let u = &self.battle.units[unit];
         let moved = u.mp < u.max_mp;
         if let Some(s) = self.shocks.iter_mut().find(|(_, d)| d.contains(&target)) {
             s.0.push((unit, moved));
@@ -521,7 +580,7 @@ impl Game {
                 self.rout(u, 2);
             }
             if let Some((l, effect)) = out.leader {
-                self.leader_casualty(l, effect);
+                self.leader_casualty(l, effect, 2);
             }
             if let Some(h) = target_hex {
                 self.advance(&attackers, &defenders, h);
@@ -535,9 +594,7 @@ impl Game {
         self.pelium_exits();
         let gave_orders = self.points.as_ref().is_some_and(|p| p.used > 0) && self.group_move.is_none();
         let next = self.activation.next(&self.battle, momentum && gave_orders, &mut self.rng);
-        if let (Some(l), true) = (next, next == before) {
-            self.momentum_refresh(l);
-        }
+        let _ = before;
         (outcomes, self.activate(next))
     }
 
@@ -548,42 +605,42 @@ impl Game {
         self.points.as_ref().is_some_and(|p| p.used > 0) && self.group_move.is_none() && self.activation.momentum_left()
     }
 
-    /// A successful momentum: the leader's units get their movement back
-    /// and may be ordered again; one that has already moved this turn takes
-    /// a cohesion hit the first time it moves again ("ordered again"). 🟡
-    /// Modelled on the original's commentary at Hydaspes; the original
-    /// restores movement and clears "done" in `FUN_0052b2e2`, but the
-    /// message that triggers it is not traced.
-    fn momentum_refresh(&mut self, leader: usize) {
-        for u in commanded(&self.battle, leader) {
-            let unit = &mut self.battle.units[u];
-            if unit.mp < unit.max_mp {
-                unit.reordered = true;
-            }
-            unit.mp = unit.max_mp;
-            unit.turned = false;
-            unit.done = false;
-        }
-    }
-
-    /// Apply a leader casualty: finished for the turn; wounded (command
-    /// range and fourth rating down 2 — 🟡 the amount the original's wound
-    /// message carries; a second wound kills); killed.
-    fn leader_casualty(&mut self, leader: usize, effect: LeaderCasualty) {
+    /// Apply a leader casualty: finished for the turn; wounded
+    /// (`FUN_00566251`: charisma, initiative, fourth rating and command
+    /// range all down by `amount`, 2 from a shock and 1 stepping away; a
+    /// second wound kills); killed (`FUN_00565b3d`: his rout points count
+    /// for the enemy and a soldier from the ranks replaces him, range 4,
+    /// initiative 2, finished this turn; Alexander and Darius are not
+    /// replaced, their fall ends the battle). 🟡 The replacement keeps the
+    /// leader's name (the original gives him one from its data).
+    fn leader_casualty(&mut self, leader: usize, effect: LeaderCasualty, amount: u16) {
         let u = &mut self.battle.units[leader];
         match effect {
             LeaderCasualty::Finished => self.activation.finish(leader),
             LeaderCasualty::Wounded if !u.wounded => {
                 u.wounded = true;
                 if let Some(r) = &mut u.leader {
-                    r.command_range = r.command_range.saturating_sub(2);
-                    r.personal_combat = r.personal_combat.saturating_sub(2);
+                    r.charisma = r.charisma.saturating_sub(amount);
+                    r.initiative = r.initiative.saturating_sub(amount);
+                    r.personal_combat = r.personal_combat.saturating_sub(amount);
+                    r.command_range = r.command_range.saturating_sub(amount);
                 }
             }
             _ => {
-                u.state = UnitState::Gone;
-                let (hex, facing) = (u.hex, u.facing);
-                self.log.push(Happened::Eliminated { unit: leader, hex, facing });
+                let king = u.name.contains("Alexander") || u.name.contains("Darius");
+                let points = rout_points(u.type_id, u.tq, u.leader.map_or(0, |r| r.initiative));
+                if king {
+                    u.state = UnitState::Gone;
+                    let (hex, facing) = (u.hex, u.facing);
+                    self.log.push(Happened::Eliminated { unit: leader, hex, facing });
+                } else {
+                    self.fallen_leaders.push((u.side, points));
+                    if let Some(r) = &mut u.leader {
+                        r.command_range = 4;
+                        r.initiative = 2;
+                    }
+                    self.activation.finish(leader);
+                }
             }
         }
     }
@@ -726,18 +783,45 @@ impl Game {
         }
         if self.battle.units[unit].state == UnitState::Fighting {
             self.log.push(Happened::Routed { unit });
+            // foot archers, slingers and javelinists throw down their
+            // missiles (`FUN_0056bcb0`; mounted ones and oxybeles keep them)
+            use crate::missile::Weapon;
+            if let Some((w @ (Weapon::Bow | Weapon::Sling | Weapon::Javelin), _)) = self.battle.units[unit].missile {
+                self.battle.units[unit].missile = Some((w, 0));
+            }
         }
         self.battle.units[unit].state = UnitState::Routed;
+        let start = self.battle.hexes(unit);
         let (path, gone) = match flee(&self.battle, &self.map, unit, steps) {
             Flight::Moved(p) => (p, false),
             Flight::Gone(p) => (p, true),
         };
-        // friendly units routed through take a cohesion hit (manual)
+        // friendly units it routs through (the end of `FUN_0057ae96`): one
+        // cohesion hit each, which may break them; routed ones are destroyed
         let side = self.battle.units[unit].side;
+        let mut through: Vec<crate::hex::Hex> = start;
+        through.extend(path.iter().copied());
         for o in 0..self.battle.units.len() {
             let u = &self.battle.units[o];
-            if o != unit && u.side == side && u.state == UnitState::Fighting && path.contains(&u.hex) {
-                self.battle.units[o].hits += 1;
+            if o == unit || u.side != side || u.leader.is_some() || !self.battle.hexes(o).iter().any(|h| through.contains(h)) {
+                continue;
+            }
+            match u.state {
+                UnitState::Fighting => {
+                    let u = &mut self.battle.units[o];
+                    u.hits += 1;
+                    if u.hits >= u.tq as i32 {
+                        u.state = UnitState::Routed;
+                        self.log.push(Happened::Routed { unit: o });
+                    }
+                }
+                UnitState::Routed => {
+                    let u = &mut self.battle.units[o];
+                    u.state = UnitState::Gone;
+                    let (hex, facing) = (u.hex, u.facing);
+                    self.log.push(Happened::Eliminated { unit: o, hex, facing });
+                }
+                _ => {}
             }
         }
         let mut trail = vec![self.battle.units[unit].hex];
@@ -778,7 +862,8 @@ impl Game {
             .iter()
             .filter(|u| u.side == nation && u.state == UnitState::Gone)
             .map(|u| rout_points(u.type_id, u.tq, u.leader.map_or(0, |r| r.initiative)))
-            .sum()
+            .sum::<u16>()
+            + self.fallen_leaders.iter().filter(|(n, _)| *n == nation).map(|(_, p)| p).sum::<u16>()
     }
 
     /// An army that has reached its rout level withdraws. If both have, the
@@ -918,6 +1003,7 @@ mod tests {
             group_tried: HashMap::new(),
             group_streak: HashMap::new(),
             shocks: Vec::new(),
+            fallen_leaders: Vec::new(),
         }
     }
 
@@ -972,18 +1058,22 @@ mod tests {
     }
 
     #[test]
-    fn momentum_lets_moved_units_go_again_at_a_cost() {
+    fn activations_let_moved_units_go_again_at_a_cost() {
         let r = LeaderRatings { charisma: 1, command_range: 9, initiative: 3, personal_combat: 1 };
         let mut g = game(vec![unit(4, 2, Hex::new(2, 2), Some(r)), unit(31, 2, Hex::new(4, 4), None)]);
         g.battle.units[1].mp = 1;
-        g.momentum_refresh(0);
+        g.activate(Some(0));
         assert_eq!(g.battle.units[1].mp, 5);
         let m = g.map.clone();
         crate::orders::move_to(&mut g.battle, &m, 1, Hex::new(5, 4), &mut BorlandRand::new(1)).unwrap();
         assert_eq!(g.battle.units[1].hits, 1);
-        // only once a turn
+        // only once an activation
         crate::orders::move_to(&mut g.battle, &m, 1, Hex::new(6, 4), &mut BorlandRand::new(1)).unwrap();
         assert_eq!(g.battle.units[1].hits, 1);
+        // the next activation, again
+        g.activate(Some(0));
+        crate::orders::move_to(&mut g.battle, &m, 1, Hex::new(7, 4), &mut BorlandRand::new(1)).unwrap();
+        assert_eq!(g.battle.units[1].hits, 2);
     }
 
     #[test]
@@ -1048,10 +1138,14 @@ mod tests {
     fn wounds_and_deaths() {
         let r = LeaderRatings { charisma: 1, command_range: 5, initiative: 3, personal_combat: 3 };
         let mut g = game(vec![unit(4, 2, Hex::new(2, 2), Some(r))]);
-        g.leader_casualty(0, LeaderCasualty::Wounded);
-        assert_eq!(g.battle.units[0].leader.unwrap().command_range, 3);
-        g.leader_casualty(0, LeaderCasualty::Wounded);
-        assert_eq!(g.battle.units[0].state, UnitState::Gone);
+        g.leader_casualty(0, LeaderCasualty::Wounded, 2);
+        let r = g.battle.units[0].leader.unwrap();
+        assert_eq!((r.command_range, r.initiative, r.personal_combat), (3, 1, 1));
+        // a second wound kills: a soldier from the ranks takes over
+        g.leader_casualty(0, LeaderCasualty::Wounded, 1);
+        assert_eq!(g.battle.units[0].state, UnitState::Fighting);
+        assert_eq!((g.battle.units[0].leader.unwrap().command_range, g.battle.units[0].leader.unwrap().initiative), (4, 2));
+        assert!(g.rout_points(0) > 0);
     }
 
     #[test]

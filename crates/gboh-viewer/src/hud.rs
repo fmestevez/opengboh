@@ -65,14 +65,60 @@ const TOOLBAR: [(Tool, &str, &str, i32); 20] = [
     (Tool::Undo, "BUTTONS3.EIF", "Undo", 502),
 ];
 
+/// Where each button's texts lie in `alex.exe` (version 1.3; the
+/// toolbar's set-up, `FUN_0051eab8`, hands them to each button): the art
+/// cel's name (checked, to know the executable is that version), the short
+/// name the tooltip shows and the line the status bar shows. For the
+/// overview and the hex grid, the texts for the other state follow.
+const TIPS: [(Tool, u32, u32, u32); 20] = [
+    (Tool::OpenMap, 0x6216e0, 0x6216f9, 0x6216e9),
+    (Tool::FinishLeader, 0x62171c, 0x62175d, 0x621739),
+    (Tool::CenterOnLeader, 0x62178a, 0x6217d5, 0x6217ae),
+    (Tool::RotateLeft, 0x621808, 0x621855, 0x62182a),
+    (Tool::RotateRight, 0x621897, 0x6218d6, 0x6218b3),
+    (Tool::AboutFace, 0x621909, 0x621932, 0x621921),
+    (Tool::MissileVolley, 0x621959, 0x62199d, 0x621973),
+    (Tool::RestoreCohesion, 0x6219cc, 0x621a17, 0x6219ec),
+    (Tool::Rally, 0x621a48, 0x621a70, 0x621a58),
+    (Tool::UnitDetails, 0x621a97, 0x621ad7, 0x621ab7),
+    (Tool::Overview, 0x621afd, 0x621b1c, 0x621b0a),
+    (Tool::HexGrid, 0x621b80, 0x621bb3, 0x621b9e),
+    (Tool::ReverseView, 0x621c22, 0x621c47, 0x621c2c),
+    (Tool::ZoomIn, 0x621c72, 0x621c89, 0x621c79),
+    (Tool::ZoomNormal, 0x621caa, 0x621cd1, 0x621cb2),
+    (Tool::ZoomOut, 0x621cf2, 0x621d0c, 0x621cfb),
+    (Tool::TileVertical, 0x621d33, 0x621d5c, 0x621d40),
+    (Tool::TileHorizontal, 0x621d89, 0x621db6, 0x621d98),
+    (Tool::Cascade, 0x621de7, 0x621e03, 0x621def),
+    (Tool::Undo, 0x621e24, 0x621e43, 0x621e29),
+];
+/// The overview's "show" and the hex grid's "off" texts.
+const SHOW_OVERVIEW: (u32, u32) = (0x621b64, 0x621b52);
+const GRID_OFF: (u32, u32) = (0x621c0b, 0x621bf5);
+
 /// Heights of the toolbar and the status bar.
 pub const TOOLBAR_HEIGHT: i32 = 30;
 pub const STATUS_HEIGHT: i32 = 50;
+/// Where the toolbar starts: under the menu bar.
+pub const TOOLBAR_TOP: i32 = crate::menu::MENU_HEIGHT;
+/// The bottom of the bars at the top of the window.
+pub const TOP: i32 = TOOLBAR_TOP + TOOLBAR_HEIGHT;
 
 pub struct Hud {
+    /// Where the left button is held down (window pixels), if it is: a
+    /// button under it is drawn pressed.
+    pub pressed: std::cell::Cell<Option<(i32, i32)>>,
+    /// A tooltip to show, and where (window pixels).
+    pub tooltip: std::cell::RefCell<Option<(String, (i32, i32))>>,
+    /// The buttons' texts from the executable: short name and status line,
+    /// and the overview's and grid's other ones.
+    tips: Vec<(Tool, String, String)>,
+    other_tips: [(String, String); 2],
     font: Font,
     small: Font,
     marble: Option<Sprite>,
+    /// The slider art (`SLIDER.EIF`): thumb, track left, middle and right.
+    slider: Vec<Sprite>,
     buttons: Vec<Vec<Sprite>>,
     /// Left cap, middle, right cap, divider.
     bar: Vec<Sprite>,
@@ -103,6 +149,8 @@ pub struct Hud {
     army_dialog: Option<gboh_formats::pe::Dialog>,
     /// The palette's remap tables (0 darker, 2 brighter), for engraving.
     remap: [[u8; 256]; 5],
+    /// The palette's colour nearest Windows' tooltip yellow.
+    pale_yellow: u8,
 }
 
 /// One line of the army details: a unit (TQ and hits) or a leader (none),
@@ -131,23 +179,95 @@ pub struct ArmyDetails {
 pub const ARMY_LINES: usize = 10;
 
 /// A dialog drawn from its template (`name` in `alex.exe`): its static texts
-/// by control id where they are filled in at run time, and the check boxes
-/// ticked.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// and edit boxes by control id where they are filled in at run time (id 0:
+/// the caption), the check boxes ticked, the list box's lines with the one
+/// chosen, and the edit box being typed in.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Plain {
     pub name: &'static str,
     pub texts: Vec<(u16, String)>,
     pub checked: Vec<u16>,
+    pub list: Vec<String>,
+    pub selected: Option<usize>,
+    pub focus: Option<u16>,
+    /// Sliders the dialog adds in code (the preferences' volumes): left and
+    /// top in dialog units, and the value out of 10000.
+    pub sliders: Vec<(i16, i16, u16)>,
 }
+
+/// A slider's full value.
+pub const SLIDER_MAX: u16 = 10000;
+
+/// Height of a list box line.
+const LIST_LINE: i32 = 13;
 
 /// Height of a dialog's caption bar.
 const CAPTION: i32 = 18;
+
+/// A white box with a dark frame.
+fn fill_framed(canvas: &mut Canvas, (x, y, w, h): (i32, i32, i32, i32)) {
+    for py in y..y + h {
+        for px in x..x + w {
+            if px >= 0 && py >= 0 && (px as usize) < canvas.width && (py as usize) < canvas.height {
+                canvas.pixels[py as usize * canvas.width + px as usize] = 255;
+            }
+        }
+    }
+    frame_rect(canvas, (x, y, w, h));
+}
+
+/// A one-pixel dark frame.
+fn frame_rect(canvas: &mut Canvas, (x, y, w, h): (i32, i32, i32, i32)) {
+    let mut put = |px: i32, py: i32| {
+        if px >= 0 && py >= 0 && (px as usize) < canvas.width && (py as usize) < canvas.height {
+            canvas.pixels[py as usize * canvas.width + px as usize] = 248;
+        }
+    };
+    for i in x..x + w {
+        put(i, y);
+        put(i, y + h - 1);
+    }
+    for j in y..y + h {
+        put(x, j);
+        put(x + w - 1, j);
+    }
+}
+
+/// A window of text to read: a help topic, the credits, a battle's
+/// history or victory conditions. Paragraphs may lead to other topics (the
+/// help's contents), and the text scrolls a line at a time.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Reader {
+    pub title: String,
+    pub paragraphs: Vec<String>,
+    /// The topic each paragraph opens when clicked, if any.
+    pub links: Vec<Option<usize>>,
+    /// The first line shown.
+    pub scroll: usize,
+    /// The buttons along the bottom: their captions (the first closes).
+    pub buttons: Vec<String>,
+}
+
+/// What a click on the reader meets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReaderClick {
+    /// A button, by its place along the bottom.
+    Button(usize),
+    /// A paragraph's link.
+    Link(usize),
+}
+
+/// The reader's size, at most.
+const READER: (i32, i32) = (560, 420);
 
 /// How a battle ended for the player: a nation byte and whether it won.
 pub type Ending = (u8, bool);
 
 /// A point or size on the window, in pixels.
 type Point = (i32, i32);
+
+/// A rectangle on the window: left, top, width, height.
+type Rect = (i32, i32, i32, i32);
 
 /// What the game overview shows for the two armies (home, visitor):
 /// nation bytes, rout levels and rout points lost.
@@ -229,9 +349,14 @@ impl Hud {
             .map(|&(_, file, strip, _)| files.iter().find(|(f, _)| *f == file).map_or_else(Vec::new, |(_, e)| cels(e, strip)))
             .collect();
         Self {
+            pressed: std::cell::Cell::new(None),
+            tooltip: std::cell::RefCell::new(None),
+            tips: Vec::new(),
+            other_tips: Default::default(),
             font: Font::load(data_dir),
             small: Font::small(data_dir),
             marble: first(&eif(data_dir, "BACKGND.EIF"), "Blocks"),
+            slider: cels(&eif(data_dir, "SLIDER.EIF"), "Horizontal"),
             buttons,
             bar: cels(&eif(data_dir, "ALEXSB.EIF"), "sbArt"),
             details_art: first(&eif(data_dir, "DIALOG.EIF"), "Unit Overview"),
@@ -256,6 +381,14 @@ impl Hud {
                 .and_then(|d| gboh_formats::pal::Palette::parse(&d).ok())
                 .and_then(|p| p.remap.try_into().ok())
                 .unwrap_or([std::array::from_fn(|i| i as u8); 5]),
+            pale_yellow: crate::find_ci(data_dir, "GAME.PAL")
+                .and_then(|p| std::fs::read(p).ok())
+                .and_then(|d| gboh_formats::pal::Palette::parse(&d).ok())
+                .and_then(|p| (1..=255u8).min_by_key(|&i| {
+                    let [r, g, b] = p.colors[i as usize];
+                    (255 - r as i32).pow(2) + (255 - g as i32).pow(2) + (225 - b as i32).pow(2)
+                }))
+                .unwrap_or(255),
             button: cels(&eif(data_dir, "DLGBTN.EIF"), "Pushbutton"),
             big_button: cels(&eif(data_dir, "DLGBTN.EIF"), "Big Pushbutton"),
             details_dialog: None,
@@ -291,6 +424,16 @@ impl Hud {
         self.overview_dialog = self.strings.as_ref().and_then(|r| r.dialog("GAMEOVERVIEWDLG"));
         self.army_dialog = self.strings.as_ref().and_then(|r| r.dialog("ARMYDETAILSDLG"));
         self.end_dialog = self.strings.as_ref().and_then(|r| r.dialog("ENDOFGAMEDLG"));
+        // the toolbar's texts, if the executable is the version they are
+        // known in
+        if let Some(d) = data_dir.parent().and_then(|p| crate::find_ci(p, "ALEX.EXE")).and_then(|p| std::fs::read(p).ok()) {
+            let at = |va: u32| gboh_formats::pe::string_at(&d, va).unwrap_or_default();
+            let known = TOOLBAR.iter().zip(TIPS).all(|(&(tool, _, cel, _), (t, name, _, _))| tool == t && at(name) == cel);
+            if known {
+                self.tips = TIPS.iter().map(|&(t, _, short, long)| (t, at(short), at(long))).collect();
+                self.other_tips = [(at(SHOW_OVERVIEW.0), at(SHOW_OVERVIEW.1)), (at(GRID_OFF.0), at(GRID_OFF.1))];
+            }
+        }
         self
     }
 
@@ -368,7 +511,8 @@ impl Hud {
                 };
             }
         }
-        let title = "Running Commentary";
+        let title = self.strings.as_ref().and_then(|r| r.dialog("INFODLG")).map(|d| d.title).unwrap_or_default();
+        let title = title.as_str();
         self.font.draw(canvas, title, x0 + (w - self.font.width(title)) / 2, y0 + 3);
         // the latest lines that fit, wrapped to the box
         let mut wrapped = Vec::new();
@@ -452,6 +596,12 @@ impl Hud {
         Some(((x, y, w, h + CAPTION), d))
     }
 
+    /// The top left of `p`'s dialog's client area (under its caption).
+    pub fn plain_origin(&self, p: &Plain, width: usize, height: usize) -> Option<(i32, i32)> {
+        let ((x, y, _, _), _) = self.plain_place(p, width, height)?;
+        Some((x, y + CAPTION))
+    }
+
     /// What a click at `(x, y)` meets on `p`'s dialog: a button's or check
     /// box's id, `Some(0)` elsewhere on the dialog, `None` off it.
     pub fn plain_at(&self, p: &Plain, width: usize, height: usize, x: i32, y: i32) -> Option<u16> {
@@ -459,12 +609,26 @@ impl Hud {
         if x < dx || y < dy || x >= dx + dw || y >= dy + dh {
             return None;
         }
-        let hit = d.controls.iter().filter(|c| c.class == gboh_formats::pe::Name::Id(0x80) && !c.text.is_empty()).find(|c| {
+        use gboh_formats::pe::Name::Id;
+        let hit = d.controls.iter().filter(|c| c.rect.0 < d.size.0).filter(|c| (c.class == Id(0x80) && !c.text.is_empty()) || matches!(c.class, Id(0x81) | Id(0x83))).find(|c| {
             let (bx, by, bw, bh) = du(c.rect);
             let (bx, by) = (dx + bx, dy + CAPTION + by);
             x >= bx && x < bx + bw && y >= by && y < by + bh
         });
         Some(hit.map_or(0, |c| c.id))
+    }
+
+    /// The list box line of `p`'s dialog at `(x, y)`, if any.
+    pub fn plain_line_at(&self, p: &Plain, width: usize, height: usize, x: i32, y: i32) -> Option<usize> {
+        let ((dx, dy, _, _), d) = self.plain_place(p, width, height)?;
+        let c = d.controls.iter().find(|c| c.class == gboh_formats::pe::Name::Id(0x83))?;
+        let (bx, by, bw, bh) = du(c.rect);
+        let (bx, by) = (dx + bx, dy + CAPTION + by);
+        if x < bx || x >= bx + bw || y < by + 2 || y >= by + bh {
+            return None;
+        }
+        let k = ((y - by - 2) / LIST_LINE) as usize;
+        (k < p.list.len()).then_some(k)
     }
 
     /// A dialog with no art of its own (the `EruditeDialog`s the original
@@ -489,7 +653,12 @@ impl Hud {
         let title = p.texts.iter().find(|(id, _)| *id == 0).map_or(d.title.as_str(), |(_, t)| t.as_str());
         self.font.draw(canvas, title, x0 + (w - self.font.width(title)) / 2, y0 + 3);
         let top = y0 + CAPTION;
-        for c in &d.controls {
+        for &(sx, sy, value) in &p.sliders {
+            self.draw_slider(canvas, x0 + du((sx, sy, 0, 0)).0, top + du((sx, sy, 0, 0)).1, value);
+        }
+        // (controls past the dialog's right edge, as the preferences' debug
+        // ones, are not shown)
+        for c in d.controls.iter().filter(|c| c.rect.0 < d.size.0) {
             let (bx, by, bw, bh) = du(c.rect);
             let (bx, by) = (x0 + bx, top + by);
             let text = p.texts.iter().find(|(id, _)| *id == c.id && c.id != 0xffff).map_or(c.text.as_str(), |(_, t)| t.as_str());
@@ -512,9 +681,194 @@ impl Hud {
                     self.small.draw(canvas, &caption, sx + 14, by + (bh - 11) / 2);
                 }
                 gboh_formats::pe::Name::Id(0x80) => self.draw_button(canvas, (bx, by, bw, bh), text),
-                _ => self.small.draw(canvas, text, bx, by),
+                // edit boxes: white, framed, a caret where typing goes
+                gboh_formats::pe::Name::Id(0x81) => {
+                    fill_framed(canvas, (bx, by, bw, bh));
+                    let shown = if p.focus == Some(c.id) { format!("{text}|") } else { text.to_string() };
+                    self.small.draw(canvas, &shown, bx + 3, by + (bh - 11) / 2);
+                }
+                // the list box: white, framed, its lines with the chosen one
+                // framed
+                gboh_formats::pe::Name::Id(0x83) => {
+                    fill_framed(canvas, (bx, by, bw, bh));
+                    for (k, line) in p.list.iter().enumerate() {
+                        let ly = by + 2 + LIST_LINE * k as i32;
+                        if ly + LIST_LINE > by + bh {
+                            break;
+                        }
+                        if p.selected == Some(k) {
+                            frame_rect(canvas, (bx + 1, ly, bw - 2, LIST_LINE));
+                        }
+                        // cut to the box
+                        let mut line = line.clone();
+                        while self.small.width(&line) > bw - 8 && line.pop().is_some() {}
+                        self.small.draw(canvas, &line, bx + 4, ly + 1);
+                    }
+                }
+                _ => {
+                    let label: String = text.chars().filter(|&ch| ch != '&').collect();
+                    self.small.draw(canvas, &label, bx, by);
+                }
             }
         }
+    }
+
+    /// Where the reader lies in a `width` × `height` window, and its text
+    /// box.
+    fn reader_place(width: usize, height: usize) -> (Rect, Rect) {
+        let (w, h) = (READER.0.min(width as i32 - 8), READER.1.min(height as i32 - TOP - STATUS_HEIGHT - 8));
+        let (x, y) = ((width as i32 - w) / 2, TOP + (height as i32 - TOP - STATUS_HEIGHT - h) / 2);
+        ((x, y, w, h), (x + 8, y + CAPTION + 6, w - 16, h - CAPTION - 6 - 34))
+    }
+
+    /// The reader's lines as wrapped to its box: text and the paragraph
+    /// each belongs to (blank lines between paragraphs).
+    fn reader_lines(&self, r: &Reader, width: usize, height: usize) -> Vec<(String, Option<usize>)> {
+        let (_, (_, _, tw, _)) = Self::reader_place(width, height);
+        let mut lines = Vec::new();
+        for (k, p) in r.paragraphs.iter().enumerate() {
+            for raw in p.split('\n') {
+                let raw = raw.replace('\t', "    ");
+                let mut current = String::new();
+                for word in raw.split(' ') {
+                    let candidate = if current.is_empty() { word.to_string() } else { format!("{current} {word}") };
+                    if self.small.width(&candidate) > tw - 8 && !current.is_empty() {
+                        lines.push((std::mem::replace(&mut current, word.to_string()), Some(k)));
+                    } else {
+                        current = candidate;
+                    }
+                }
+                lines.push((current, Some(k)));
+            }
+            lines.push((String::new(), None));
+        }
+        lines
+    }
+
+    /// How many lines the reader shows at once.
+    pub fn reader_rows(width: usize, height: usize) -> usize {
+        let (_, (_, _, _, th)) = Self::reader_place(width, height);
+        ((th - 4) / LIST_LINE).max(1) as usize
+    }
+
+    /// How many lines the reader's text runs to.
+    pub fn reader_len(&self, r: &Reader, width: usize, height: usize) -> usize {
+        self.reader_lines(r, width, height).len()
+    }
+
+    fn reader_button(r: &Reader, k: usize, width: usize, height: usize) -> (i32, i32, i32, i32) {
+        let ((x, y, w, h), _) = Self::reader_place(width, height);
+        let n = r.buttons.len().max(1) as i32;
+        let (bw, bh) = (88, 24);
+        let gap = 16;
+        let start = x + (w - n * bw - (n - 1) * gap) / 2;
+        (start + (n - 1 - k as i32) * (bw + gap), y + h - bh - 6, bw, bh)
+    }
+
+    /// What a click at `(x, y)` meets on the reader.
+    pub fn reader_at(&self, r: &Reader, width: usize, height: usize, x: i32, y: i32) -> Option<ReaderClick> {
+        for k in 0..r.buttons.len() {
+            let (bx, by, bw, bh) = Self::reader_button(r, k, width, height);
+            if x >= bx && x < bx + bw && y >= by && y < by + bh {
+                return Some(ReaderClick::Button(k));
+            }
+        }
+        let (_, (tx, ty, tw, th)) = Self::reader_place(width, height);
+        if x < tx || x >= tx + tw || y < ty + 2 || y >= ty + th {
+            return None;
+        }
+        let row = ((y - ty - 2) / LIST_LINE) as usize + r.scroll;
+        let (_, para) = self.reader_lines(r, width, height).get(row)?.clone();
+        r.links.get(para?).copied().flatten().map(ReaderClick::Link)
+    }
+
+    fn draw_reader(&self, canvas: &mut Canvas, r: &Reader) {
+        let ((x0, y0, w, h), (tx, ty, tw, th)) = Self::reader_place(canvas.width, canvas.height);
+        for y in y0..y0 + h {
+            for x in x0..x0 + w {
+                if x < 0 || y < 0 || x as usize >= canvas.width || y as usize >= canvas.height {
+                    continue;
+                }
+                let edge = x == x0 || y == y0 || x == x0 + w - 1 || y == y0 + h - 1 || y == y0 + CAPTION;
+                canvas.pixels[y as usize * canvas.width + x as usize] = if edge {
+                    248
+                } else {
+                    self.marble.as_ref().map_or(247, |m| m.pixels[((y - y0) as usize % m.height) * m.width + (x - x0) as usize % m.width])
+                };
+            }
+        }
+        let mut title = r.title.clone();
+        while self.font.width(&title) > w - 8 && title.pop().is_some() {}
+        self.font.draw(canvas, &title, x0 + (w - self.font.width(&title)) / 2, y0 + 3);
+        fill_framed(canvas, (tx, ty, tw, th));
+        let rows = Self::reader_rows(canvas.width, canvas.height);
+        for (k, (line, para)) in self.reader_lines(r, canvas.width, canvas.height).iter().skip(r.scroll).take(rows).enumerate() {
+            let ly = ty + 2 + LIST_LINE * k as i32;
+            let linked = para.and_then(|p| r.links.get(p).copied().flatten()).is_some();
+            if linked {
+                // links underlined, as WinHelp shows its jumps
+                let lw = self.small.width(line);
+                for px in tx + 4..tx + 4 + lw {
+                    if (px as usize) < canvas.width && ((ly + 12) as usize) < canvas.height {
+                        canvas.pixels[(ly + 12) as usize * canvas.width + px as usize] = 2;
+                    }
+                }
+                self.small.draw_in(canvas, line, tx + 4, ly + 1, 2);
+            } else {
+                self.small.draw(canvas, line, tx + 4, ly + 1);
+            }
+        }
+        for (k, b) in r.buttons.iter().enumerate() {
+            self.draw_button(canvas, Self::reader_button(r, k, canvas.width, canvas.height), b);
+        }
+    }
+
+    /// The width of a slider's track.
+    fn slider_width(&self) -> i32 {
+        self.slider.iter().skip(1).map(|c| c.width as i32).sum()
+    }
+
+    /// A slider: its track, and the thumb along it at `value`.
+    fn draw_slider(&self, canvas: &mut Canvas, x: i32, y: i32, value: u16) {
+        let [thumb, left, middle, right] = self.slider.as_slice() else { return };
+        canvas.blit(left, x, y);
+        canvas.blit(middle, x + left.width as i32, y);
+        canvas.blit(right, x + (left.width + middle.width) as i32, y);
+        let room = self.slider_width() - thumb.width as i32;
+        canvas.blit(thumb, x + room * value as i32 / SLIDER_MAX as i32, y);
+    }
+
+    /// The slider of `p`'s dialog at `(x, y)` and the value there, if one.
+    pub fn plain_slider_at(&self, p: &Plain, width: usize, height: usize, x: i32, y: i32) -> Option<(usize, u16)> {
+        let ((dx, dy, _, _), _) = self.plain_place(p, width, height)?;
+        let thumb = self.slider.first()?.width as i32;
+        let (w, h) = (self.slider_width(), self.slider.first()?.height as i32);
+        p.sliders.iter().enumerate().find_map(|(k, &(sx, sy, _))| {
+            let (sx, sy, _, _) = du((sx, sy, 0, 0));
+            let (sx, sy) = (dx + sx, dy + CAPTION + sy);
+            (x >= sx && x < sx + w && y >= sy && y < sy + h).then(|| {
+                let v = ((x - sx - thumb / 2) * SLIDER_MAX as i32 / (w - thumb).max(1)).clamp(0, SLIDER_MAX as i32);
+                (k, v as u16)
+            })
+        })
+    }
+
+    /// The value slider `k` of `p`'s dialog takes with the mouse at `x`
+    /// (dragging: wherever the mouse is up or down).
+    pub fn plain_slider_value(&self, p: &Plain, width: usize, height: usize, k: usize, x: i32) -> Option<u16> {
+        let ((dx, _, _, _), _) = self.plain_place(p, width, height)?;
+        let thumb = self.slider.first()?.width as i32;
+        let &(sx, sy, _) = p.sliders.get(k)?;
+        let sx = dx + du((sx, sy, 0, 0)).0;
+        Some(((x - sx - thumb / 2) * SLIDER_MAX as i32 / (self.slider_width() - thumb).max(1)).clamp(0, SLIDER_MAX as i32) as u16)
+    }
+
+    /// Only `p`'s dialog, on a clear `width` × `height` overlay (over the
+    /// start screen).
+    pub fn dialog_canvas(&self, width: usize, height: usize, p: &Plain) -> Canvas {
+        let mut canvas = Canvas::new(width, height, 0);
+        self.draw_plain(&mut canvas, p);
+        canvas
     }
 
     /// Whether `(x, y)` is on the army details' Close button.
@@ -655,13 +1009,21 @@ impl Hud {
             .map(ResultsClick::Battle)
     }
 
+    /// Whether the left button is held down inside `rect`.
+    fn held(&self, (x, y, w, h): (i32, i32, i32, i32)) -> bool {
+        self.pressed.get().is_some_and(|(px, py)| px >= x && px < x + w && py >= y && py < y + h)
+    }
+
+    /// A push button, pressed (its second cel, the caption a pixel down and
+    /// right) while the left button is held on it.
     fn draw_button(&self, canvas: &mut Canvas, (bx, by, bw, bh): (i32, i32, i32, i32), caption: &str) {
         let art = if bw > 120 { &self.big_button } else { &self.button };
-        if let Some(b) = art.first() {
+        let down = self.held((bx, by, bw, bh)) as i32;
+        if let Some(b) = art.get(down as usize).or(art.first()) {
             canvas.blit(b, bx + (bw - b.width as i32) / 2, by + (bh - b.height as i32) / 2);
         }
         let caption: String = caption.chars().filter(|&ch| ch != '&').collect();
-        self.font.draw(canvas, &caption, bx + (bw - self.font.width(&caption)) / 2, by + (bh - 11) / 2);
+        self.font.draw(canvas, &caption, bx + (bw - self.font.width(&caption)) / 2 + down, by + (bh - 11) / 2 + down);
     }
 
     /// The combat results: the overall list of battles (`OVERALLCOMBATRESULTS`,
@@ -810,7 +1172,7 @@ impl Hud {
     fn overview_place(&self, battle: &str, width: usize, reversed: bool) -> Option<(&Sprite, Point, Point, Point)> {
         let cels = &self.overviews.iter().find(|(n, _)| n == battle)?.1;
         let (scroll, map) = (cels.get(reversed as usize)?, cels.get(2)?);
-        let at = (width as i32 - scroll.width as i32 - 4, TOOLBAR_HEIGHT + 4);
+        let at = (width as i32 - scroll.width as i32 - 4, TOP + 4);
         let map_at = (at.0 + MAP_IN_SCROLL.0, at.1 + MAP_IN_SCROLL.1);
         Some((scroll, at, map_at, (map.width as i32, map.height as i32)))
     }
@@ -822,10 +1184,38 @@ impl Hud {
         (x >= mx && x < mx + mw && y >= my && y < my + mh).then(|| ((x - mx) as f32 / mw as f32, (y - my) as f32 / mh as f32))
     }
 
+    /// A button's tooltip and status line (`shown`: the overview showing,
+    /// the grid on, which pick the other texts of those two).
+    pub fn tip(&self, tool: Tool, overview_shown: bool, grid_on: bool) -> Option<(String, String)> {
+        match tool {
+            Tool::Overview if !overview_shown => Some(self.other_tips[0].clone()),
+            Tool::HexGrid if grid_on => Some(self.other_tips[1].clone()),
+            _ => self.tips.iter().find(|(t, _, _)| *t == tool).map(|(_, s, l)| (s.clone(), l.clone())),
+        }
+        .filter(|(s, _)| !s.is_empty())
+    }
+
+    /// A Windows tooltip: the small font on pale yellow in a dark frame,
+    /// below and right of the mouse, kept in the window.
+    fn draw_tooltip(&self, canvas: &mut Canvas, text: &str, (x, y): (i32, i32)) {
+        let (w, h) = (self.small.width(text) + 6, 15);
+        let x = x.min(canvas.width as i32 - w - 1).max(0);
+        let y = (y + 20).min(canvas.height as i32 - h - 1);
+        for py in y..y + h {
+            for px in x..x + w {
+                if px >= 0 && py >= 0 && (px as usize) < canvas.width && (py as usize) < canvas.height {
+                    canvas.pixels[py as usize * canvas.width + px as usize] = self.pale_yellow;
+                }
+            }
+        }
+        frame_rect(canvas, (x, y, w, h));
+        self.small.draw(canvas, text, x + 3, y + 1);
+    }
+
     /// The toolbar button at `(x, y)` (window pixels at one battlefield
     /// pixel each).
     pub fn tool_at(&self, x: i32, y: i32) -> Option<Tool> {
-        TOOLBAR.iter().find(|&&(_, _, _, cx)| (x - cx).abs() < 12 && (4..26).contains(&y)).map(|t| t.0)
+        TOOLBAR.iter().find(|&&(_, _, _, cx)| (x - cx).abs() < 12 && (TOOLBAR_TOP + 4..TOOLBAR_TOP + 26).contains(&y)).map(|t| t.0)
     }
 
     /// The bars for a `width` × `height` window: buttons that `enabled`
@@ -845,6 +1235,7 @@ impl Hud {
         army: Option<&ArmyDetails>,
         ending: Option<Ending>,
         plain: Option<&Plain>,
+        reader: Option<&Reader>,
     ) -> Canvas {
         let mut canvas = Canvas::new(width, height, 0);
         if let Some(o) = overview
@@ -880,7 +1271,7 @@ impl Hud {
             for x in (0..width as i32).step_by(m.width) {
                 for row in 0..TOOLBAR_HEIGHT.min(m.height as i32) {
                     for col in 0..m.width as i32 {
-                        let (cx, cy) = (x + col, row);
+                        let (cx, cy) = (x + col, TOOLBAR_TOP + row);
                         if cx < width as i32 && (cy as usize) < height {
                             canvas.pixels[cy as usize * width + cx as usize] = m.pixels[row as usize * m.width + col as usize];
                         }
@@ -889,8 +1280,10 @@ impl Hud {
             }
         }
         for (&(tool, _, _, cx), cels) in TOOLBAR.iter().zip(&self.buttons) {
-            if let Some(c) = cels.get(if enabled(tool) { 0 } else { 2 }) {
-                canvas.blit(c, cx - 12, 4);
+            // up, down, disabled, disabled down
+            let down = self.held((cx - 12, TOOLBAR_TOP + 4, 24, 22)) as usize;
+            if let Some(c) = cels.get(if enabled(tool) { 0 } else { 2 } + down) {
+                canvas.blit(c, cx - 12, TOOLBAR_TOP + 4);
             }
         }
         // the status bar: caps, tiled middle, dividers before the last two
@@ -933,9 +1326,22 @@ impl Hud {
         if let Some(a) = army {
             self.draw_army(&mut canvas, a);
         }
+        if let Some(r) = reader {
+            self.draw_reader(&mut canvas, r);
+        }
         if let Some(p) = plain {
             self.draw_plain(&mut canvas, p);
         }
+        if let Some((text, at)) = self.tooltip.borrow().as_ref() {
+            self.draw_tooltip(&mut canvas, text, *at);
+        }
+        canvas
+    }
+
+    /// Only the reader, on a clear overlay (over the start screen).
+    pub fn reader_canvas(&self, width: usize, height: usize, r: &Reader) -> Canvas {
+        let mut canvas = Canvas::new(width, height, 0);
+        self.draw_reader(&mut canvas, r);
         canvas
     }
 }
@@ -963,7 +1369,7 @@ mod tests {
             size: 1,
             missile: Some((66, 2, 6, 4)),
         };
-        let c = hud.canvas(800, 500, |t| t != Tool::Undo, ["Turn 1 Alexander III", "Turn 1", "Normal"], Some(&overview), Some(&details), None, None, &["--- Turn #1 ---".to_string(), "Alexander III is now active.".to_string(), "Agrian 1 shoots at India 4. India 4 takes 2 cohesion hits and is routing!".to_string()], None, None, None);
+        let c = hud.canvas(800, 500, |t| t != Tool::Undo, ["Turn 1 Alexander III", "Turn 1", "Normal"], Some(&overview), Some(&details), None, None, &["--- Turn #1 ---".to_string(), "Alexander III is now active.".to_string(), "Agrian 1 shoots at India 4. India 4 takes 2 cohesion hits and is routing!".to_string()], None, None, None, None);
         // the combat results: two battles, the first open
         let row = |name: &str, current, total, to_rout, routed| ResultRow { name: name.into(), current, total, to_rout, routed, eliminated: false };
         let results = Results {
@@ -971,8 +1377,8 @@ mod tests {
             selected: Some(0),
             open: Some((vec![row("Mercenary 2", 2, 3, 2, false), row("Agema Hypaspist", 2, 3, 6, false)], vec![row("India 10", 2, 3, 2, true)])),
         };
-        let r = hud.canvas(800, 500, |_| true, ["", "", ""], None, None, Some(&results), None, &[], None, None, None);
-        let g = hud.canvas(800, 500, |_| true, ["", "", ""], None, None, None, Some(&GameOverview { nations: [2, 3], levels: [80, 70], lost: [1, 38] }), &[], None, None, None);
+        let r = hud.canvas(800, 500, |_| true, ["", "", ""], None, None, Some(&results), None, &[], None, None, None, None);
+        let g = hud.canvas(800, 500, |_| true, ["", "", ""], None, None, None, Some(&GameOverview { nations: [2, 3], levels: [80, 70], lost: [1, 38] }), &[], None, None, None, None);
         let rows = (0..14)
             .map(|k| ArmyRow {
                 name: format!("Hypaspist {}", k + 1),
@@ -982,7 +1388,7 @@ mod tests {
             })
             .collect();
         let army = ArmyDetails { nation: 2, level: 80, routing_tq: 7, eliminated: 18, rows, scroll: 0 };
-        let a = hud.canvas(800, 600, |_| true, ["", "", ""], None, None, None, None, &[], Some(&army), None, None);
+        let a = hud.canvas(800, 600, |_| true, ["", "", ""], None, None, None, None, &[], Some(&army), None, None, None);
         if let Ok(out) = std::env::var("GBOH_SHOTS") {
             let pal = gboh_formats::pal::Palette::parse(&std::fs::read(Path::new(&dir).join("GAME.PAL")).unwrap()).unwrap();
             let rgba = a.to_rgba(&pal);
@@ -992,7 +1398,7 @@ mod tests {
             }
             std::fs::write(format!("{out}/army.ppm"), ppm).unwrap();
         }
-        let e = hud.canvas(800, 600, |_| true, ["", "", ""], None, None, None, None, &[], None, Some((2, false)), None);
+        let e = hud.canvas(800, 600, |_| true, ["", "", ""], None, None, None, None, &[], None, Some((2, false)), None, None);
         if let Ok(out) = std::env::var("GBOH_SHOTS") {
             let pal = gboh_formats::pal::Palette::parse(&std::fs::read(Path::new(&dir).join("GAME.PAL")).unwrap()).unwrap();
             let rgba = e.to_rgba(&pal);
@@ -1008,11 +1414,36 @@ mod tests {
                 name: "MISSILERESULTS",
                 texts: vec![(101, "India 4 suffers 2 cohesion hits".into()), (102, "and is routing!".into())],
                 checked: vec![201],
+                ..Default::default()
             };
-            let momentum = Plain { name: "MOMENTUMDLG", texts: Vec::new(), checked: Vec::new() };
+            let momentum = Plain { name: "MOMENTUMDLG", ..Default::default() };
             let (ww, wh) = (640, 400);
-            for (k, p) in [&missile, &momentum].into_iter().enumerate() {
-                let c = hud.canvas(ww, wh, |_| true, ["", "", ""], None, None, None, None, &[], None, None, Some(p));
+            let files = Plain {
+                name: "LOADSAVEDLG",
+                texts: vec![(0, "Save Game".into()), (10, "The Battle of Hydaspes; Turn #3; Coenus".into()), (12, "Save1".into())],
+                list: vec!["Autosave.sav  Autosaved Game: The Battle of Hydaspes; Turn #3".into(), "Save1.sav  The Battle of Issus; Turn #5".into()],
+                selected: Some(1),
+                focus: Some(12),
+                ..Default::default()
+            };
+            let reader = Reader {
+                title: "Hydaspes  (326 BC)".into(),
+                paragraphs: vec!["STANDARD VICTORY CONDITIONS: (Can be altered with the Army Rout Level dialog box)".into(), "Indians: The Indians win if they can rout the Macedonian army, or if they are unrouted by the conclusion of game turn 10 of the battle.".into(), "The Armies at Hydaspes".into()],
+                links: vec![None, None, Some(3)],
+                scroll: 0,
+                buttons: vec!["&Close".into(), "Contents".into()],
+            };
+            let rc = hud.reader_canvas(640, 480, &reader);
+            if let Ok(out) = std::env::var("GBOH_SHOTS") {
+                let pal = gboh_formats::pal::Palette::parse(&std::fs::read(Path::new(&dir).join("GAME.PAL")).unwrap()).unwrap();
+                crate::ui::write_ppm(&rc, &pal, &Path::new(&out).join("reader.ppm")).unwrap();
+            }
+            let ((_, _, _, _), (tx, ty, _, _)) = Hud::reader_place(640, 480);
+            let link_row = ty + 2 + LIST_LINE * (hud.reader_lines(&reader, 640, 480).iter().position(|(_, p)| *p == Some(2)).unwrap() as i32) + 3;
+            assert_eq!(hud.reader_at(&reader, 640, 480, tx + 10, link_row), Some(ReaderClick::Link(3)));
+            let prefs = crate::prefs::Prefs { combat_animation: false, ..Default::default() }.dialog();
+            for (k, p) in [&missile, &momentum, &files, &prefs].into_iter().enumerate() {
+                let c = hud.canvas(ww, wh, |_| true, ["", "", ""], None, None, None, None, &[], None, None, Some(p), None);
                 if let Ok(out) = std::env::var("GBOH_SHOTS") {
                     let pal = gboh_formats::pal::Palette::parse(&std::fs::read(Path::new(&dir).join("GAME.PAL")).unwrap()).unwrap();
                     let rgba = c.to_rgba(&pal);
@@ -1055,9 +1486,26 @@ mod tests {
         // OK at (67, 174) dialog units into the centred window
         let (ox, oy, _, _) = hud.details_place(800, 500);
         assert!(hud.details_ok_at(800, 500, ox + 67 * 7 / 4 + 10, oy + 174 * 13 / 8 + 5));
-        assert_eq!(hud.tool_at(17, 15), Some(Tool::OpenMap));
-        assert_eq!(hud.tool_at(502, 15), Some(Tool::Undo));
-        assert!(hud.overview_at("Issus", 800, 800 - 176 - 4 + 30 + 5, TOOLBAR_HEIGHT + 4 + 26 + 5).is_some());
+        assert_eq!(hud.tool_at(17, TOOLBAR_TOP + 15), Some(Tool::OpenMap));
+        // every button has its texts from the executable, a short name and
+        // a longer line; the overview's and grid's change with their state
+        if hud.strings.is_some() {
+            for &(t, ..) in &TIPS {
+                let (short, long) = hud.tip(t, true, false).unwrap();
+                assert!(!short.is_empty() && long.len() >= short.len(), "{t:?}");
+            }
+            assert_ne!(hud.tip(Tool::Overview, true, false), hud.tip(Tool::Overview, false, false));
+            assert_ne!(hud.tip(Tool::HexGrid, true, false), hud.tip(Tool::HexGrid, true, true));
+            *hud.tooltip.borrow_mut() = Some((hud.tip(Tool::AboutFace, true, false).unwrap().0, (147, TOOLBAR_TOP + 15)));
+            hud.pressed.set(Some((147, TOOLBAR_TOP + 15)));
+            let c = hud.canvas(640, 200, |_| true, ["", "", ""], None, None, None, None, &[], None, None, None, None);
+            if let Ok(out) = std::env::var("GBOH_SHOTS") {
+                let pal = gboh_formats::pal::Palette::parse(&std::fs::read(Path::new(&dir).join("GAME.PAL")).unwrap()).unwrap();
+                crate::ui::write_ppm(&c, &pal, &Path::new(&out).join("tooltip.ppm")).unwrap();
+            }
+        }
+        assert_eq!(hud.tool_at(502, TOOLBAR_TOP + 15), Some(Tool::Undo));
+        assert!(hud.overview_at("Issus", 800, 800 - 176 - 4 + 30 + 5, TOP + 4 + 26 + 5).is_some());
         if let Ok(out) = std::env::var("GBOH_SHOTS") {
             let pal = gboh_formats::pal::Palette::parse(&std::fs::read(Path::new(&dir).join("GAME.PAL")).unwrap()).unwrap();
             let rgba = c.to_rgba(&pal);

@@ -4,10 +4,13 @@
 //! This crate contains no game data; it parses files from a user's own copy.
 
 pub mod crt;
+pub mod director;
 pub mod eif;
+pub mod hlp;
 pub mod map;
 pub mod pal;
 pub mod pe;
+pub mod rtf;
 pub mod scn;
 pub mod units;
 pub mod walkanim;

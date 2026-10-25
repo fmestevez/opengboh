@@ -125,6 +125,9 @@ pub struct Scene {
     pub map: Map,
     pub layout: Layout,
     pub terrain: Canvas,
+    /// The landscape background (`LANDBACK.EIF`) and where its tiling
+    /// starts on the terrain: it carries on past the battlefield's edges.
+    pub background: Option<(crate::Sprite, (i32, i32))>,
     objects: ObjectSprites,
     placed: Vec<objects::Placement>,
     town: Option<TownArt>,
@@ -141,6 +144,8 @@ pub struct Scene {
     /// mask), and whether it shows.
     grid: Vec<crate::Sprite>,
     pub grid_on: bool,
+    /// The flags' pennants' animation cel.
+    pub flag_frame: usize,
     seed: u32,
     shadow: [u8; 256],
 }
@@ -188,6 +193,7 @@ impl Scene {
         let back = eif(load, "LANDBACK.EIF")?;
         art.background = strip(&back, "Blocks").and_then(|s| s.into_iter().next());
         let terrain = terrain::render_view(map, &art, layout, strip_offset(map_file, map), seed);
+        let background = art.background.clone().map(|b| (b, layout.block_origin(0, 0)));
         let placed = objects::scatter(map, &mut BorlandRand::new(seed));
         let suffix = match zoom {
             Zoom::In => "",
@@ -245,6 +251,7 @@ impl Scene {
             map: map.clone(),
             layout,
             terrain,
+            background,
             objects: ObjectSprites::load(&overlay),
             placed,
             town,
@@ -257,6 +264,7 @@ impl Scene {
             walk,
             grid,
             grid_on: false,
+            flag_frame: 0,
             seed,
             shadow: pal.remap[0],
         })
@@ -369,7 +377,7 @@ impl Scene {
             let last = units.iter().map(|u| u.id).max().map_or(0, |m| m + 1);
             let jitters: Vec<i32> = (0..last).map(|_| 5 - (rng.next() % 11) as i32).collect();
             for u in units.iter().filter(|u| flagged.contains(&u.id)) {
-                items.extend(units::flag_drawables(map, layout, u, jitters[u.id], art));
+                items.extend(units::flag_drawables(map, layout, u, jitters[u.id], art, self.flag_frame));
             }
         }
         objects::draw(&mut canvas, items, &self.shadow);

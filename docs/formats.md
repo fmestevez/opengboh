@@ -335,7 +335,9 @@ arms a volley that the next click on an enemy fires.
 | `.SCN` | 11 | scenarios, see below 🟡 |
 | `.AI` | 45 | plain-text AI plans (`'` comments) |
 | `EIFFILE.HED` | 1 | "Activation Unit Flags", 1.1 MB, structure unknown |
-| `.WAV`, `.AVI`, `.RTF`, `.HLP` | | standard formats |
+| `.WAV`, `.AVI` | | standard formats |
+| `.RTF` | 23 | rich text: battle histories, unit listings (`U*.RTF`), credits; read by `gboh_formats::rtf` |
+| `ALEX.HLP` | 1 | WinHelp 3.1 help file; read by `gboh_formats::hlp` |
 
 ## MAP: battle maps ✅ structure / 🟡 feature meanings
 
@@ -825,9 +827,9 @@ heard too, one after another, faster while several are waiting.
 | value | meaning | evidence |
 |---|---|---|
 | 1 | charisma | 0–4; Alexander 4, Tauron 0; named in `CONSTANT.AI`; picks the leader in a shock's casualty roll |
-| 2 | command range | passed with the leader's hex to range searches; reduced by wounds |
+| 2 | command range | traced as a path from the leader (`FUN_00562ce7`, `FUN_00565687`): 1 a hex, 2 for a level up or down, blocked by enemies and by steeper climbs, stopping at empty hexes in enemy zones; reduced by wounds |
 | 3 | initiative | shown in game as `I:`; also the starting command points (`Com: n/n`) |
-| 4 | personal combat | named in `CONSTANT.AI`; reduced by wounds with the command range; added to the leader casualty roll |
+| 4 | personal combat | named in `CONSTANT.AI`; reduced by wounds with the other ratings; added to the leader casualty roll |
 
 At Chaeronea, Alexander (CH) is `3 5 6 7` and the game shows `I: 6 Com: 6/6`;
 Alexander III elsewhere is `4 9 7 7` and shows `I: 7 Com: 7/7`. The manual's
@@ -915,10 +917,40 @@ The original also has bans for chariots and elephants on streams and other
 sides, but they test side types above 4 directly, which its side test always
 answers no, so they never apply.
 
-**Zones of control.** A unit may enter a hex next to an enemy combat unit
-but not move on from it (unless it started there); skirmishers ignore this.
-The original also asks each enemy whether it exerts the zone; that test is
-not ported.
+**Zones of control** (`FUN_004b4287`; each unit's set at `+0xe6`): a
+combat unit holds its two front hexes (both hexes' for two-hex units) that
+it could step into itself; leaders and routed units hold none. A hex where
+a skirmisher stands is never in a zone. A unit may enter a hex in an enemy
+zone but not step out of one (`FUN_0056e7d7`), except from where its order
+began (with full movement); a two-hex unit whose second hex is in a zone
+cannot step at all. Horses may not enter a zone an enemy elephant holds.
+
+**Cohesion for terrain** (`FUN_0056ef04`, unit slot 0x3c, for each step
+of a move): hits by class group (infantry and oxybeles / skirmishers /
+horse / elephants / chariots) for the hex entered and the side crossed,
+from the table at `0x63bae8`:
+
+| terrain | inf | sk | horse | el | ch |
+|---|---|---|---|---|---|
+| 1 woods | 1 | 0 | 1 | 1 | – |
+| 2 rocky | 1 | 0 | 2 | 1 | – |
+| 3 marsh | 1 | 1 | 1 | – | – |
+| 4 major river | 1 | 1 | 1 | 0 | – |
+| 5 major river | 1 | 1 | 2 | – | – |
+| 6 minor river (side) | 1 | 1 | 1 | 0 | – |
+| 8 steep-banked stream (side) | 2 | 1 | 2 | 1 | – |
+| 9 steep bank (side) | 1 | 0 | 1 | 0 | – |
+| 10 abatis | 1 | 1 | 1 | – | – |
+| up 1 level | 1 | 1 | 1 | 0 | 1 |
+| down 1 level | 1 | 0 | 0 | 0 | 1 |
+| up 2 | 2 | 2 | – | – | – |
+| down 2 | 2 | 1 | – | – | – |
+| 3 levels | – | 3 | – | – | – |
+
+(– : 99 in the table, ground the class cannot enter.) Horses stepping next
+to an enemy elephant take 2 more ("… moved next to an elephant for 2
+hits"). A two-hex unit pivoting pays as for a step to its new main hex
+(`FUN_0052843b`; 🟡 from its old main hex, as read).
 
 **Two-hex units** (phalanx, double-sized hoplites) have a second hex at the
 flank, map direction facing + 2. Both hexes move together the same way; both
@@ -936,7 +968,21 @@ not in the code); chariots also take two cohesion hits per turn, as the
 manual says. Left is anticlockwise through the
 six facings (3 → 2 → 8 → 7 → 6 → 4 → 3) and right the reverse. Skirmishers pay only for their first turn of the turn. A two-hex unit pivots: on a left turn its main hex stays and the
 second hex swings round it, on a right turn the second hex stays and the
-main hex swings. An about-face (three steps) swaps a two-hex unit's hexes.
+main hex swings.
+
+**About face** (unit slot `0xf4`, `FUN_005719dc` → `FUN_005253f2`): three
+movement points and three turns the same way, reversing the facing; a
+two-hex unit's hexes swap, its second hex becoming its main. Like any order
+it first takes the ordered-again hit. (🟡 when the button is enabled is not
+traced: the rewrite asks for three points left.)
+
+**Undo** (`on_UnitUndo`, `FUN_004b0654`): before a unit's move or turn the
+game keeps its state and the active leader's command points on a list
+(`FUN_00521fe4`, the list at `0x6502f4`); a different unit's action clears
+the list first. Undo takes the last entry back. Missile fire, shock,
+recovery and group moves clear the list (`FUN_0056d49b`, `FUN_00570c93`,
+`FUN_0057ea82`, `FUN_00564374`); the rewrite also forgets a move that drew
+reaction fire.
 Verified at Hydaspes: after turning Hypaspist 1 left, the game highlights
 exactly the hexes predicted for facing 2 with 4 points left.
 
@@ -949,9 +995,14 @@ when he moves on to a different unit, two if that unit is outside his own
 command group. A personal combat uses all remaining points. The leader is
 finished when he has used them all.
 
-**Ordered again.** Units are marked as ordered when a leader activates them.
-A unit ordered by a second leader in the same turn takes one cohesion hit
-("… takes 1 cohesion hit for being ordered again this turn.").
+**Every activation** (momentum too, `FUN_0054b4eb` broadcasting
+`BeginLeaderOrdersPhase`) gives every unit its movement back and clears
+"done" (`FUN_0052b2e2`, `FUN_00536b1a`), so a unit ordered by one leader
+may be ordered by a later one the same turn. **Ordered again:** a unit
+that spent movement in an earlier order this turn takes one cohesion hit
+the first time it moves, turns or fires in an activation ("… takes 1
+cohesion hit for being ordered again this turn."); if it breaks, the order
+is not carried out.
 
 ## Shock combat ✅ tables (match the manual) / 🟡 resolution flow
 
@@ -1139,10 +1190,15 @@ once, its full movement allowance in the rout phase at the end of the turn
 NE, SE, N, S; S: S, SW, SE; W: NW, SW, N, S. Fleeing east or west, odd steps
 swap the first two, so the unit zig-zags straight across. A step must stay
 on the map, be passable for the unit, be outside enemy zones of control and
-be empty; failing that, a hex with friendly units is used (routing through
-them; per the manual they take a cohesion hit). Reaching the map edge or
-finding no step takes the unit out of the battle (terminal rout or
-elimination), and its rout points count against its army.
+be empty; failing that, outside the zones with friendly units; failing
+that, with friendly units in a zone (`FUN_0057ae96`). Reaching the map
+edge, finding no step, or coming back to a hex already passed takes the
+unit out of the battle (terminal rout or elimination), and its rout points
+count against its army. It runs one hex further if it ends on an occupied
+hex, and one more if next to an enemy leader. Friendly combat units it
+routs through take a cohesion hit each (which may break them); routed ones
+are destroyed. Foot archers, slingers and javelinists drop their missiles
+when they rout (`FUN_0056bcb0`).
 
 **Rally** (from the code; the manual adds: once per turn per unit, by a
 leader within command range, two orders outside his group, and the unit
@@ -1191,19 +1247,29 @@ Also in the loop (🟡 from the manual unless noted):
 * **Advance:** if a shock clears the primary defender's hex and it is
   empty and next to no other enemy, the attacker with the highest TQ moves
   in (single-hex units).
-* **Leader casualties:** finished leaders skip the rest of the turn;
-  wounded ones lose 2 command range and 2 from the fourth rating (the
-  original's wound message carries a 2); a second wound, or "killed",
-  removes them.
+* **Leader casualties:** in a shock the higher total is hurt (`0x4a9140`).
+  Finished leaders skip the rest of the turn; wounded ones
+  (`FUN_00566251`) lose 2 (1 when hurt stepping away) from all four
+  ratings; a second wound kills. A killed leader's rout points count and a
+  soldier from the ranks replaces him (range 4, initiative 2, finished for
+  the turn; `FUN_00565b3d`); Alexander and Darius are not replaced.
 
-* **Orderly withdrawal:** when a unit moves next to cavalry (it not being
-  cavalry), a leader, or skirmishers (it being heavy infantry or phalanx),
-  they make a TQ check (`rand() % 10 ≤ TQ − hits`) and on success take one
-  hit if approached from flank or rear (skirmishers: rear only) and back
-  away up to two hexes, keeping facing, avoiding enemy zones, rough terrain
-  and occupied hexes.
-* **Routing through friends:** friendly units on a routed unit's path take
-  one cohesion hit.
+* **Orderly withdrawal** (automatic; `FUN_00577e3c`, `FUN_00578783`,
+  `FUN_00524ce4`, `FUN_005778f8`): when a unit moves next to them, light
+  and heavy cavalry withdraw from anything, lancers from all but horse,
+  skirmishers from heavy infantry and phalanxes, unless another enemy holds
+  them in its zone. Cavalry an elephant approaches first takes hits; a unit
+  with TQ − 2 hits or more stays; then a TQ check (`rand() % 10 ≤ TQ`). It
+  moves with 2 points away from the approacher (the three sides facing
+  away), through empty hexes, zones ignored, to the hex farthest from the
+  nearest enemy; then one hit if approached from flank or rear
+  (skirmishers: rear) and one more for a failed TQ check. The approacher is
+  not stopped. A leader alone steps away at a risk of a casualty (90 in 100
+  from cavalry, 60 from others, `random() % 100`).
+* **Missile replenishment** (`FUN_005672ba`): at a leader's activation,
+  each unit he may order that is out of missiles gets `random() % 5`
+  (javelins `% 2`) and is done for the turn; more than two cost him a
+  command point.
 
 * **Group move** (`FUN_00564572`; conditions from the manual): before
   any other order, if every unit of the leader's group faces the same way,
@@ -1418,9 +1484,7 @@ The commentary also showed that **AI leaders always try for momentum**, and
 that after a successful momentum the leader's units move again, those that
 had already moved taking the "ordered again" cohesion hit (Craterus's
 Prmsida, Arachos and Companions; Antigenes's four phalanxes). The rewrite
-now does both (`Game::momentum_refresh`; 🟡 the original's
-`FUN_0052b2e2` restores movement and clears "done", but the message that
-triggers it is not traced). Two
+now does both: every activation refreshes every unit (see "Orders"). Two
 script behaviours that look like bugs are the original's: `AttackInZOC`
 attacks at the first occupied hex in front even if the unit there is a
 friend, and units next to the enemy they were sent at report "could not
@@ -1455,6 +1519,135 @@ The section is found by its shape (the first offset where every record
 parses). Checked: the turn-8 autosave of the Hydaspes comparison gives 66
 and 22 rout points lost, as the original's Game Overview showed.
 `gboh-tools ai … save=F` starts a match from a save.
+
+## The rewrite's saved games (`*.sav`)
+
+The rewrite saves its own games rather than the original's `*.alx` (of
+which only the units are decoded): a text file with the scenario, who the
+computer plays, the rout levels and the player's orders in turn. Loading
+starts the scenario afresh and replays the orders, play being
+deterministic. The format is described in `crates/gboh-viewer/src/saves.rs`;
+its first line carries a version, as a change to the rules makes old orders
+play out differently. The save and load dialog is the original's
+`LOADSAVEDLG` (description, file name, the saves found, OK, Cancel, Delete);
+the start screen's Load Saved Game opens it, and a game autosaves as
+`Autosave.sav` at the start of each turn. Saves go to the platform's
+application data directory (`GBOH_SAVES` overrides it), never the game's.
+
+## Menus, preferences and help
+
+**Menus.** The battle window's menu bar is the executable's `CHILDMENU`
+(`RT_MENU`: a header word pair, then items of flags `u16` (0x10 popup,
+0x80 last), a command id `u16` unless a popup, and a UTF-16 text; `&` marks
+the mnemonic and a tab the accelerator). The rewrite draws it in the
+palette's Windows colours (light grey 7, dark grey 248, white 255, navy 4).
+Commands of the multiple-window interface (Open Map, Tile, Cascade, Arrange
+Icons) and the network chat are greyed: the rewrite has one window.
+
+**Preferences** (registry `HKCU\Software\I-Magic\Alexander\Preferences`,
+read in `FUN_004816e2`): `Movement Animation`, `Combat Animation`,
+`Sound`, `Ambient Sound`, `Music`, `Finish Leader`, `Overall Combat
+Results`, `Show Intro Video`, `Auto Save` (1 when first created),
+`Volume` and `Music Volume` (5000 of 10000). The `PREFERENCES` dialog
+(142 × 209 units; its debug controls lie past its right edge and are not
+shown) has check boxes 101, 102, 104, 15, 103, 17, 20, 18, 19 in that order
+and two `Slider` controls the dialog makes in code (`FUN_00599944`,
+`FUN_00427990`, range 10000; art `SLIDER.EIF` strip `Horizontal`: thumb,
+track left, middle, right). 🟡 The sliders' places are inferred from the
+gaps above the "Sound Volume" and "Music Volume" labels.
+
+**Music** (tables at `0x61b058`): `start`, then `main` and `alex4` in turn
+during a battle, and `victory` or `defeat` at its end. The river sounds
+(`river`, `river1-2`, `FUN_005127b8`) murmur on battlefields with water (🟡
+how often is not traced).
+
+**Help.** About This Battle and Victory Conditions (`on_HelpAboutThisBattle`,
+`on_HelpVictoryConditions`) opened `ALEX.HLP` (the GOG build has the
+WinHelp calls patched out); for the custom battle they show string 83
+instead. The rewrite reads the help file itself (`gboh_formats::hlp`, its
+layout described there): About This Battle shows the battle's topic
+("Hydaspes - 326 BC"), Victory Conditions the battle summary's from its
+"STANDARD VICTORY CONDITIONS" ("Hydaspes  (326 BC)"), Help a list of the
+topics. About shows `ABOUTDLG`'s texts and `CREDITS.RTF`.
+
+## Cursors
+
+The executable's cursor groups (`RT_GROUP_CURSOR`; images `RT_CURSOR`:
+hot spot words, a 1-bit `BITMAPINFOHEADER` of doubled height, the XOR then
+the AND bits, rows bottom-up): `BUSYCURSOR`, `SWORD`, `SLING`, `ARROW`,
+`BOLT`, `JAVELIN` and `MOVENORTH` … `MOVEWEST` (eight). The game changes
+them by name (`on_ChangeCursor`): the `Move…` arrows while the mouse
+within 25 pixels of the map window's sides, or 35 of its top and bottom,
+scrolls it (the margins at `0x5ec7c4`, set in code), the sword over a unit the selected one may shock,
+and with a volley armed a missile over a unit it may shoot (bows `ARROW`,
+`SLING`, javelins `JAVELIN`, oxybeles `BOLT`); otherwise the arrow.
+
+## Start screen
+
+`STARTGAME`'s buttons: 106 Start Battle (the scenario map), 101 Load, 102
+Start Campaign, 103 Multiplayer, 104 View Tutorial, 105 Historical Video,
+2 Exit. The GOG build cuts the help calls: View Tutorial, and the scenario
+map's Units… and Details… (bar Paraitacene's, which tells its two
+description strings), show a pointer to the manual (the rewrite: string
+83, and the help's tutorial topic for View Tutorial). More… lists the
+scenario files in `DATA` other than the battles' (`VARIANTDLG`) and plays
+the one chosen as battle 11, "Custom". The intro (`INTRO.EXE`, run by the
+launcher before the game) and the historical video (`HISTORY.EXE`, run by
+button 105, the game not waiting) are Macromedia Director 5 projectors
+with their own sound (`INTRO.WAV`, `HISTORY.WAV`). The rewrite plays the
+movies inside them itself (`gboh_formats::director`, whose comment
+describes the container, cast, bitmaps, palettes, sounds, score and
+scripts; the player is `crates/gboh-viewer/src/slides.rs`): 15 frames a
+second, negative tempos holding a frame that many seconds (🟡), wipes and
+dissolves over their durations, the score's sound channels and the frame
+scripts' `sound playFile` (the WAV files), `sound fadeOut` and `quit`; a
+key or click ends them. The intro plays at start while Show Intro Video is
+ticked. The title
+screen plays the `start` music.
+
+## Campaign
+
+From the campaign object (`AlexCampaignGame`, `CAMPAIGN.CPP`); the rules
+are `gboh_game::campaign` (their tables are there), the screens
+`crates/gboh-viewer/src/campaign.rs`. Ten rounds; the army's flag moves to
+a neighbouring province each round and an unconquered province's battles
+are fought in order (Macedon: Lyginus, Pelium; Anatolia: Granicus;
+Levant: Issus; Mesopotamia: Gaugamela; Bactria: Samarkand, Jaxartes;
+Indus: Arigaeum, Hydaspes; Egypt and Persia fall by marching in). The
+player leads the Macedonians; a battle lost ends the campaign, except
+Samarkand. Conquest reveals neighbours. At each map, conquered provinces
+roll to stay subjugated (`rand() % 100` against `95 − garrison / d`, `d`
+by level, more for coasts the fleet holds), and reinforcements gather in
+Macedon (12 infantry, 3 cavalry, less 4 and 2 for each province not wholly
+subjugated). Nothing of a battle carries over (the coded garrison and
+Gaugamela effects never take hold in the original). The results rate the
+campaign by the round Indus fell plus the provinces not wholly subjugated
+(strings 38–46); taking Bactria is victory, after which the original plays
+`320ALEX.AVI` (Indeo 3.2, 320 × 200, 15 fps) in `VIDEODLG`, at (32, 10);
+the rewrite has no Indeo decoder and asks `ffmpeg` for the frames and
+sound when it is installed (`GBOH_FFMPEG` names another), else goes
+straight to the results. 🟡 The opening's dissolve of changed provinces is not drawn.
+
+**Map** (`CAMPAIGNMAP`, on the `Campaign Game` bitmap): the `Campaign Map`
+art of `CAMPAIGN.EIF` through a 529 × 357 window at (35, 17), scrolled by
+dragging; hidden provinces blacked out, free ones shaded twice and partly
+subjugated ones once; each garrison's total in `Numerals` and its icons
+(`Units` for infantry, `Dark Units` for cavalry, in 50, 10, 5 and 1); the
+army's flag; battle labels in revealed provinces (queued ones framed); the
+fleet; the log below. Dragging the flag to a province the army may enter
+queues its battles (Battle), else Subjugate takes the province; garrison
+icons drag between conquered provinces.
+
+## Network play
+
+The original's multiplayer used DirectPlay and proxied its message bus;
+the rewrite's (`crates/gboh-viewer/src/net.rs`) links two copies of
+itself over TCP and sends the players' orders (play being deterministic),
+with the original's `STARTSERVER` and `STARTCLIENT` dialogs and its
+messages (strings 109, 201, 204, 205, 216, 219). The host chooses the
+battle and, on the Leader Control screen, which armies each player leads
+(Player: the host's; Computer: the other's); Window → Show Chat sends a
+line to the other player.
 
 ## Victory 🟡 (`FUN_0054d45b`, `FUN_0054c265`, `FUN_0054d85c`)
 

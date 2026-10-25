@@ -11,6 +11,22 @@ pub fn eif(dir: &Path, name: &str) -> Option<Eif> {
     Eif::parse(&std::fs::read(path).ok()?).ok()
 }
 
+/// The resources of the player's `alex.exe`, beside `DATA`.
+pub fn exe_resources(data_dir: &Path) -> Option<gboh_formats::pe::Resources> {
+    let exe = data_dir.parent().and_then(|p| crate::find_ci(p, "ALEX.EXE"))?;
+    gboh_formats::pe::Resources::parse(&std::fs::read(exe).ok()?).ok()
+}
+
+/// Write `canvas` as a PPM picture in `pal`'s colours (for tests).
+#[cfg(test)]
+pub fn write_ppm(canvas: &Canvas, pal: &gboh_formats::pal::Palette, path: &Path) -> std::io::Result<()> {
+    let mut ppm = format!("P6 {} {} 255\n", canvas.width, canvas.height).into_bytes();
+    for p in canvas.to_rgba(pal).chunks(4) {
+        ppm.extend_from_slice(&p[..3]);
+    }
+    std::fs::write(path, ppm)
+}
+
 /// All cels of strip `name` of `e`.
 pub fn cels(e: &Option<Eif>, name: &str) -> Vec<Sprite> {
     e.as_ref().and_then(|e| strip(e, name)).unwrap_or_default()
@@ -89,6 +105,32 @@ impl Font {
         }
         let skip = self.missing.is_some_and(|m| c > m) as usize;
         self.glyphs.get((c as usize).checked_sub(self.first + skip)?)
+    }
+
+    /// The colour every glyph is drawn in, if one.
+    pub fn ink(&self) -> Option<u8> {
+        self.ink
+    }
+
+    /// Draw `text` as [`Font::draw`] does, in colour `ink`.
+    pub fn draw_in(&self, canvas: &mut Canvas, text: &str, x: i32, y: i32, ink: u8) {
+        let mut x = x;
+        for c in text.chars() {
+            let Some((g, base)) = self.glyph(c) else {
+                x += 3;
+                continue;
+            };
+            let mut plain = g.clone();
+            for p in plain.pixels.iter_mut() {
+                if *p == 252 {
+                    *p = 0;
+                } else if *p != 0 {
+                    *p = ink;
+                }
+            }
+            canvas.blit(&plain, x, y + 10 - base);
+            x += g.width as i32;
+        }
     }
 
     /// The width of `text`.

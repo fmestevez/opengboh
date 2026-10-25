@@ -41,6 +41,24 @@ pub enum Anim {
     Fight { units: Vec<(usize, u8, u16)>, falls: Vec<Fallen>, sound: crate::sound::Event },
 }
 
+/// One of the player's orders, as recorded for a saved game: replaying them
+/// in turn from the scenario gives the same battle, as play is
+/// deterministic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Order {
+    Click { hex: Hex, right: bool },
+    ArmVolley,
+    GroupMove,
+    Rally,
+    Recover,
+    Turn { left: bool },
+    AboutFace,
+    Undo,
+    Finish { momentum: bool },
+    /// The viewer played one of the computer's leaders (demo pacing).
+    StepComputer,
+}
+
 /// Something the player is told in a dialog.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Notice {
@@ -200,8 +218,15 @@ pub struct Play {
     pub winner: Option<usize>,
     /// What to tell the player, oldest first.
     pub notices: Vec<Notice>,
+    /// The player's orders so far, for saving.
+    pub orders: Vec<Order>,
     /// The leader last told he has no orders left.
     told_no_orders: Option<usize>,
+    /// The game as it was before each of the last unit's moves and turns
+    /// this activation, for Undo (the original's undo list, `FUN_00521fe4`:
+    /// one unit's actions; another unit's, a volley, a shock, a rally, a
+    /// recovery or a group move clears it).
+    undo: Vec<(usize, Game)>,
 }
 
 impl Play {
@@ -210,7 +235,7 @@ impl Play {
         let leader = game.begin_turn();
         let layout = gboh_render::terrain::Layout::new(&game.map, gboh_render::terrain::Zoom::In);
         let demo = ai.len() > 1;
-        let mut p = Self { game, combats: Vec::new(), turn_ended: false, commentary: Vec::new(), aiming: false, ai, demo, events: vec![crate::sound::Event::Start], anims: Vec::new(), corpses: Vec::new(), shown: Default::default(), latest: Default::default(), lingering: Default::default(), layout, seed: 12345, selected: None, leader, status: String::new(), over: false, winner: None, notices: Vec::new(), told_no_orders: None };
+        let mut p = Self { game, combats: Vec::new(), turn_ended: false, commentary: Vec::new(), aiming: false, ai, demo, events: vec![crate::sound::Event::Start], anims: Vec::new(), corpses: Vec::new(), shown: Default::default(), latest: Default::default(), lingering: Default::default(), layout, seed: 12345, selected: None, leader, status: String::new(), over: false, winner: None, notices: Vec::new(), told_no_orders: None, orders: Vec::new(), undo: Vec::new() };
         p.say("battle begins");
         p.comment(String::from("--- Turn #1 ---"));
         p.announce_leader();
@@ -223,12 +248,17 @@ impl Play {
     /// While the active leader is the computer's, let its script give his
     /// orders and finish him.
     fn computer_turns(&mut self) {
-        while self.step_computer() {}
+        while self.play_computer() {}
     }
 
     /// If the active leader is the computer's, play him (orders, then
     /// finish with momentum); returns whether one was played.
     pub fn step_computer(&mut self) -> bool {
+        self.orders.push(Order::StepComputer);
+        self.play_computer()
+    }
+
+    fn play_computer(&mut self) -> bool {
         let Some(l) = self.leader.filter(|_| !self.over) else { return false };
         let side = self.game.battle.units[l].side;
         let Some(i) = self.ai.iter().position(|(s, _)| *s == side) else { return false };
@@ -239,6 +269,56 @@ impl Play {
         println!("computer: {name}");
         self.finish_one(true);
         true
+    }
+
+    /// Replay saved `orders`, showing nothing: what each brings about is
+    /// taken from the log and landed at once (bodies on the ground, units
+    /// as they end up), and nothing is left to animate, sound or tell.
+    pub fn replay(&mut self, orders: &[Order]) {
+        for &o in orders {
+            self.apply(o);
+            self.take_log();
+            for a in std::mem::take(&mut self.anims) {
+                self.land(&a);
+            }
+        }
+        self.events.clear();
+        self.notices.clear();
+    }
+
+    /// Give `order` (as the player would: from a save, or the other player
+    /// of a network game).
+    pub fn apply(&mut self, order: Order) {
+        match order {
+            Order::Click { hex, right } => {
+                self.click(hex, right);
+            }
+            Order::ArmVolley => self.arm_volley(),
+            Order::GroupMove => {
+                self.group_move();
+            }
+            Order::Rally => {
+                self.rally();
+            }
+            Order::Recover => {
+                self.recover();
+            }
+            Order::Turn { left } => {
+                self.turn(left);
+            }
+            Order::AboutFace => {
+                self.about_face();
+            }
+            Order::Undo => {
+                self.undo();
+            }
+            Order::Finish { momentum } => {
+                self.finish(momentum);
+            }
+            Order::StepComputer => {
+                self.step_computer();
+            }
+        }
     }
 
     /// Turn the view half round (or back): the corpses lying about and those
@@ -788,6 +868,7 @@ impl Play {
 
     /// The missile volley button: arm a volley for the next click.
     pub fn arm_volley(&mut self) {
+        self.orders.push(Order::ArmVolley);
         if self.can_fire() {
             self.aiming = true;
             self.say("pick a target");
@@ -796,6 +877,7 @@ impl Play {
 
     /// A click on `hex`; returns whether the battlefield changed.
     pub fn click(&mut self, hex: Hex, right: bool) -> bool {
+        self.orders.push(Order::Click { hex, right });
         if self.over {
             return false;
         }
@@ -813,16 +895,19 @@ impl Play {
                 return true;
             }
             if self.selected == Some(l) && self.game.group_move.is_some() && self.lit().contains(&hex) {
+                self.undo.clear();
                 self.game.do_group_move(hex);
                 self.say("group moved");
                 return true;
             }
             if self.selected == Some(l) && self.lit().contains(&hex) {
+                let before = self.game.clone();
                 if !self.charge(l) {
                     self.say("no command points");
                     return false;
                 }
                 self.game.move_leader(hex);
+                self.keep_undo(l, before);
                 self.say("leader moved");
                 return true;
             }
@@ -835,6 +920,7 @@ impl Play {
                 true
             }
             (Some(s), Some(t)) if right => {
+                self.undo.clear();
                 let name = self.game.battle.units[t].name.clone();
                 match self.game.order_volley(s, t) {
                     Ok(h) if self.charge(s) => {
@@ -850,18 +936,26 @@ impl Play {
             (Some(s), Some(t)) if self.game.battle.units[t].side != self.game.battle.units[s].side => {
                 let ok = self.game.designate_shock(s, t);
                 if ok {
+                    self.undo.clear();
                     self.charge(s);
                 }
                 self.say(if ok { "shock designated" } else { "cannot shock that" });
                 true
             }
             (Some(s), None) if self.lit().contains(&hex) => {
+                let before = self.game.clone();
                 if !self.charge(s) {
                     self.say("no command points");
                     return false;
                 }
                 match self.game.order_move(s, hex) {
                     Ok(fire) => {
+                        // a move that drew fire cannot be taken back
+                        if fire.is_empty() {
+                            self.keep_undo(s, before);
+                        } else {
+                            self.undo.clear();
+                        }
                         let hits: i32 = fire.iter().map(|&(_, h)| h).sum();
                         self.say(&if fire.is_empty() { "moved".into() } else { format!("moved; reaction fire {hits} hits") });
                     }
@@ -876,10 +970,12 @@ impl Play {
     /// Try a group move with the active leader (all his orders); if it is
     /// granted, he is selected with his group's destinations lit.
     pub fn group_move(&mut self) -> bool {
+        self.orders.push(Order::GroupMove);
         if let Some(why) = self.game.group_move_refused() {
             self.say(&format!("no group move: {why}"));
             return false;
         }
+        self.undo.clear();
         let result = self.game.try_group_move();
         self.selected = self.leader;
         self.say(&format!("group move: {result:?}"));
@@ -888,6 +984,7 @@ impl Play {
 
     /// Rally the selected routed unit (one order).
     pub fn rally(&mut self) -> bool {
+        self.orders.push(Order::Rally);
         let Some(s) = self.selected else { return false };
         if self.game.battle.units[s].state != UnitState::Routed {
             self.say("only routed units rally");
@@ -897,6 +994,7 @@ impl Play {
             self.say("no command points");
             return false;
         }
+        self.undo.clear();
         let ok = self.game.rally(s);
         self.say(if ok { "rallied" } else { "rally failed: terminal rout" });
         let hits = ok.then(|| self.game.battle.units[s].hits);
@@ -907,6 +1005,7 @@ impl Play {
 
     /// Recover cohesion for the selected unit (one order).
     pub fn recover(&mut self) -> bool {
+        self.orders.push(Order::Recover);
         let Some(s) = self.selected else { return false };
         if self.game.battle.units[s].state != UnitState::Fighting || self.game.battle.units[s].hits == 0 {
             self.say("nothing to recover");
@@ -916,6 +1015,7 @@ impl Play {
             self.say("no command points");
             return false;
         }
+        self.undo.clear();
         let n = self.game.recover(s);
         self.say(&format!("{n} cohesion hits removed"));
         self.selected = None;
@@ -924,22 +1024,106 @@ impl Play {
 
     /// Turn the selected unit.
     pub fn turn(&mut self, left: bool) -> bool {
+        self.orders.push(Order::Turn { left });
         let Some(s) = self.selected else { return false };
+        let before = self.game.clone();
         if !self.charge(s) {
             self.say("no command points");
             return false;
         }
         let map = self.game.map.clone();
         match orders::turn(&mut self.game.battle, &map, s, left) {
-            Ok(()) => self.say("turned"),
+            Ok(()) => {
+                self.keep_undo(s, before);
+                self.say("turned")
+            }
             Err(e) => self.say(&format!("{e:?}")),
         }
+        true
+    }
+
+    /// About face for the selected unit.
+    pub fn about_face(&mut self) -> bool {
+        self.orders.push(Order::AboutFace);
+        let Some(s) = self.selected else { return false };
+        let u = &self.game.battle.units[s];
+        if u.mp < 3 || u.state != UnitState::Fighting {
+            self.say("cannot about face");
+            return false;
+        }
+        let before = self.game.clone();
+        if !self.charge(s) {
+            self.say("no command points");
+            return false;
+        }
+        match orders::about_face(&mut self.game.battle, s) {
+            Ok(()) => {
+                self.keep_undo(s, before);
+                self.say("about face")
+            }
+            Err(e) => self.say(&format!("{e:?}")),
+        }
+        true
+    }
+
+    /// Remember the game as it was before `unit`'s move or turn; another
+    /// unit's clears what was kept for the last.
+    fn keep_undo(&mut self, unit: usize, before: Game) {
+        if self.undo.last().is_some_and(|(u, _)| *u != unit) {
+            self.undo.clear();
+        }
+        self.undo.push((unit, before));
+    }
+
+    /// The cursor for the mouse over `hex` (the original's `ChangeCursor`
+    /// names): a missile's while a volley is armed and the hex holds a unit
+    /// the selected one can shoot (`FUN_0056ddca`), the sword over one it
+    /// can shock (`FUN_00537261`), else none (the arrow).
+    pub fn cursor_at(&self, hex: Hex) -> Option<&'static str> {
+        let s = self.selected?;
+        let t = self.unit_at(hex)?;
+        if self.aiming {
+            use gboh_game::missile::Weapon::*;
+            return self.game.can_volley(s, t).then(|| match self.game.battle.units[s].missile.map(|m| m.0) {
+                Some(Sling) => "SLING",
+                Some(Javelin | MountedJavelin) => "JAVELIN",
+                Some(Bolt) => "BOLT",
+                _ => "ARROW",
+            });
+        }
+        (self.game.orderable().contains(&s) && self.game.can_shock(s, t)).then_some("SWORD")
+    }
+
+    /// Whether the selected unit can about face (three movement points,
+    /// not routed, one the active leader may order).
+    pub fn can_about_face(&self) -> bool {
+        self.selected.is_some_and(|u| {
+            let o = &self.game.battle.units[u];
+            o.mp >= 3 && o.state == UnitState::Fighting && self.game.orderable().contains(&u)
+        })
+    }
+
+    /// Whether there is a move or turn to take back.
+    pub fn can_undo(&self) -> bool {
+        !self.undo.is_empty() && !self.over
+    }
+
+    /// Take back the last unit's last move or turn: it stands as before,
+    /// and its order is given back.
+    pub fn undo(&mut self) -> bool {
+        self.orders.push(Order::Undo);
+        let Some((unit, before)) = self.undo.pop() else { return false };
+        self.game = before;
+        self.game.log.clear();
+        self.selected = Some(unit);
+        self.say("undone");
         true
     }
 
     /// Finish the active leader (and the turn after the last one), trying
     /// for momentum if asked, then let the computer play its leaders.
     pub fn finish(&mut self, momentum: bool) -> bool {
+        self.orders.push(Order::Finish { momentum });
         if self.over {
             return false;
         }
@@ -957,6 +1141,7 @@ impl Play {
 
     fn finish_one(&mut self, momentum: bool) {
         self.selected = None;
+        self.undo.clear();
         let (outcomes, next) = self.game.finish_leader(momentum);
         let routed: usize = outcomes.iter().map(|o| o.routed.len() + o.eliminated.len()).sum();
         self.leader = next;
@@ -1076,6 +1261,40 @@ mod tests {
         println!("{}", p.status);
     }
 
+    /// Undo takes back the last unit's moves and turns, one at a time, with
+    /// their command points; another unit's move forgets them.
+    #[test]
+    fn undoes_moves() {
+        let Ok(dir) = std::env::var("GBOH_DATA") else { return };
+        let dir = std::path::Path::new(&dir);
+        let scn = Scenario::parse(&std::fs::read(dir.join("HYDASPES.SCN")).unwrap()).unwrap();
+        let map = Map::parse(&std::fs::read(dir.join("HYDASPES.MAP")).unwrap()).unwrap();
+        let mut p = Play::new(Game::new(&scn, map, 1), Vec::new());
+        let agema = p.game.battle.units.iter().position(|u| u.name == "Agema Companions").unwrap();
+        let start = p.game.battle.units[agema].clone();
+        let points = p.game.points.as_ref().unwrap().left();
+        assert!(!p.can_undo());
+        p.click(Hex::new(13, 21), false);
+        let to = *p.lit().iter().find(|h| start.hex.neighbours().contains(h)).unwrap();
+        p.click(to, false);
+        assert_eq!(p.game.battle.units[agema].hex, to);
+        assert!(p.turn(true));
+        assert!(p.can_undo());
+        assert!(p.undo());
+        assert_eq!(p.game.battle.units[agema].hex, to);
+        assert_eq!(p.game.battle.units[agema].facing, start.facing);
+        assert!(p.undo());
+        assert_eq!((p.game.battle.units[agema].hex, p.game.battle.units[agema].mp), (start.hex, start.mp));
+        assert_eq!(p.game.points.as_ref().unwrap().left(), points);
+        assert!(!p.undo());
+        // about face, undone the same way
+        p.game.battle.units[agema].mp = start.max_mp;
+        assert!(p.about_face());
+        assert_eq!(p.game.battle.units[agema].facing, gboh_game::orders::turned(gboh_game::orders::turned(gboh_game::orders::turned(start.facing, true), true), true));
+        assert!(p.undo());
+        assert_eq!(p.game.battle.units[agema].facing, start.facing);
+    }
+
     /// The missile volley button arms a volley that the next click on an
     /// enemy fires, and the commentary tells of it.
     #[test]
@@ -1105,6 +1324,11 @@ mod tests {
         p.game.battle.units[enemy].hex = spot;
         p.arm_volley();
         assert!(p.aiming);
+        // the cursor over the target is the shooter's missile, the arrow
+        // over its own position
+        let missile = p.cursor_at(spot);
+        assert!(matches!(missile, Some("ARROW" | "SLING" | "JAVELIN" | "BOLT")), "{missile:?}");
+        assert_eq!(p.cursor_at(at), None);
         assert!(p.click(spot, false), "fire");
         assert!(!p.aiming);
         assert!(p.game.battle.units[shooter].fired, "{}", p.status);
@@ -1170,6 +1394,52 @@ mod tests {
         p.notices.clear();
         p.finish(true);
         assert!(matches!(p.notices.first(), Some(Notice::Momentum { leader: l, .. }) if *l == leader), "{:?}", p.notices);
+    }
+
+    /// Replaying the recorded orders from the scenario gives the same
+    /// battle: units, the active leader, the turn and the bodies on the
+    /// ground (the computer playing the Indians in between).
+    #[test]
+    fn replays_orders() {
+        let Ok(dir) = std::env::var("GBOH_DATA") else { return };
+        let dir = std::path::Path::new(&dir);
+        let scn = Scenario::parse(&std::fs::read(dir.join("HYDASPES.SCN")).unwrap()).unwrap();
+        let map = Map::parse(&std::fs::read(dir.join("HYDASPES.MAP")).unwrap()).unwrap();
+        let ai = || {
+            let mut read = |name: &str| std::fs::read(dir.join(name)).ok().map(|d| String::from_utf8_lossy(&d).into_owned());
+            let script = gboh_game::ai::Script::load(&scn.visitor_ai[0], &mut read).unwrap();
+            vec![(scn.visitor.nation, gboh_game::ai::Machine::new(script))]
+        };
+        let mut p = Play::new(Game::new(&scn, map.clone(), 1), ai());
+        // the player's leaders charge the nearest enemy, three turns long
+        for _ in 0..60 {
+            if p.over || p.game.activation.turn >= 3 {
+                break;
+            }
+            for u in p.game.orderable() {
+                let at = p.game.battle.units[u].hex;
+                if p.unit_at(at) != Some(u) {
+                    continue;
+                }
+                p.click(at, false);
+                if let Some(&to) = p.lit().iter().min_by_key(|h| (h.x - 25).abs() + (h.y - 14).abs()) {
+                    p.click(to, false);
+                }
+            }
+            p.finish(false);
+            p.take_log();
+            for a in std::mem::take(&mut p.anims) {
+                p.land(&a);
+            }
+        }
+        assert!(p.game.activation.turn >= 1, "some turns played");
+        let mut q = Play::new(Game::new(&scn, map, 1), ai());
+        q.replay(&p.orders.clone());
+        let state = |p: &Play| p.game.battle.units.iter().map(|u| (u.hex, u.facing, u.hits, u.state, u.mp)).collect::<Vec<_>>();
+        assert_eq!(state(&q), state(&p));
+        assert_eq!((q.leader, q.game.activation.turn), (p.leader, p.game.activation.turn));
+        assert_eq!(q.corpses, p.corpses);
+        assert_eq!(q.orders, p.orders);
     }
 
     /// The end picture is the player's: the army the computer does not

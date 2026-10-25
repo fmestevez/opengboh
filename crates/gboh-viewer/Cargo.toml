@@ -4,6 +4,10 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "opengboh"
+path = "src/main.rs"
+
 [dependencies]
 anyhow = "1.0.104"
 gboh-formats = { version = "0.1.0", path = "../gboh-formats" }
@@ -13,3 +17,6 @@ pollster = "0.4"
 wgpu = "25"
 winit = "0.30"
 rodio = { version = "0.20", default-features = false, features = ["wav"] }
+rfd = "0.17.2"
+dejavu = "2.37.0"
+fontdue = "0.9.5"

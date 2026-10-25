@@ -43,6 +43,10 @@ pub fn turn(battle: &mut Battle, map: &Map, unit: usize, left: bool) -> Result<(
     if !free && u.mp < 1 {
         return Err(Refused::NoMovementPoints);
     }
+    if ordered_again(battle, unit) {
+        return Err(Refused::Routed);
+    }
+    let u = &battle.units[unit];
     let facing = turned(u.facing, left);
     let main = match (u.second_hex(), left) {
         (Some(second), false) => {
@@ -71,38 +75,80 @@ pub fn turn(battle: &mut Battle, map: &Map, unit: usize, left: bool) -> Result<(
     }
     u.turned = true;
     u.facing = facing;
+    let old = u.hex;
+    u.hex = main;
+    // a two-hex unit pivoting pays for the ground as a step from its old
+    // main hex to the new (`FUN_0052843b`; 🟡 the "from" hex is taken to be
+    // the old main hex)
+    if battle.units[unit].two_hex() {
+        let hits = terrain_hits(battle, map, unit, old, main);
+        let u = &mut battle.units[unit];
+        u.hits += hits;
+        if u.hits >= u.tq as i32 {
+            u.state = UnitState::Routed;
+        }
+    }
+    Ok(())
+}
+
+/// About face (unit slot 0xf4, `FUN_005719dc` → `FUN_005253f2`): three
+/// movement points and the facing reversed (three turns the same way); a
+/// two-hex unit's hexes swap, its second hex becoming its main. (🟡 when the
+/// button is enabled is not traced: here, with three points left.)
+pub fn about_face(battle: &mut Battle, unit: usize) -> Result<(), Refused> {
+    let u = &battle.units[unit];
+    if u.state == UnitState::Routed {
+        return Err(Refused::Routed);
+    }
+    if u.mp < 3 {
+        return Err(Refused::NoMovementPoints);
+    }
+    if ordered_again(battle, unit) {
+        return Err(Refused::Routed);
+    }
+    let u = &battle.units[unit];
+    let facing = turned(turned(turned(u.facing, false), false), false);
+    let main = u.second_hex().unwrap_or(u.hex);
+    let u = &mut battle.units[unit];
+    u.mp -= 3;
+    u.facing = facing;
     u.hex = main;
     Ok(())
+}
+
+/// What a move brought about besides the move: reaction fire (shooter,
+/// hits), the units that withdrew from it, and enemy leaders hurt
+/// withdrawing (they roll for a casualty).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Moved {
+    pub fire: Vec<(usize, i32)>,
+    pub withdrew: Vec<usize>,
+    pub leaders_hit: Vec<usize>,
 }
 
 /// Move `unit` to `to` along the cheapest legal path (see [`reachable`]),
 /// one hex at a time. Each hex entered next to an enemy missile unit that
 /// has missiles and the hex in its arc draws a reaction volley (range 1);
-/// the move stops if the unit routs. Returns the reaction volleys as
-/// `(shooter, hits)`.
-pub fn move_to(
-    battle: &mut Battle,
-    map: &Map,
-    unit: usize,
-    to: Hex,
-    rng: &mut BorlandRand,
-) -> Result<Vec<(usize, i32)>, Refused> {
+/// a unit broken by it stops there, routed. Enemies next to each hex
+/// entered may then withdraw (see [`withdraw`]); the mover is not stopped
+/// by it. A unit already ordered this turn takes one cohesion hit for
+/// being ordered again, once an activation.
+pub fn move_to(battle: &mut Battle, map: &Map, unit: usize, to: Hex, rng: &mut BorlandRand) -> Result<Moved, Refused> {
     if battle.units[unit].state == UnitState::Routed {
         return Err(Refused::Routed);
     }
     let mp = battle.units[unit].mp;
     let path = path_to(battle, map, unit, mp, to).ok_or(Refused::Unreachable)?;
-    // moving again after momentum: one cohesion hit, once a turn
-    let u = &mut battle.units[unit];
-    if u.reordered && !u.reorder_hit {
-        u.reorder_hit = true;
-        u.hits += 1;
+    if ordered_again(battle, unit) {
+        return Ok(Moved::default());
     }
     let costs = reachable(battle, map, unit, mp);
-    let mut fire = Vec::new();
+    let mut moved = Moved::default();
     for h in path {
+        let from = battle.units[unit].hex;
         battle.units[unit].mp = mp - costs[&h];
         battle.units[unit].hex = h;
+        battle.units[unit].hits += terrain_hits(battle, map, unit, from, h);
         for s in reacting(battle, unit) {
             let class = MoveClass::of_type(battle.units[unit].type_id).unwrap_or(MoveClass::HeavyInfantry);
             let Some((weapon, left)) = battle.units[s].missile else { continue };
@@ -110,80 +156,294 @@ pub fn move_to(
             let cat = matches!(battle.units[unit].type_id, 41 | 44);
             let r = Volley::reaction(weapon, class, cat).resolve(rng.next() % 10);
             battle.units[unit].hits += r.hits;
-            fire.push((s, r.hits));
+            moved.fire.push((s, r.hits));
         }
         let u = &battle.units[unit];
         if u.hits >= u.tq as i32 {
             battle.units[unit].state = UnitState::Routed;
             break;
         }
-        for e in withdrawers(battle, unit) {
-            withdraw(battle, map, e, unit, rng);
+        let (units, leaders) = withdrawers(battle, map, unit);
+        for e in units {
+            if withdraw(battle, map, e, unit, rng) {
+                moved.withdrew.push(e);
+            }
+        }
+        for l in leaders {
+            if leader_withdraw(battle, map, l, unit, rng) {
+                moved.leaders_hit.push(l);
+            }
         }
     }
-    Ok(fire)
+    Ok(moved)
 }
 
-/// Enemy units next to `mover` that may withdraw from it (the manual):
-/// cavalry from non-cavalry, leaders from anyone, skirmishers from heavy
-/// infantry and phalanxes.
-fn withdrawers(battle: &Battle, mover: usize) -> Vec<usize> {
+/// Cohesion hits for one step of a move (`FUN_0056ef04`, unit slot 0x3c,
+/// called for every step by `FUN_00522d69`): by the unit's class group
+/// (infantry and oxybeles, skirmishers, horse, elephants, chariots), for
+/// each terrain of the hex entered (hex codes 1–5 and 10: woods, rocky
+/// ground, marsh, major rivers, abatis) and of the side crossed (6 minor
+/// river, 8 steep-banked stream, 9 steep bank, 11), and for climbing or
+/// descending; horses take 2 more for stepping next to an enemy elephant
+/// ("… moved next to an elephant for 2 hits"). The table is the
+/// original's (`0x63bae8`).
+pub fn terrain_hits(battle: &Battle, map: &Map, unit: usize, from: Hex, to: Hex) -> i32 {
+    // rows: terrain codes 0–11, then up 1, down 1, up 2, down 2, 3 levels
+    const TABLE: [[i32; 5]; 17] = [
+        [0, 0, 0, 0, 0],
+        [1, 0, 1, 1, 99],
+        [1, 0, 2, 1, 99],
+        [1, 1, 1, 99, 99],
+        [1, 1, 1, 0, 99],
+        [1, 1, 2, 99, 99],
+        [1, 1, 1, 0, 99],
+        [1, 0, 0, 0, 1],
+        [2, 1, 2, 1, 99],
+        [1, 0, 1, 0, 99],
+        [1, 1, 1, 99, 99],
+        [99, 99, 99, 99, 99],
+        [1, 1, 1, 0, 1],
+        [1, 0, 0, 0, 1],
+        [2, 2, 99, 99, 99],
+        [2, 1, 99, 99, 99],
+        [99, 3, 99, 99, 99],
+    ];
+    use MoveClass::*;
+    let u = &battle.units[unit];
+    let Some(class) = MoveClass::of_type(u.type_id) else { return 0 };
+    let group = match class {
+        Skirmisher => 1,
+        HeavyCavalry | Lancer | LightCavalry => 2,
+        Elephant => 3,
+        Chariot => 4,
+        _ => 0,
+    };
+    let on_map = |h: Hex| h.x >= 0 && h.y >= 0 && (h.x as usize) < map.width && (h.y as usize) < map.height;
+    if !on_map(from) || !on_map(to) {
+        return 0;
+    }
+    let mut hits = 0;
+    let hex_codes = map.hex_features(to.x as usize, to.y as usize);
+    let side = from.neighbours().iter().position(|&n| n == to).map(|d| gboh_formats::map::Side::ALL[d]);
+    let side_codes = side.map_or(&[][..], |s| map.side_features(from.x as usize, from.y as usize, s));
+    for k in 0..15u16 {
+        let present = match k {
+            0..=5 | 10 => hex_codes.contains(&k),
+            6 | 8 | 9 | 11 => side_codes.contains(&k),
+            _ => false,
+        };
+        if present {
+            let h = TABLE[k as usize][group];
+            if h < 99 {
+                hits += h;
+            }
+        }
+    }
+    let level = |h: Hex| (map.elevation_at(h.x as usize, h.y as usize) as i32).max(1);
+    let row = match level(from) - level(to) {
+        -1 => Some(12),
+        1 => Some(13),
+        -2 => Some(14),
+        2 => Some(15),
+        3 | -3 => Some(16),
+        _ => None,
+    };
+    if let Some(r) = row
+        && TABLE[r][group] < 99
+    {
+        hits += TABLE[r][group];
+    }
+    if group == 2 {
+        let near = to.neighbours();
+        let elephant = battle.units.iter().any(|o| {
+            o.side != u.side && o.state == UnitState::Fighting && near.contains(&o.hex) && MoveClass::of_type(o.type_id) == Some(Elephant)
+        });
+        if elephant {
+            hits += 2;
+        }
+    }
+    hits
+}
+
+/// The cohesion hit for being ordered again (`FUN_00538e7c` and the
+/// turning and firing orders): a unit already ordered this turn takes one,
+/// the first time it acts in an activation. Returns whether it broke (the
+/// order is then not carried out).
+pub fn ordered_again(battle: &mut Battle, unit: usize) -> bool {
+    let u = &mut battle.units[unit];
+    if !u.reordered || u.reorder_hit {
+        return false;
+    }
+    u.reorder_hit = true;
+    u.hits += 1;
+    if u.hits >= u.tq as i32 {
+        u.state = UnitState::Routed;
+        return true;
+    }
+    false
+}
+
+/// A TQ check (`FUN_0057e846`): passed when `roll` is at most the unit's
+/// TQ (1 when routed).
+fn tq_passes(u: &crate::battle::Unit, roll: u32) -> bool {
+    let tq = if u.state == UnitState::Routed { 1 } else { u.tq as u32 };
+    roll <= tq
+}
+
+/// Enemy units next to `mover` that may withdraw from it
+/// (`FUN_00577e3c`), in the order of the hexes around it; and enemy
+/// leaders standing alone next to it. Light and heavy cavalry withdraw
+/// from anything, lancers from all but horse, skirmishers from heavy
+/// infantry and phalanxes; not while another enemy of theirs holds them
+/// in its zone of control.
+fn withdrawers(battle: &Battle, map: &Map, mover: usize) -> (Vec<usize>, Vec<usize>) {
     use MoveClass::*;
     let m = &battle.units[mover];
     let m_class = MoveClass::of_type(m.type_id);
     let m_horse = matches!(m_class, Some(HeavyCavalry | Lancer | LightCavalry));
-    (0..battle.units.len())
-        .filter(|&e| {
+    let (mut units, mut leaders) = (Vec::new(), Vec::new());
+    let near: Vec<Hex> = battle.hexes(mover).iter().flat_map(|h| h.neighbours()).collect();
+    for n in near {
+        for e in 0..battle.units.len() {
             let o = &battle.units[e];
-            if o.side == m.side || o.state != UnitState::Fighting || o.hex.distance(m.hex) != 1 {
-                return false;
+            if o.side == m.side || !o.on_field() || o.hex != n || units.contains(&e) || leaders.contains(&e) {
+                continue;
             }
-            match MoveClass::of_type(o.type_id) {
-                None => o.leader.is_some(),
-                Some(HeavyCavalry | Lancer | LightCavalry) => !m_horse,
+            if o.leader.is_some() {
+                let alone = battle.units.iter().enumerate().all(|(i, x)| i == e || !x.on_field() || x.hex != n);
+                if alone && o.state == UnitState::Fighting {
+                    leaders.push(e);
+                }
+                continue;
+            }
+            if o.state != UnitState::Fighting {
+                continue;
+            }
+            let eligible = match MoveClass::of_type(o.type_id) {
+                Some(HeavyCavalry | LightCavalry) => true,
+                Some(Lancer) => !m_horse,
                 Some(Skirmisher) => matches!(m_class, Some(HeavyInfantry | Phalanx)),
                 _ => false,
+            };
+            let held = (0..battle.units.len()).any(|x| {
+                let other = &battle.units[x];
+                x != mover && other.side == m.side && other.state == UnitState::Fighting && other.hex.distance(o.hex) == 1 && crate::movement::zoc_of(battle, map, x).contains(&o.hex)
+            });
+            if eligible && !held {
+                units.push(e);
             }
-        })
-        .collect()
-}
-
-/// Orderly withdrawal of `unit` from `enemy` (the manual; 🟡 the
-/// original's code is not traced): a TQ check (`rand() % 10 ≤ TQ − hits`);
-/// on success one cohesion hit if approached from the flank or rear (only
-/// the rear for skirmishers), then up to two hexes straight back, keeping
-/// its facing, never into an enemy zone of control, rough terrain or an
-/// occupied hex.
-pub fn withdraw(battle: &mut Battle, map: &Map, unit: usize, enemy: usize, rng: &mut BorlandRand) -> bool {
-    let u = &battle.units[unit];
-    if (rng.next() % 10) as i32 > u.tq as i32 - u.hits {
-        return false;
-    }
-    let from = battle.units[enemy].hex;
-    let angle = crate::shock::angle(u.hex, u.facing, from);
-    let skirmisher = MoveClass::of_type(u.type_id) == Some(MoveClass::Skirmisher);
-    let back: Vec<usize> = crate::movement::forward(u.facing)
-        .map(|f| f.map(|d| (d + 3) % 6).to_vec())
-        .unwrap_or_else(|| (0..6).collect());
-    let side = u.side;
-    if angle == 2 || (angle == 1 && !skirmisher) {
-        battle.units[unit].hits += 1;
-    }
-    for _ in 0..2 {
-        let here = battle.units[unit].hex;
-        let next = back.iter().map(|&d| here.neighbours()[d]).find(|&h| {
-            crate::movement::on_map(map, h)
-                && !map.hex_features(h.x as usize, h.y as usize).iter().any(|&c| (1..=5).contains(&c))
-                && !crate::movement::in_enemy_zoc(battle, side, h)
-                && battle.units.iter().all(|o| o.state == UnitState::Gone || o.hex != h)
-                && h.distance(from) > here.distance(from)
-        });
-        match next {
-            Some(h) => battle.units[unit].hex = h,
-            None => break,
         }
     }
+    (units, leaders)
+}
+
+/// The three sides (indices into `Hex::neighbours`) facing away from side
+/// `d`: the opposite and its two neighbours.
+fn away(d: usize) -> [usize; 3] {
+    [(d + 2) % 6, (d + 3) % 6, (d + 4) % 6]
+}
+
+/// Orderly withdrawal of `unit` from `mover` (`FUN_00578783`), automatic:
+/// cavalry an elephant approaches first takes `max(1, max(0, r − TQ) −
+/// TQ)` hits (`r = rand() % 10`); a unit with `TQ − 2` hits or more cannot
+/// withdraw; then a TQ check (`rand() % 10 ≤ TQ`). It moves with 2
+/// movement points, stepping only away from the approacher, through empty
+/// hexes, zones of control ignored (`FUN_00524ce4`), to the hex reached
+/// farthest from the nearest enemy (up to 3; the later on a tie). It
+/// fails from beside an enemy leader, or where it cannot move. After the
+/// move: one cohesion hit if approached from the flank or rear (skirmishers
+/// only the rear), and one more for a failed TQ check (`FUN_005778f8`).
+/// (🟡 the original also fails if the approacher's hex is of terrain type 4
+/// or 5; taken here as the map's hex codes 4 and 5.)
+pub fn withdraw(battle: &mut Battle, map: &Map, unit: usize, mover: usize, rng: &mut BorlandRand) -> bool {
+    let u = &battle.units[unit];
+    let class = MoveClass::of_type(u.type_id).unwrap_or(MoveClass::HeavyInfantry);
+    let tq = u.tq as i32;
+    if matches!(class, MoveClass::HeavyCavalry | MoveClass::Lancer | MoveClass::LightCavalry)
+        && MoveClass::of_type(battle.units[mover].type_id) == Some(MoveClass::Elephant)
+    {
+        let r = (rng.next() % 10) as i32;
+        let hits = ((r - tq).max(0) - tq).max(1);
+        battle.units[unit].hits += hits;
+        if battle.units[unit].hits >= tq {
+            battle.units[unit].state = UnitState::Routed;
+            return false;
+        }
+    }
+    if battle.units[unit].hits >= tq - 2 || !tq_passes(&battle.units[unit], rng.next() % 10) {
+        return false;
+    }
+    let u = &battle.units[unit];
+    let from_hexes = battle.hexes(mover);
+    let Some(d) = from_hexes.iter().find_map(|&m| u.hex.neighbours().iter().position(|&n| n == m)) else { return false };
+    let mover_hex = battle.units[mover].hex;
+    if map.hex_features(mover_hex.x.max(0) as usize, mover_hex.y.max(0) as usize).iter().any(|&c| c == 4 || c == 5) {
+        return false;
+    }
+    let dirs = away(d);
+    let occupied = |h: Hex| battle.units.iter().enumerate().any(|(i, o)| i != unit && o.on_field() && battle.hexes(i).contains(&h));
+    // the hexes reachable with 2 points, in the order found
+    let mut found: Vec<Hex> = Vec::new();
+    let mut frontier = vec![(u.hex, 0)];
+    while let Some((here, spent)) = frontier.first().copied() {
+        frontier.remove(0);
+        for &dir in &dirs {
+            let Some(c) = crate::movement::step_cost(map, class, here, dir) else { continue };
+            let to = here.neighbours()[dir];
+            if spent + c > 2 || occupied(to) || to == u.hex || found.contains(&to) {
+                continue;
+            }
+            found.push(to);
+            frontier.push((to, spent + c));
+        }
+    }
+    let side = u.side;
+    let enemies: Vec<usize> = (0..battle.units.len()).filter(|&i| battle.units[i].side != side && battle.units[i].on_field()).collect();
+    let mut best: Option<(i32, Hex, bool)> = None;
+    for &h in &found {
+        let nearest = enemies.iter().map(|&e| battle.units[e].hex.distance(h)).min().unwrap_or(3).min(3);
+        let leader_near = enemies.iter().any(|&e| battle.units[e].leader.is_some() && battle.units[e].hex.distance(h) == nearest);
+        if best.is_none_or(|(b, _, _)| nearest >= b) {
+            best = Some((nearest, h, leader_near));
+        }
+    }
+    let Some((score, to, leader_near)) = best else { return false };
+    if score == 1 && leader_near {
+        return false;
+    }
+    let angle = crate::shock::angle(u.hex, u.facing, mover_hex);
+    let skirmisher = class == MoveClass::Skirmisher;
+    let mut hits = if angle == 2 || (angle == 1 && !skirmisher) { 1 } else { 0 };
+    battle.units[unit].hex = to;
+    if !tq_passes(&battle.units[unit], rng.next() % 10) {
+        hits += 1;
+    }
+    let u = &mut battle.units[unit];
+    u.hits += hits;
+    if u.hits >= u.tq as i32 {
+        u.state = UnitState::Routed;
+    }
     true
+}
+
+/// An enemy leader standing alone next to `mover` steps away from it
+/// (`FUN_00567aaf`), at a risk: 90 in 100 from cavalry, 60 from other
+/// combat units (oxybeles none), rolled with `random() % 100`. Returns
+/// whether he must roll for a casualty. (🟡 the original takes the highest
+/// risk along his way; the rewrite the approacher's.)
+fn leader_withdraw(battle: &mut Battle, map: &Map, leader: usize, mover: usize, rng: &mut BorlandRand) -> bool {
+    let from = battle.units[mover].hex;
+    let points = battle.units[leader].max_mp.max(1);
+    let to = crate::movement::leader_moves(battle, map, leader, points).into_iter().max_by_key(|h| h.distance(from));
+    if let Some(to) = to {
+        battle.units[leader].hex = to;
+    }
+    let risk = match MoveClass::of_type(battle.units[mover].type_id) {
+        Some(MoveClass::HeavyCavalry | MoveClass::Lancer | MoveClass::LightCavalry) => 90,
+        Some(MoveClass::Oxybeles) | None => 0,
+        Some(_) => 60,
+    };
+    (rng.random() % 100) < risk
 }
 
 /// Enemy missile units that react to `unit` standing where it is.
@@ -216,6 +476,10 @@ pub fn volley(battle: &mut Battle, shooter: usize, target: usize, rng: &mut Borl
     if s.fired || left == 0 || !arc(s.hex, s.facing, weapon.range()).contains(&t.hex) {
         return Err(Refused::Unreachable);
     }
+    if MoveClass::of_type(s.type_id) != Some(MoveClass::Oxybeles) && ordered_again(battle, shooter) {
+        return Err(Refused::Routed);
+    }
+    let (s, t) = (&battle.units[shooter], &battle.units[target]);
     let class = MoveClass::of_type(t.type_id).unwrap_or(MoveClass::HeavyInfantry);
     let v = Volley {
         weapon,
@@ -246,7 +510,7 @@ const RECOVER: [i32; 4] = [5, 40, 50, 5];
 /// `rand() % 100`, 40 lower in an enemy zone of control. Returns the hits
 /// removed. 🟡 The unit's two flags the original sets (likely "ordered" and
 /// "may not move") are approximated by spending its movement.
-pub fn recover(battle: &mut Battle, unit: usize, initiative: u16, rng: &mut BorlandRand) -> i32 {
+pub fn recover(battle: &mut Battle, map: &Map, unit: usize, initiative: u16, rng: &mut BorlandRand) -> i32 {
     let shift = (initiative as i32 - 4) * 4;
     let mut w = RECOVER;
     w[0] -= shift;
@@ -257,7 +521,7 @@ pub fn recover(battle: &mut Battle, unit: usize, initiative: u16, rng: &mut Borl
     }
     let mut roll = (rng.next() % 100) as i32;
     let u = &battle.units[unit];
-    if crate::movement::in_enemy_zoc(battle, u.side, u.hex) {
+    if crate::movement::in_enemy_zoc(battle, map, u.side, u.hex) {
         roll -= 40;
     }
     let roll = roll.max(0);
@@ -273,16 +537,24 @@ pub fn recover(battle: &mut Battle, unit: usize, initiative: u16, rng: &mut Borl
     removed
 }
 
-/// Resupply at a leader's activation (the manual; 🟡 the original's code is
-/// not traced): each unit given that is out of missiles gains `rand() %
-/// (half + 1)` of its supply, rounded up. Returns the units resupplied
-/// (they may not be ordered this activation).
+/// Missile replenishment at a leader's activation (`FUN_005672ba` →
+/// `FUN_0056bac3`): each unit given that may take orders, is not routed and
+/// is out of missiles gets `random() % 5` (javelins `random() % 2`) and is
+/// done for the turn. Returns the units replenished.
 pub fn resupply(battle: &mut Battle, units: &[usize], rng: &mut BorlandRand) -> Vec<usize> {
+    use crate::missile::Weapon;
     let mut out = Vec::new();
     for &u in units {
-        if let Some((w, 0)) = battle.units[u].missile {
-            let half = w.supply().div_ceil(2);
-            battle.units[u].missile = Some((w, (rng.next() % (half as u32 + 1)) as u16));
+        let o = &battle.units[u];
+        if o.state != UnitState::Fighting || o.done || o.mp < o.max_mp {
+            continue;
+        }
+        if let Some((w, 0)) = o.missile {
+            let n = if matches!(w, Weapon::Javelin | Weapon::MountedJavelin) { 2 } else { 5 };
+            let o = &mut battle.units[u];
+            o.missile = Some((w, (rng.random() % n) as u16));
+            o.done = true;
+            o.reordered = true;
             out.push(u);
         }
     }
@@ -391,6 +663,17 @@ mod tests {
     }
 
     #[test]
+    fn about_face_reverses_and_swaps() {
+        let mut b = Battle { units: vec![unit(17, Hex::new(5, 5), 2, 0, None)] };
+        b.units[0].mp = 4;
+        let second = b.units[0].second_hex().unwrap();
+        about_face(&mut b, 0).unwrap();
+        assert_eq!((b.units[0].facing, b.units[0].mp, b.units[0].hex), (6, 1, second));
+        assert_eq!(b.units[0].second_hex(), Some(Hex::new(5, 5)));
+        assert_eq!(about_face(&mut b, 0), Err(Refused::NoMovementPoints));
+    }
+
+    #[test]
     fn turning_cycles_through_six_facings() {
         let mut f = 3;
         for _ in 0..6 {
@@ -459,8 +742,8 @@ mod tests {
         b.units[1].side = 1;
         b.units[1].missile = Some((Weapon::Javelin, 3));
         let target = Hex::new(4, 5);
-        let fire = move_to(&mut b, &m, 0, target, &mut BorlandRand::new(1)).unwrap();
-        assert!(!fire.is_empty());
+        let moved = move_to(&mut b, &m, 0, target, &mut BorlandRand::new(1)).unwrap();
+        assert!(!moved.fire.is_empty());
         assert!(b.units[1].missile.unwrap().1 < 3);
     }
 
@@ -472,8 +755,31 @@ mod tests {
         b.units[1].missile = Some((Weapon::Javelin, 2));
         let r = resupply(&mut b, &[0, 1], &mut BorlandRand::new(5));
         assert_eq!(r, vec![0]);
-        assert!(b.units[0].missile.unwrap().1 <= 2);
+        assert!(b.units[0].missile.unwrap().1 <= 1 && b.units[0].done);
         assert_eq!(b.units[1].missile.unwrap().1, 2);
+    }
+
+    #[test]
+    fn terrain_costs_cohesion() {
+        let mut m = map();
+        // woods ahead: infantry and horse take a hit, skirmishers none
+        let target = Hex::new(3, 5);
+        let (gx, gy) = Map::hex_cell(target.x as usize, target.y as usize);
+        let gw = m.grid_width();
+        m.cells[gy as usize * gw + gx as usize] = vec![1];
+        let b = Battle { units: vec![unit(31, Hex::new(2, 5), 3, 0, None), unit(2, Hex::new(2, 5), 3, 0, None), unit(8, Hex::new(2, 5), 3, 0, None)] };
+        assert_eq!(terrain_hits(&b, &m, 0, Hex::new(2, 5), target), 1);
+        assert_eq!(terrain_hits(&b, &m, 1, Hex::new(2, 5), target), 0);
+        // horses next to an enemy elephant: 2 more
+        let mut b = b;
+        b.units.push(unit(24, Hex::new(4, 5), 7, 0, None));
+        b.units[3].side = 1;
+        assert_eq!(terrain_hits(&b, &m, 2, Hex::new(2, 5), target), 3);
+        // up one level: a hit for all but elephants
+        let mut m2 = map();
+        let i = target.y as usize * m2.width + target.x as usize;
+        m2.elevation[i] = 2;
+        assert_eq!(terrain_hits(&b, &m2, 0, Hex::new(2, 5), target), 1);
     }
 
     #[test]
@@ -497,7 +803,7 @@ mod tests {
         let mut rng = BorlandRand::new(9);
         for _ in 0..4000 {
             b.units[0].hits = 3;
-            removed[recover(&mut b, 0, 7, &mut rng) as usize] += 1;
+            removed[recover(&mut b, &map(), 0, 7, &mut rng) as usize] += 1;
         }
         // initiative 7: 0%, 33%, 50%, 17%
         assert_eq!(removed[0], 0);

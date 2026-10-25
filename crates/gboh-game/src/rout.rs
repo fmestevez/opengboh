@@ -31,31 +31,33 @@ pub enum Flight {
     Gone(Vec<Hex>),
 }
 
-/// Flee up to `steps` hexes towards the unit's retreat direction. Each step
-/// tries the retreat's directions in order (east and west zig-zag: odd steps
-/// swap the first two) and takes the first that is on the map, passable,
-/// outside enemy zones of control and empty; failing that, the first such
-/// hex holding friendly units (it routs through them). Two-hex units are
-/// moved by their main hex. 🟡 What the original does with units routed
-/// through is not applied here.
+/// Flee up to `steps` hexes towards the unit's retreat direction
+/// (`FUN_0057ae96`). Each step tries the retreat's directions in order (east
+/// and west zig-zag: odd steps swap the first two), in three passes: a
+/// passable empty hex outside enemy zones of control; then one outside the
+/// zones holding friendly units; then one holding friendly units, zones or
+/// not (an empty hex in a zone is never entered, nor an enemy's). The first
+/// direction off the map takes it off the battlefield; no hex, or one it
+/// has already been through, means a terminal rout. It runs a step further
+/// if it ends on an occupied hex, and another if next to an enemy leader.
+/// Two-hex units are moved by their main hex.
 pub fn flee(battle: &Battle, map: &Map, unit: usize, steps: u32) -> Flight {
     let u = &battle.units[unit];
     let class = MoveClass::of_type(u.type_id).unwrap_or(MoveClass::HeavyInfantry);
     let prefs = preferences(u.retreat);
     let mut here = u.hex;
     let mut path = Vec::new();
-    for step in 0..steps {
+    let occupant = |h: Hex| battle.units.iter().enumerate().find(|&(i, o)| i != unit && o.on_field() && battle.hexes(i).contains(&h)).map(|(_, o)| o.side);
+    let mut budget = steps;
+    let mut extended = false;
+    let mut step = 0;
+    while step < budget {
         let mut order: Vec<usize> = prefs.to_vec();
         if matches!(u.retreat, 3 | 7) && step % 2 == 1 && order.len() > 1 {
             order.swap(0, 1);
         }
-        let free = |h: Hex, allow_friends: bool| {
-            battle.units.iter().enumerate().all(|(i, o)| {
-                i == unit || !o.on_field() || o.hex != h || (allow_friends && o.side == u.side)
-            })
-        };
         let mut next = None;
-        'pass: for allow_friends in [false, true] {
+        'pass: for pass in 0..3 {
             for &side in &order {
                 let Some(to) = neighbour(here, side) else { continue };
                 if !on_map(map, to) {
@@ -64,18 +66,32 @@ pub fn flee(battle: &Battle, map: &Map, unit: usize, steps: u32) -> Flight {
                     return Flight::Gone(path);
                 }
                 let passable = side_index(side).and_then(|d| step_cost(map, class, here, d)).is_some();
-                if passable && !in_enemy_zoc(battle, u.side, to) && free(to, allow_friends) {
+                let zoc = in_enemy_zoc(battle, map, u.side, to);
+                let ok = passable
+                    && match (pass, occupant(to)) {
+                        (0, None) => !zoc,
+                        (1, Some(s)) => s == u.side && !zoc,
+                        (2, Some(s)) => s == u.side,
+                        _ => false,
+                    };
+                if ok {
                     next = Some(to);
                     break 'pass;
                 }
             }
         }
         match next {
-            Some(to) => {
+            Some(to) if to != u.hex && !path.contains(&to) => {
                 path.push(to);
                 here = to;
             }
-            None => return Flight::Gone(path),
+            _ => return Flight::Gone(path),
+        }
+        step += 1;
+        if step == budget && !extended {
+            extended = true;
+            let enemy_leader_near = battle.units.iter().any(|o| o.side != u.side && o.on_field() && o.leader.is_some() && o.hex.distance(here) == 1);
+            budget += occupant(here).is_some() as u32 + enemy_leader_near as u32;
         }
     }
     Flight::Moved(path)

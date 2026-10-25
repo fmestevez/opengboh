@@ -146,6 +146,8 @@ pub fn leader_moves(battle: &Battle, map: &Map, leader: usize, points: i32) -> V
     }
     let empty = |h: &Hex| battle.units.iter().enumerate().all(|(i, u)| i == leader || u.state == UnitState::Gone || u.hex != *h);
     let mut out: Vec<Hex> = best.into_keys().filter(|h| *h != l.hex && empty(h)).collect();
+    // in a fixed order: whoever picks among them picks the same every time
+    out.sort_by_key(|h| (h.x, h.y));
     out.push(l.hex);
     out
 }
@@ -181,23 +183,56 @@ pub fn step_cost(map: &Map, class: MoveClass, from: Hex, dir: usize) -> Option<i
     Some(cost + extra + (z0 - z1).abs())
 }
 
-/// Whether a unit of `side` standing on `hex` would be in an enemy zone of
-/// control: next to any enemy combat unit. 🟡 The original also asks each
-/// enemy whether it exerts the zone; that test is not ported.
-pub(crate) fn in_enemy_zoc(battle: &Battle, side: u8, hex: Hex) -> bool {
-    let near = hex.neighbours();
-    battle
-        .units
-        .iter()
-        .any(|u| u.side != side && u.leader.is_none() && u.state == UnitState::Fighting && near.contains(&u.hex))
+/// The hexes `unit` holds in its zone of control (the original's set at
+/// `+0xe6`, `FUN_0057fd28`/`FUN_0057fd86`): the two front hexes of each of
+/// its hexes that it could step into itself. Leaders, routed and
+/// eliminated units exert none.
+pub fn zoc_of(battle: &Battle, map: &Map, unit: usize) -> Vec<Hex> {
+    let u = &battle.units[unit];
+    let (Some(class), Some(dirs)) = (MoveClass::of_type(u.type_id), forward(u.facing)) else { return Vec::new() };
+    if u.leader.is_some() || u.state != UnitState::Fighting {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for h in battle.hexes(unit) {
+        for &d in &dirs {
+            let n = h.neighbours()[d];
+            if step_cost(map, class, h, d).is_some() && !out.contains(&n) {
+                out.push(n);
+            }
+        }
+    }
+    out
 }
 
-fn next_to_elephant(battle: &Battle, hex: Hex) -> bool {
-    let near = hex.neighbours();
-    battle
+/// Whether `hex` is in an enemy zone of control for `side`
+/// (`FUN_004b4287`): an enemy next to it holds it in its zone. A hex
+/// where a skirmisher stands never is.
+pub(crate) fn in_enemy_zoc(battle: &Battle, map: &Map, side: u8, hex: Hex) -> bool {
+    let skirmisher_there = battle
         .units
         .iter()
-        .any(|u| near.contains(&u.hex) && MoveClass::of_type(u.type_id) == Some(MoveClass::Elephant))
+        .enumerate()
+        .any(|(i, u)| u.on_field() && battle.hexes(i).contains(&hex) && MoveClass::of_type(u.type_id) == Some(MoveClass::Skirmisher));
+    if skirmisher_there {
+        return false;
+    }
+    let near = hex.neighbours();
+    (0..battle.units.len()).any(|e| {
+        let o = &battle.units[e];
+        o.side != side && o.state == UnitState::Fighting && battle.hexes(e).iter().any(|h| near.contains(h)) && zoc_of(battle, map, e).contains(&hex)
+    })
+}
+
+/// Whether horses may not enter `hex` (`FUN_00571b5e`): it is in an enemy
+/// zone of control and an enemy elephant next to it holds it.
+fn elephant_bars(battle: &Battle, map: &Map, side: u8, hex: Hex) -> bool {
+    let near = hex.neighbours();
+    in_enemy_zoc(battle, map, side, hex)
+        && (0..battle.units.len()).any(|e| {
+            let o = &battle.units[e];
+            o.side != side && near.contains(&o.hex) && MoveClass::of_type(o.type_id) == Some(MoveClass::Elephant) && zoc_of(battle, map, e).contains(&hex)
+        })
 }
 
 /// Whether `mover` may end a step on `hex`: free, or shared only with a
@@ -214,8 +249,9 @@ fn can_enter(battle: &Battle, mover: usize, hex: Hex) -> bool {
 
 /// Hexes the unit at index `unit` can reach with `points` movement points,
 /// with the points each costs. It moves only into the two hexes in front
-/// (its facing does not change), stops on entering a hex next to an enemy
-/// (skirmishers excepted), and horses will not step next to an elephant.
+/// (its facing does not change), stops on entering an enemy zone of
+/// control, and horses will not step where an enemy elephant holds the
+/// zone.
 /// A two-hex unit moves both hexes the same way; both steps must be legal,
 /// the cost is the main hex's, and the result lists the positions of its
 /// main hex (see [`highlighted`] for both).
@@ -249,9 +285,13 @@ fn search(battle: &Battle, map: &Map, unit: usize, points: i32) -> Search {
     let mut parent = HashMap::new();
     let (Some(class), Some(dirs)) = (MoveClass::of_type(u.type_id), forward(u.facing)) else { return (out, parent) };
     let pair = |h: Hex| if u.two_hex() { crate::battle::flank(h, u.facing) } else { None };
-    let stopped = |h: Hex| {
-        class != MoveClass::Skirmisher
-            && (in_enemy_zoc(battle, u.side, h) || pair(h).is_some_and(|p| in_enemy_zoc(battle, u.side, p)))
+    // no step out of an enemy zone (`FUN_0056e7d7`), but from where the
+    // unit's order began (it starts with full points); a two-hex unit whose
+    // second hex is in a zone cannot step at all
+    let start_free = u.mp >= u.max_mp;
+    let stuck = |h: Hex| {
+        let zoc = in_enemy_zoc(battle, map, u.side, h) && !(h == u.hex && start_free);
+        zoc || pair(h).is_some_and(|p| in_enemy_zoc(battle, map, u.side, p))
     };
     // Dijkstra on spent points (max-heap of negated cost)
     let mut heap = BinaryHeap::from([(0i32, u.hex.x, u.hex.y)]);
@@ -263,9 +303,9 @@ fn search(battle: &Battle, map: &Map, unit: usize, points: i32) -> Search {
         }
         if here != u.hex {
             out.insert(here, spent);
-            if stopped(here) {
-                continue;
-            }
+        }
+        if stuck(here) {
+            continue;
         }
         for &d in &dirs {
             let Some(c) = step_cost(map, class, here, d) else { continue };
@@ -280,7 +320,7 @@ fn search(battle: &Battle, map: &Map, unit: usize, points: i32) -> Search {
                     continue;
                 }
             }
-            if class.horse() && next_to_elephant(battle, to) {
+            if class.horse() && elephant_bars(battle, map, u.side, to) {
                 continue;
             }
             if best.get(&to).is_none_or(|&b| total < b) {
@@ -407,16 +447,28 @@ mod tests {
     #[test]
     fn stops_next_to_enemy() {
         let map = flat_map(12, 10);
-        // facing 4 moves SE and S; an enemy at (3, 5) touches both first steps
+        // facing 4 moves SE and S; an enemy at (3, 5) facing them (8: NW
+        // and N) holds both first steps in its zone of control
         let start = Hex::new(2, 4);
-        let battle = Battle { units: vec![unit(31, 2, start, 4), unit(31, 1, Hex::new(3, 5), 7)] };
+        let battle = Battle { units: vec![unit(31, 2, start, 4), unit(31, 1, Hex::new(3, 5), 8)] };
+        let zone = zoc_of(&battle, &map, 1);
         let r = reachable(&battle, &map, 0, 6);
         let mut got: Vec<_> = r.keys().copied().collect();
         got.sort_by_key(|h| (h.x, h.y));
-        assert_eq!(got, vec![Hex::new(2, 5), Hex::new(3, 4)]);
-        // a skirmisher is not stopped
-        let battle = Battle { units: vec![unit(2, 2, start, 4), unit(31, 1, Hex::new(3, 5), 7)] };
+        assert!(got.iter().all(|h| zone.contains(h)), "{got:?} {zone:?}");
+        assert!(!got.is_empty());
+        // facing away, it holds nothing the unit walks through
+        let battle = Battle { units: vec![unit(31, 2, start, 4), unit(31, 1, Hex::new(3, 5), 4)] };
         assert!(reachable(&battle, &map, 0, 6).len() > 2);
+        // a skirmisher stopped in a zone moves on from where it stands
+        let mut battle = Battle { units: vec![unit(2, 2, start, 4), unit(31, 1, Hex::new(3, 5), 8)] };
+        let first = *got.first().unwrap();
+        battle.units[0].hex = first;
+        battle.units[0].mp = 3;
+        assert!(!reachable(&battle, &map, 0, 3).is_empty());
+        let mut battle = Battle { units: vec![unit(31, 2, first, 4), unit(31, 1, Hex::new(3, 5), 8)] };
+        battle.units[0].mp = 3;
+        assert!(reachable(&battle, &map, 0, 3).is_empty(), "others stay once stopped");
     }
 
     #[test]

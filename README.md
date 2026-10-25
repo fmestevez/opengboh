@@ -16,7 +16,7 @@ from its `DATA` directory.
 Early. Currently:
 
 * `gboh-formats`: parsers for the original data (EIF sprites, palette, battle
-  maps, scenarios).
+  maps, scenarios, the executable's resources, the help file, rich text).
 * `gboh-render`: a faithful software renderer for the battlefield (terrain,
   streams, cliffs, roads, river rocks, trees, stones and units in formation),
   checked pixel by pixel against the original game.
@@ -24,13 +24,33 @@ Early. Currently:
   leader ratings, command, activation order, movement, turning,
   command points, shock and missile combat, routs, rally, rout points
   and a turn loop).
-* `gboh-viewer`: the game's setup screens and battle window (wgpu), with
+* `gboh-viewer`: the `opengboh` program: a content manager for the games'
+  data, the game's setup screens and battle window (wgpu), with
   animation, sound and the original's dialogs.
 * `gboh-tools`: command-line utilities.
 
 See [docs/formats.md](docs/formats.md) for format notes.
 
 ## Usage
+
+```sh
+cargo run --release -p gboh-viewer
+```
+
+Run without arguments, `opengboh` opens on its content manager: for each of
+The Great Battles of Alexander, Hannibal and Caesar, **Import…** asks for
+the folder where you installed the game and copies its executable and
+`DATA` folder into the rewrite's own directory (beside the saves; **Re-import**
+copies it again). The data never goes anywhere else, and the rewrite
+carries none of its own. Once a game is imported, **Continue** opens its
+start screen. Its top left has three buttons of the rewrite's own: the
+**Content Manager**, **Settings** (the theme: which imported game's intro,
+start screen and art the menus use; and that game's preferences) and **All
+Battles**, every imported game's battles and campaigns in one list. Only
+Alexander's battles can be played so far; the other two can be imported and
+chosen as the theme.
+
+The developer form below opens a `DATA` folder directly.
 
 ```sh
 cargo run --release -p gboh-tools -- extract "/path/to/game/DATA" out/eif
@@ -75,6 +95,41 @@ details, overview map, hex grid, reverse view, zoom), status bar, overview
 map and running commentary; after the fighting, the combat results; at the
 end of each turn, the game overview with each army's details; and at the
 end, the victory or defeat screen.
+
+Above the toolbar is the original's menu bar (Game, Leader, Unit, Map,
+Window, Help), with its accelerators: Ctrl+Q closes the battle, Ctrl+M arms
+a missile volley, Ctrl+C shows or hides the commentary, Ctrl+Z undoes the
+last unit's move or turn. About face and undo are on the toolbar too. Game
+→ Preferences turns animations, sounds, music and the reminders on or off
+and sets the volumes; they are kept in `preferences.txt` beside the saves
+directory. Help shows the game's own help file, the battle's history and
+its victory conditions, and the credits.
+
+The start screen's other buttons work too. **Start Campaign** plays
+Alexander's conquest on the campaign map: drag the army's flag to a
+province, fight its battles, and garrison the conquered ones by dragging
+units. **Multiplayer** links two copies of the viewer over TCP. One
+creates the game (port 5000) and chooses the battle; on the Leader
+Control screen the armies marked Player are the host's and those marked
+Computer the other player's. The other joins by the host's name or
+address. **View Tutorial** opens the help's tutorial,
+and **More…** on the battle map plays a scenario file of your own from
+`DATA`. **Historical Video** plays the game's history film, and the intro plays at
+start (untick Show Intro Video in Preferences to skip it). Both are read
+from the game's own Director movies; a key or a click ends them.
+
+Winning the campaign plays the game's victory video if `ffmpeg` is
+installed.
+
+The mouse pointer is the game's own: an arrow at the edges scrolls the
+battlefield, a sword over an enemy you can shock, and a missile over one
+you can shoot.
+
+Ctrl+S (Cmd+S) saves the game and Ctrl+L loads one, as does Load Saved Game
+on the start screen; games autosave at the start of each turn. Saves go to
+`~/Library/Application Support/opengboh/saves` on macOS,
+`%APPDATA%\opengboh\saves` on Windows and `~/.local/share/opengboh/saves`
+elsewhere (`GBOH_SAVES` overrides it).
 
 ## License
 

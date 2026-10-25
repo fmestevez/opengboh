@@ -92,11 +92,37 @@ pub enum Outcome {
     Quit,
     /// Play this scenario, the computer taking the sides marked (home,
     /// visitor), with these rout levels.
-    Play { scenario: &'static str, computer: [bool; 2], levels: [u16; 2] },
+    Play { scenario: String, computer: [bool; 2], levels: [u16; 2] },
+    /// Load Saved Game.
+    Load,
+    /// Start Campaign, Multiplayer, View Tutorial, Historical Video.
+    Campaign,
+    Multiplayer,
+    Tutorial,
+    History,
+    /// More...: choose a scenario file of the player's own.
+    Custom,
+    /// Tell the player these strings of the executable's string table.
+    Message(Vec<u16>),
+    /// The rewrite's own: the content manager, its settings, the battles of
+    /// every imported title.
+    Content,
+    Settings,
+    Selector,
+}
+
+/// The rewrite's buttons on the start screen, top left (dialog units: a
+/// big push button each).
+const EXTRA: [&str; 3] = ["Content Manager", "Settings", "All Battles"];
+
+fn extra_rect(k: usize) -> (i16, i16, i16, i16) {
+    (4, 4 + 16 * k as i16, 90, 14)
 }
 
 pub struct Setup {
     pub screen: Screen,
+    /// Where the left button is held down on the screen, if it is.
+    pub pressed: Option<(i32, i32)>,
     font: crate::ui::Font,
     /// The brightest yellow of the palette, for the chosen battle.
     yellow: u8,
@@ -113,6 +139,11 @@ pub struct Setup {
     /// levels.
     sides: Vec<[String; 2]>,
     rout: Vec<[u16; 2]>,
+    /// Each battle's scenario file (the built-in ones, then any the player
+    /// chose with More...).
+    files: Vec<String>,
+    /// The nations' names, by nation byte.
+    nations: Vec<String>,
     start: Option<Dialog>,
     scenario: Option<Dialog>,
     intro: Option<Dialog>,
@@ -171,6 +202,7 @@ impl Setup {
             .collect();
         Self {
             screen: Screen::Start,
+            pressed: None,
             font: crate::ui::Font::load(data_dir),
             yellow,
             button: cels(&buttons, "Pushbutton"),
@@ -184,11 +216,40 @@ impl Setup {
             descriptions,
             sides,
             rout,
+            files: SCENARIOS.iter().map(|f| f.to_string()).collect(),
+            nations: (0..6).map(nation).collect(),
             start: res.as_ref().and_then(|r| r.dialog("STARTGAME")),
             scenario: res.as_ref().and_then(|r| r.dialog("SCENARIO")),
             intro: res.as_ref().and_then(|r| r.dialog("INTRODLG")),
             rout_dialog: res.as_ref().and_then(|r| r.dialog("ARMYROUTDLG")),
         }
+    }
+
+    /// The scenario files in `data_dir` that are not the built-in battles'
+    /// (what More... offers).
+    pub fn custom_files(data_dir: &Path) -> Vec<String> {
+        let mut files: Vec<String> = std::fs::read_dir(data_dir)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.ok()?.file_name().into_string().ok())
+            .filter(|n| n.to_ascii_lowercase().ends_with(".scn") && !SCENARIOS.iter().any(|b| b.eq_ignore_ascii_case(n)))
+            .collect();
+        files.sort();
+        files
+    }
+
+    /// Go on with scenario `file` as a battle of its own (the original's
+    /// index 11, "Custom"): who plays it is asked next.
+    pub fn choose_custom(&mut self, data_dir: &Path, file: &str) -> bool {
+        let Some(scn) = crate::find_ci(data_dir, file).and_then(|p| std::fs::read(p).ok()).and_then(|d| gboh_formats::scn::Scenario::parse(&d).ok()) else {
+            return false;
+        };
+        let nation = |n: u8| self.nations.get(n as usize).cloned().unwrap_or_default();
+        self.sides.push([nation(scn.home.nation), nation(scn.visitor.nation)]);
+        self.rout.push([scn.home.rout_level as u16, scn.visitor.rout_level as u16]);
+        self.files.push(file.to_string());
+        self.screen = Screen::Sides { battle: self.files.len() - 1, computer: [false, true] };
+        true
     }
 
     fn text_width(&self, text: &str) -> i32 {
@@ -205,11 +266,13 @@ impl Setup {
         let (x, y) = px((rect.0, rect.1));
         let (w, h) = px((rect.2, rect.3));
         let art = if w > 120 { &self.big_button } else { &self.button };
-        if let Some(b) = art.first() {
+        // pressed while the left button is held on it
+        let down = self.pressed.is_some_and(|(px, py)| px >= x && px < x + w && py >= y && py < y + h) as i32;
+        if let Some(b) = art.get(down as usize).or(art.first()) {
             canvas.blit(b, x + (w - b.width as i32) / 2, y + (h - b.height as i32) / 2);
         }
         let caption: String = caption.chars().filter(|&c| c != '&').collect();
-        self.text(canvas, &caption, x + (w - self.text_width(&caption)) / 2, y + (h - 11) / 2);
+        self.text(canvas, &caption, x + (w - self.text_width(&caption)) / 2 + down, y + (h - 11) / 2 + down);
     }
 
     /// The control of `dialog` under pixel `(x, y)`, by id.
@@ -219,6 +282,15 @@ impl Setup {
             let (w, h) = px((c.rect.2, c.rect.3));
             (x >= cx && x < cx + w && y >= cy && y < cy + h).then_some(c.id)
         })
+    }
+
+    /// A `w` × `h` canvas of the screens' marble, to set a screen on.
+    pub fn backdrop(&self, w: usize, h: usize) -> Canvas {
+        let mut canvas = Canvas::new(w, h, 0);
+        if let Some(m) = &self.marble {
+            canvas.tile(m, 0, 0);
+        }
+        canvas
     }
 
     /// A marble canvas the size of `dialog`.
@@ -241,6 +313,11 @@ impl Setup {
                 }
                 for c in self.start.iter().flat_map(|d| &d.controls) {
                     self.button(&mut canvas, c.rect, &c.text);
+                }
+                // the rewrite's own: back to the content manager, its
+                // settings, and every imported title's battles
+                for (k, label) in EXTRA.iter().enumerate() {
+                    self.button(&mut canvas, extra_rect(k), label);
                 }
                 canvas
             }
@@ -344,12 +421,32 @@ impl Setup {
     /// A click at pixel `(x, y)` of the screen.
     pub fn click(&mut self, x: i32, y: i32) -> Outcome {
         match self.screen {
+            Screen::Start if (0..EXTRA.len()).any(|k| {
+                let (rx, ry) = px((extra_rect(k).0, extra_rect(k).1));
+                let (rw, rh) = px((extra_rect(k).2, extra_rect(k).3));
+                x >= rx && x < rx + rw && y >= ry && y < ry + rh
+            }) =>
+            {
+                let k = (0..EXTRA.len())
+                    .find(|&k| {
+                        let (rx, ry) = px((extra_rect(k).0, extra_rect(k).1));
+                        let (rw, rh) = px((extra_rect(k).2, extra_rect(k).3));
+                        x >= rx && x < rx + rw && y >= ry && y < ry + rh
+                    })
+                    .unwrap_or(0);
+                [Outcome::Content, Outcome::Settings, Outcome::Selector][k].clone()
+            }
             Screen::Start => match Self::control_at(&self.start, x, y) {
                 Some(106) => {
                     self.screen = Screen::Scenario { selected: None };
                     Outcome::Redraw
                 }
                 Some(2) => Outcome::Quit,
+                Some(101) => Outcome::Load,
+                Some(102) => Outcome::Campaign,
+                Some(103) => Outcome::Multiplayer,
+                Some(104) => Outcome::Tutorial,
+                Some(105) => Outcome::History,
                 _ => Outcome::Nothing,
             },
             Screen::Scenario { selected } => {
@@ -367,6 +464,12 @@ impl Setup {
                         self.screen = Screen::Start;
                         Outcome::Redraw
                     }
+                    // the original's Details and Units open its help, whose
+                    // calls the GOG build has cut: a pointer to the manual
+                    // (Paraitacene's Details: its description)
+                    Some(10) if selected == Some(10) => Outcome::Message(DESCRIPTION_IDS[10].to_vec()),
+                    Some(9 | 10) if selected.is_some() => Outcome::Message(vec![83]),
+                    Some(11) => Outcome::Custom,
                     _ => Outcome::Nothing,
                 }
             }
@@ -401,7 +504,7 @@ impl Setup {
                         self.screen = Screen::Rout { battle, computer, levels, difficulty };
                         Outcome::Redraw
                     }
-                    Some(1) => Outcome::Play { scenario: SCENARIOS[battle], computer, levels },
+                    Some(1) => Outcome::Play { scenario: self.files[battle].clone(), computer, levels },
                     _ => Outcome::Nothing,
                 }
             }
@@ -481,7 +584,7 @@ mod tests {
         let (x, y) = px((72 + 5, 76 + 6));
         assert_eq!(s.click(x, y), Outcome::Redraw);
         let (x, y) = px((34 + 25, 148 + 7));
-        assert_eq!(s.click(x, y), Outcome::Play { scenario: "ISSUS.SCN", computer: [false, true], levels: [168, 101] });
+        assert_eq!(s.click(x, y), Outcome::Play { scenario: "ISSUS.SCN".into(), computer: [false, true], levels: [168, 101] });
         if let Ok(out) = std::env::var("GBOH_SHOTS") {
             for (name, screen) in [
                 ("start", Screen::Start),

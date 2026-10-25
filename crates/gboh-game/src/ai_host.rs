@@ -123,12 +123,16 @@ pub struct AiHost<'a> {
     pub finished: bool,
     /// Debug output from `write` / `watch`.
     pub log: Vec<String>,
+    /// Units that attacked in this activation: they may still fire (the
+    /// scripts' `Attack` then `ShootMissiles`; the original's commentary
+    /// shows units throwing javelins before their charge).
+    attacked: Vec<usize>,
 }
 
 impl<'a> AiHost<'a> {
     pub fn new(game: &'a mut Game) -> Self {
         let group = Self::group_of(game);
-        Self { game, lists: Vec::new(), group, group_pos: 0, finished: false, log: Vec::new() }
+        Self { game, lists: Vec::new(), group, group_pos: 0, finished: false, log: Vec::new(), attacked: Vec::new() }
     }
 
     /// The active leader's group: the units sharing his group number,
@@ -571,6 +575,7 @@ impl Host for AiHost<'_> {
                     && self.charge(u)
                 {
                     self.game.designate_shock(u, t);
+                    self.attacked.push(u);
                 }
                 if self.can_be_ordered(u) {
                     self.game.spend(u, true);
@@ -580,7 +585,8 @@ impl Host for AiHost<'_> {
             "fire" => {
                 let (Some(u), Some(h)) = (self.unit(arg(0)), hex_of(arg(1))) else { return Some(0) };
                 let Some(t) = self.enemies_of(u).find(|&e| self.game.battle.hexes(e).contains(&h)) else { return Some(0) };
-                if !self.charge(u) {
+                // a unit that has just attacked fires on the same order
+                if !self.attacked.contains(&u) && !self.charge(u) {
                     return Some(0);
                 }
                 let ok = self.game.order_volley(u, t).is_ok();
