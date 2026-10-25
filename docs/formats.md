@@ -2149,7 +2149,11 @@ the enemy from its side's retreat edge, a two-hex unit needing its second
 hex free; **Groups** gives each group its orders and behaviour;
 **Scenario** sets the title, sides, retreat edges, rout levels and turn
 limit; **File** starts on a map (or a blank one), opens a scenario (a
-game's own is taken over, its units keeping their art and stats) or a
+game's own is taken over, its units keeping their stats, and their art
+where the editor has it, else the editor's art of the same title and
+class, else of the same class: gbce plays an editor unit as its artwork's
+type, so the class is what must stay; every scenario of the three games
+goes through and plays) or a
 package (unpacked into the scenarios folder, asking before replacing a
 different file), saves it with its map and plans to opengboh's
 `scenarios` folder (never the game's), packs it, and plays it. The Units tab searches the

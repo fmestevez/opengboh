@@ -538,11 +538,12 @@ pub fn two_hex(u: &Unit) -> bool {
 /// Take a game's scenario over as an editor one: each unit's art from the
 /// type the game gives it, its kind from its class.
 fn convert(scn: &mut Scenario) {
-    use gboh_formats::units::{EDITOR_ART, unit_type};
+    use gboh_formats::units::unit_type;
     for u in &mut scn.units {
         let ty = unit_type(u);
-        u.artwork = ty.and_then(|t| EDITOR_ART.iter().position(|&e| e == t)).map_or(-1, |k| k as i16);
+        u.artwork = ty.and_then(editor_artwork).map_or(-1, |k| k as i16);
         u.kind = editor_kind(u);
+        u.extra = editor_extra(u.kind, &u.extra);
         u.layout = Layout::Editor;
     }
     scn.units.retain(|u| u.artwork >= 0);
@@ -558,6 +559,54 @@ fn convert(scn: &mut Scenario) {
         .collect();
     scn.layout = Layout::Editor;
     scn.editor = Some(EditorInfo { groups, ..Default::default() });
+}
+
+/// The editor's artwork (an index into its 120 sprite sets) for unit type
+/// `ty`. The artwork decides the unit's rules too (gbce plays an editor
+/// unit as its artwork's type), so a substitute keeps the movement class:
+/// its own; else one of the same class with the same sprite set's title
+/// (the games share many), ignoring the A, B, C or (1), (2), (3) variants
+/// of a set; else any of the same class (a leader's for a leader), so that
+/// no unit of a game's scenario is lost or plays by other rules.
+fn editor_artwork(ty: usize) -> Option<usize> {
+    use gboh_formats::units::{EDITOR_ART, title};
+    if let Some(k) = EDITOR_ART.iter().position(|&e| e == ty) {
+        return Some(k);
+    }
+    let base = |t: &str| {
+        let t = t.trim();
+        let t = t.strip_suffix(" B").or_else(|| t.strip_suffix(" C")).unwrap_or(t);
+        let t = t.strip_suffix(" (1)").or_else(|| t.strip_suffix(" (2)")).or_else(|| t.strip_suffix(" (3)")).unwrap_or(t);
+        if t == "Hoplite" { "Greek Hoplites".to_string() } else { t.to_string() }
+    };
+    let name = title(ty).map(base);
+    let leader =
+        |t: usize| gboh_formats::units::hannibal_class(t) == Some(gboh_formats::units::Class::Leader) || title(t).is_some_and(|n| n.ends_with("Leader"));
+    let class = crate::movement::MoveClass::of_type(ty);
+    let alike = |e: usize| if leader(ty) { leader(e) } else { class.is_some() && crate::movement::MoveClass::of_type(e) == class };
+    let titled = |e: usize| name.is_some() && title(e).map(base) == name;
+    EDITOR_ART
+        .iter()
+        .position(|&e| alike(e) && titled(e))
+        .or_else(|| EDITOR_ART.iter().position(|&e| alike(e)))
+        .or_else(|| EDITOR_ART.iter().position(|&e| titled(e)))
+}
+
+/// A unit's fields in the shape the editor's record of `kind` has: kinds 6,
+/// 9 and 12 combat fields alone, 2, 14 and 16 a byte more (the cataphract
+/// flag), the others missile fields too (and a legion type for 13 and 17).
+fn editor_extra(kind: u8, extra: &UnitExtra) -> UnitExtra {
+    let (a, b, c, more, missile, m1, m2, legion) = match *extra {
+        UnitExtra::Leader(_) => return extra.clone(),
+        UnitExtra::Combat { a, b, c, more } => (a, b, c, more, 0, 0, 0, None),
+        UnitExtra::Missile { a, b, c, missile, m1, m2, more, legion } => (a, b, c, more, missile, m1, m2, legion),
+    };
+    match kind {
+        0 => extra.clone(),
+        6 | 9 | 12 => UnitExtra::Combat { a, b, c, more: None },
+        2 | 14 | 16 => UnitExtra::Combat { a, b, c, more: Some(more.unwrap_or(0)) },
+        _ => UnitExtra::Missile { a, b, c, missile, m1, m2, more: None, legion: matches!(kind, 13 | 17).then(|| legion.unwrap_or(1)) },
+    }
 }
 
 /// The editor kind a game unit is written with, by its type's class.

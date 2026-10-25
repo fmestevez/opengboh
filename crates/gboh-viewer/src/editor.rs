@@ -330,6 +330,19 @@ impl EditorScreen {
                 .map(|(x, y)| gboh_game::hex::Hex::new(x as i32, y as i32))
                 .collect();
             play::light(&mut self.composed, scene, &hexes, &self.palette);
+            // where its moves go: each order's number on its hex
+            let [_, ink, gold, _] = self.colors;
+            let orders = self.ed.scn.editor.iter().flat_map(|e| &e.groups).find(|gr| gr.id == g).map(|gr| gr.orders.clone()).unwrap_or_default();
+            for (k, &(t, _, hex)) in orders.iter().enumerate().filter(|(_, o)| o.0 != 0) {
+                let Some((x, y)) = self.ed.map.hex_from_id(hex).filter(|_| t == 2) else { continue };
+                let (cx, cy) = play::centre(scene, x, y);
+                let label = format!("{}", k + 1);
+                let w = self.font.width(&label) + 8;
+                let r = (cx - w / 2, cy - 8, w, 16);
+                fill(&mut self.composed, r, gold);
+                frame(&mut self.composed, r, ink);
+                self.font.draw(&mut self.composed, &label, r.0 + 4, r.1 + 2);
+            }
         }
     }
 
@@ -879,6 +892,7 @@ impl EditorScreen {
                 redraw_units = true;
             }
             Act::AddOrder(t) => {
+                redraw_units = true;
                 let mut full = false;
                 self.with_group(|g| match g.orders.iter_mut().find(|o| o.0 == 0) {
                     Some(o) => *o = (t, 3, 0),
@@ -893,10 +907,13 @@ impl EditorScreen {
                 self.setting_hex = Some(k);
                 self.message = "Click the hex the group moves to.".into();
             }
-            Act::DropOrder(k) => self.with_group(|g| {
-                g.orders.remove(k);
-                g.orders.push((0, 0, 0));
-            }),
+            Act::DropOrder(k) => {
+                redraw_units = true;
+                self.with_group(|g| {
+                    g.orders.remove(k);
+                    g.orders.push((0, 0, 0));
+                })
+            }
             Act::Behaviour => self.with_group(|g| g.behaviour = if g.behaviour == 3 { 1 } else { 3 }),
             Act::Focus(f) => self.focus = Some(f),
             Act::Nation(home, d) => {
@@ -1445,10 +1462,83 @@ mod tests {
             e.tab = Tab::Groups;
             e.group = e.ed.scn.units.iter().find(|u| u.kind != 0).map(|u| u.unk_b as i16);
             e.selected = e.ed.scn.units.iter().position(|u| u.kind != 0);
+            e.act(Act::AddOrder(2));
+            let target = e.ed.hex_id(13, 10);
+            e.with_group(|g| g.orders[0].2 = target);
+            e.rebuild(false);
+            e.window = (1200, 800);
+            e.centre_on(e.selected.unwrap());
             let (groups, _) = e.canvas(1200, 800);
             crate::ui::write_ppm(&groups, &e.palette, &Path::new(&out).join("editor-groups.ppm")).unwrap();
         }
         unsafe { std::env::remove_var("GBOH_SAVES") };
         let _ = std::fs::remove_dir_all(&saves);
+    }
+}
+
+#[cfg(test)]
+mod every_scenario {
+    use super::*;
+
+    /// Every scenario of the games present opens in the editor, saves, reads
+    /// back and plays (a few activations by the computer, on Caesar's data,
+    /// as the editor's scenarios are played); runs only with `GBOH_CAESAR`
+    /// (and `GBOH_DATA`, `GBOH_HANNIBAL` for those games').
+    #[test]
+    fn every_games_scenario_round_trips_through_the_editor() {
+        let Ok(caesar) = std::env::var("GBOH_CAESAR") else { return };
+        let saves = std::env::temp_dir().join(format!("gboh-every-{}", std::process::id()));
+        let _var = crate::SAVES_VAR.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("GBOH_SAVES", saves.join("saves")) };
+        let dir = scenarios_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut failures = Vec::new();
+        let mut done = 0;
+        for var in ["GBOH_DATA", "GBOH_HANNIBAL", "GBOH_CAESAR"] {
+            let Ok(data) = std::env::var(var) else { continue };
+            let data = Path::new(&data);
+            let mut names: Vec<String> = std::fs::read_dir(data).unwrap().flatten().filter_map(|e| e.file_name().into_string().ok()).collect();
+            names.sort();
+            for name in names.iter().filter(|n| n.to_ascii_lowercase().ends_with(".scn")) {
+                let Some(scn) = std::fs::read(data.join(name)).ok().and_then(|d| Scenario::parse(&d).ok()) else { continue };
+                let Some(map) = crate::find_ci(data, &scn.map_file).and_then(|p| std::fs::read(p).ok()).and_then(|d| Map::parse(&d).ok()) else {
+                    continue;
+                };
+                let units = scn.units.len();
+                let class = |u: &Unit| gboh_formats::units::unit_type(u).map(gboh_game::movement::MoveClass::of_type);
+                let classes: Vec<_> = scn.units.iter().map(class).collect();
+                let mut ed = Editor::open(scn, map);
+                let after: Vec<_> = ed.scn.units.iter().map(class).collect();
+                if let Some(k) = (0..units.min(after.len())).find(|&k| classes[k] != after[k]) {
+                    failures.push(format!("{var} {name}: {} became {:?} from {:?}", ed.scn.units[k].name, after[k], classes[k]));
+                }
+                let base = format!("T{done:04}");
+                let files = ed.files(&base, [1; 16], [2; 16]);
+                for (n, d) in &files {
+                    std::fs::write(dir.join(n), d).unwrap();
+                }
+                let back = Scenario::parse(&files[0].1).map(|s| s.units.len()).map_err(|e| e.to_string());
+                if back != Ok(units) {
+                    failures.push(format!("{var} {name}: read back {back:?} of {units} units"));
+                    continue;
+                }
+                match crate::load_battle(Path::new(&caesar), &format!("{base}.scn"), [true, true], false) {
+                    Ok(mut b) => {
+                        let play = b.play.as_mut().unwrap();
+                        for _ in 0..4 {
+                            if !play.step_computer() {
+                                break;
+                            }
+                        }
+                    }
+                    Err(e) => failures.push(format!("{var} {name}: {e:#}")),
+                }
+                done += 1;
+            }
+        }
+        unsafe { std::env::remove_var("GBOH_SAVES") };
+        let _ = std::fs::remove_dir_all(&saves);
+        assert!(failures.is_empty(), "{} of {} failed:\n{}", failures.len(), done + failures.len(), failures.join("\n"));
+        eprintln!("{done} scenarios through the editor");
     }
 }
