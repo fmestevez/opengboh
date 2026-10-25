@@ -116,6 +116,7 @@ pub fn unit_type(u: &Unit) -> Option<usize> {
     match u.layout {
         crate::scn::Layout::Hannibal => return hannibal_unit_type(u),
         crate::scn::Layout::Caesar => return caesar_unit_type(u),
+        crate::scn::Layout::Editor => return EDITOR_ART.get(usize::try_from(u.artwork).ok()?).copied(),
         crate::scn::Layout::Alexander => {}
     }
     use Missile::*;
@@ -449,6 +450,17 @@ fn hannibal(t: &str) -> Option<usize> {
     HANNIBAL_TYPES.iter().position(|e| e.0 == t).map(|k| HANNIBAL + k)
 }
 
+/// The *Collector's Edition* editor's artwork table (its 120 entries, the
+/// art its units are drawn with whatever their nation): each one's type id
+/// here, by the sprite set's title (its Numidian light cavalry and light
+/// infantry, which name no file, by their titles in Hannibal's types).
+pub const EDITOR_ART: [usize; 120] = [
+    0, 7, 45, 46, 47, 99, 100, 103, 4, 5, 6, 35, 48, 50, 101, 102, 104, 105, 156, 155, 153, 154, 157, 152, 8, 44, 12, 41, 91, 145, 146, 142, 39, 19, 16, 25,
+    26, 83, 141, 23, 22, 151, 40, 24, 96, 3, 56, 18, 18, 52, 53, 55, 56, 18, 106, 32, 114, 115, 32, 14, 20, 37, 36, 21, 67, 68, 66, 69, 110, 108, 33, 11, 61,
+    62, 63, 123, 65, 118, 27, 9, 28, 90, 87, 86, 30, 13, 15, 29, 2, 10, 42, 74, 73, 133, 132, 129, 127, 131, 130, 128, 126, 38, 17, 17, 81, 80, 82, 88, 89,
+    143, 144, 119, 148, 147, 134, 135, 136, 137, 138, 139,
+];
+
 /// The type id of one of Caesar's titles.
 fn caesar(t: &str) -> Option<usize> {
     CAESAR_TYPES.iter().position(|e| e.0 == t).map(|k| CAESAR + k)
@@ -780,8 +792,8 @@ pub fn hannibal_unit_type(u: &Unit) -> Option<usize> {
 mod tests {
     use super::*;
 
-    /// Every unit of Caesar's scenarios (but its scenario builder's file)
-    /// gets a type whose sprite set is there; runs only with
+    /// Every unit of Caesar's scenarios (and its editor's `Last.scn`) gets
+    /// a type whose sprite set is there, and every editor artwork too; runs only with
     /// `GBOH_CAESAR` (its `data` directory) set.
     #[test]
     fn caesar_units_have_art() {
@@ -795,11 +807,13 @@ mod tests {
         let mut units = 0;
         for e in std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()) {
             let name = e.file_name().to_string_lossy().to_ascii_uppercase();
-            if !name.ends_with(".SCN") || name == "LAST.SCN" {
+            if !name.ends_with(".SCN") {
                 continue;
             }
             let scn = crate::scn::Scenario::parse(&std::fs::read(e.path()).unwrap()).unwrap();
-            assert_eq!(scn.layout, crate::scn::Layout::Caesar, "{name}");
+            // (the editor's own `Last.scn` among Caesar's)
+            let expected = if name == "LAST.SCN" { crate::scn::Layout::Editor } else { crate::scn::Layout::Caesar };
+            assert_eq!(scn.layout, expected, "{name}");
             for u in &scn.units {
                 let ty = unit_type(u).unwrap_or_else(|| panic!("{name}: {} (kind {}, nation {})", u.name, u.kind, u.art_nation));
                 assert!(titles.contains(title(ty).unwrap()), "{name}: {}", title(ty).unwrap());
@@ -807,6 +821,13 @@ mod tests {
             }
         }
         assert!(units > 3000, "{units}");
+        for (k, &ty) in EDITOR_ART.iter().enumerate() {
+            assert!(titles.contains(title(ty).unwrap()), "artwork {k}: {}", title(ty).unwrap());
+        }
+        // the editor's map, behind its header
+        let map = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).find(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case("Last.map")).unwrap();
+        let map = crate::map::Map::parse(&std::fs::read(map.path()).unwrap()).unwrap();
+        assert_eq!((map.width, map.height, map.hex_id_origin), (45, 38, 1000));
     }
 
     /// Every unit of Hannibal's scenarios gets a type whose sprite set is
@@ -835,6 +856,13 @@ mod tests {
             }
         }
         assert!(units > 3000, "{units}");
+        for (k, &ty) in EDITOR_ART.iter().enumerate() {
+            assert!(titles.contains(title(ty).unwrap()), "artwork {k}: {}", title(ty).unwrap());
+        }
+        // the editor's map, behind its header
+        let map = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).find(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case("Last.map")).unwrap();
+        let map = crate::map::Map::parse(&std::fs::read(map.path()).unwrap()).unwrap();
+        assert_eq!((map.width, map.height, map.hex_id_origin), (45, 38, 1000));
     }
 
     fn unit(kind: u8, nation: u8, name: &str, extra: UnitExtra) -> Unit {
@@ -852,6 +880,8 @@ mod tests {
             link: -1,
             layout: crate::scn::Layout::Alexander,
             art_nation: nation,
+            artwork: -1,
+            catalogue: -1,
         }
     }
 

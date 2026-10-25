@@ -70,6 +70,8 @@ pub struct Map {
 
 impl Map {
     pub fn parse(data: &[u8]) -> Result<Self> {
+        // (the Collector's Edition's editor writes a u32 0 and a GUID first)
+        let data = if data.len() > 20 && data[..4] == [0; 4] { &data[20..] } else { data };
         let mut r = Reader::new(data);
         let len = r.u16()? as usize;
         let name = r.bytes(len)?.iter().map(|&b| b as char).collect();

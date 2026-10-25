@@ -148,6 +148,9 @@ pub struct Battle {
     pub heat: u32,
     /// The rule options in force (see [`crate::options`]).
     pub options: crate::options::Options,
+    /// The layout of the scenario it comes from (the *Collector's
+    /// Edition*'s, whose units mix the games', plays by Caesar's engine).
+    pub layout: gboh_formats::scn::Layout,
     /// Hannibal's Cannae: the wind blowing this turn (from direction 2): a
     /// unit facing into it (6 or 7) moves a hex less and shoots a hex
     /// shorter (`FUN_0057c790`, `FUN_00578260`; leaders not).
@@ -229,7 +232,7 @@ impl Battle {
                     (0..units.len()).find(|&k| k != i && units[k].leader.is_some() && units[k].side == side && units[k].group as i32 == link as i32);
             }
         }
-        Self { units, wind: false, heat: 0, options: Default::default() }
+        Self { units, wind: false, heat: 0, options: Default::default(), layout: scn.layout }
     }
 
     /// What a unit adds to its TQ check rolls: a rally's mark, the heat.
@@ -253,13 +256,14 @@ impl Battle {
     /// Whether the battle is one of Hannibal's (its units are), whose
     /// rules differ in places.
     pub fn hannibal(&self) -> bool {
-        self.units.first().is_some_and(|u| u.type_id >= gboh_formats::units::HANNIBAL)
+        self.layout.newer() || self.units.first().is_some_and(|u| u.type_id >= gboh_formats::units::HANNIBAL)
     }
 
     /// Whether the battle is one of Caesar's (Hannibal's engine; its
     /// nations' and battles' own rules not).
     pub fn caesar(&self) -> bool {
-        self.units.first().is_some_and(|u| u.type_id >= gboh_formats::units::CAESAR)
+        matches!(self.layout, gboh_formats::scn::Layout::Caesar | gboh_formats::scn::Layout::Editor)
+            || self.units.first().is_some_and(|u| u.type_id >= gboh_formats::units::CAESAR)
     }
 
     /// Indices of the leaders still in the battle.

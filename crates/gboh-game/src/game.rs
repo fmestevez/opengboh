@@ -147,6 +147,9 @@ pub struct Game {
     pub turn_limits: bool,
     /// Caesar's battle number (its table's order).
     pub caesar_battle: Option<usize>,
+    /// A *Collector's Edition* scenario's own turn limit: turns, and the
+    /// army that must win by then (the other takes it).
+    pub scenario_limit: Option<(u16, u8)>,
     /// Hannibal's Triarii tactical doctrine option.
     pub triarii_doctrine: bool,
     /// Hannibal's deployment phase, while on: its line (see
@@ -251,11 +254,12 @@ impl Game {
         activation.romans_idle_first_turn = scn.map_file.to_ascii_uppercase().starts_with("TRASIMEN");
         activation.caesarians_idle_first_turn = scn.layout == gboh_formats::scn::Layout::Caesar && caesar_battle(&scn.map_file) == Some(8);
         let mut map = map;
-        map.caesar = scn.layout == gboh_formats::scn::Layout::Caesar;
+        map.caesar = matches!(scn.layout, gboh_formats::scn::Layout::Caesar | gboh_formats::scn::Layout::Editor);
         let rules = match scn.layout {
             gboh_formats::scn::Layout::Alexander => Rules::Alexander,
             gboh_formats::scn::Layout::Hannibal => Rules::Hannibal,
-            gboh_formats::scn::Layout::Caesar => Rules::Caesar,
+            // (the Collector's Edition's, by its engine, Caesar's)
+            gboh_formats::scn::Layout::Caesar | gboh_formats::scn::Layout::Editor => Rules::Caesar,
         };
         Self {
             battle,
@@ -272,6 +276,7 @@ impl Game {
             battle_index: battle_index(&scn.map_file),
             hannibal_battle: hannibal_battle(&scn.map_file),
             caesar_battle: if scn.layout == gboh_formats::scn::Layout::Caesar { caesar_battle(&scn.map_file) } else { None },
+            scenario_limit: scn.editor.as_ref().and_then(|e| e.turn_limit),
             turn_limits: false,
             triarii_doctrine: true,
             deployment: None,
@@ -1792,6 +1797,12 @@ impl Game {
             return Verdict::Won(winner);
         }
         if self.turn_limits
+            && let Some((turns, side)) = self.scenario_limit
+            && self.activation.turn + 1 >= turns
+        {
+            return Verdict::Won(1 - (side as usize).min(1));
+        }
+        if self.turn_limits
             && let Some(Some(last)) = self.caesar_battle.map(|b| CAESAR_TURN_LIMITS[b])
             && self.activation.turn >= last
         {
@@ -1898,6 +1909,7 @@ mod tests {
             reliable: Vec::new(),
             hannibal_battle: None,
             caesar_battle: None,
+            scenario_limit: None,
             turn_limits: false,
             rules: Rules::Alexander,
             battle,
