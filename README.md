@@ -32,6 +32,9 @@ Early. Currently:
 * `gboh-tools`: command-line utilities.
 
 See [docs/formats.md](docs/formats.md) for format notes.
+[docs/running-originals.md](docs/running-originals.md) explains how to run the
+original games under Wine (the registry values they need, and the usual
+problems).
 
 ## Usage
 
