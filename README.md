@@ -149,5 +149,6 @@ any of the original games' code or assets. All game titles are trademarks of
 their respective owners.
 
 The *Great Battles of History* brand and all its publications are owned by
-GMT Games, Richard H. Berg and Mark Herman. opengboh is not affiliated with
-or endorsed by them.
+GMT Games, Richard H. Berg and Mark Herman, and the computer games by
+Erudite Software, Interactive Magic and S. Craig Taylor. opengboh is not
+affiliated with or endorsed by any of them.
