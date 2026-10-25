@@ -15,7 +15,8 @@ long as these hold:
   music, videos, help files, palettes, or the games' text (unit names
   excepted where the code must match them). opengboh reads everything from
   the player's own copy at run time. Tests that need the data skip
-  themselves when it isn't there.
+  themselves when it isn't there. (The one exception: the few
+  screenshots in `docs/screenshots`, which illustrate the README.)
 - **No decompiled or disassembled code.** Don't paste or translate code
   from a decompiler, even "cleaned up". Describe what the original does in
   your own words (in `docs/formats.md` or a code comment) and write the

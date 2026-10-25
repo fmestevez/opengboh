@@ -11,6 +11,19 @@ behind the *Great Battles of History* (GBoH) series of computer games:
 
 **This repository contains no game data.** You need your own copy of the
 games (the GOG releases work); opengboh reads the original files from them.
+Prebuilt programs for macOS, Windows and Linux are on the
+[Releases](https://github.com/fmestevez/opengboh/releases) page.
+
+![Issus, from The Great Battles of Alexander](docs/screenshots/alexander-issus.jpg)
+
+| | |
+|---|---|
+| ![Cannae, from The Great Battles of Hannibal](docs/screenshots/hannibal-cannae.jpg) | ![Caesar's civil war campaign](docs/screenshots/caesar-campaign.png) |
+| ![Caesar's battles](docs/screenshots/caesar-scenario.png) | ![A Collector's Edition scenario: Alexander's, Hannibal's and Caesar's armies on one field](docs/screenshots/collectors-edition.jpg) |
+
+*Screenshots of opengboh running with the original games' data: Issus;
+Cannae; Caesar's civil war campaign and battle selection; a Collector's
+Edition scenario mixing the three games' armies.*
 
 ## Status
 
