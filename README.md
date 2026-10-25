@@ -147,3 +147,7 @@ version. See [LICENSE](LICENSE).
 This is an independent reimplementation. It does not include or redistribute
 any of the original games' code or assets. All game titles are trademarks of
 their respective owners.
+
+The *Great Battles of History* brand and all its publications are owned by
+GMT Games, Richard H. Berg and Mark Herman. opengboh is not affiliated with
+or endorsed by them.
