@@ -14,6 +14,7 @@
 //! try for momentum).
 
 mod campaign;
+mod editor;
 mod hud;
 mod library;
 mod menu;
@@ -513,6 +514,8 @@ struct Viewer {
     /// selector), its buttons, a line of news, an import under way, the
     /// settings, and the title whose data is in use.
     shell: Option<shell::Screen>,
+    /// The scenario editor, while open.
+    editor: Option<editor::EditorScreen>,
     /// The next battle begins with Hannibal's deployment phase.
     deploy_next: bool,
     /// The rule options of the next battle started, if not the
@@ -812,6 +815,12 @@ impl Viewer {
 
     /// A click at the cursor.
     fn click(&mut self, right: bool) {
+        if self.editor.is_some() {
+            if !right {
+                self.editor_click();
+            }
+            return;
+        }
         if self.shell.is_some() {
             let (cx, cy) = ((self.cursor.x as f32 / self.scale) as i32, (self.cursor.y as f32 / self.scale) as i32);
             if let Some(id) = shell::button_at(&self.shell_buttons, cx, cy) {
@@ -921,6 +930,7 @@ impl Viewer {
                     let entries = shell::entries(&library::imported());
                     self.open_shell(shell::Screen::Selector { entries, scroll: 0 });
                 }
+                setup::Outcome::Editor => self.open_editor(),
             }
             return;
         }
@@ -1180,7 +1190,7 @@ impl Viewer {
     /// Redraw the toolbar and status bar (none over the setup screens).
     fn update_hud(&mut self) {
         let (w, h) = self.window_px();
-        if self.shell.is_some() {
+        if self.shell.is_some() || self.editor.is_some() {
             if let Some(g) = &mut self.gpu {
                 g.set_overlay(None);
             }
@@ -2091,6 +2101,10 @@ impl Viewer {
     fn script_step(&mut self) {
         let Some((from, to)) = self.script.pop_front() else { return };
         // (a click ends the intro, as the mouse's does)
+        if self.slides.is_some() {
+            self.end_slides();
+            return;
+        }
         if self.intro {
             self.end_intro();
             return;
@@ -2114,13 +2128,89 @@ impl Viewer {
     /// Each level's background tile: the battle's (none over the setup and
     /// the rewrite's screens).
     fn tiles(&self) -> Vec<Option<Tile>> {
-        if self.setup.is_some() || self.shell.is_some() {
+        if self.setup.is_some() || self.shell.is_some() || self.editor.is_some() {
             return Vec::new();
         }
         self.scenes.iter().map(|s| s.background.clone()).collect()
     }
 
     // --- the rewrite's own screens ---
+
+    /// Open the scenario editor, on Caesar's data (where the three games'
+    /// art and the editor's unit catalogue are).
+    fn open_editor(&mut self) {
+        if library::data_dir(library::Title::Caesar).is_none() {
+            self.notice(&["The scenario editor needs The Great Battles of", "Caesar imported (its data has every game's art)."]);
+            return;
+        }
+        self.switch_game(library::Title::Caesar);
+        self.setup = None;
+        self.editor = Some(editor::EditorScreen::new(&self.data_dir));
+        self.show_editor();
+    }
+
+    /// Draw the editor's screen, the size of the window.
+    fn show_editor(&mut self) {
+        let Some(e) = &self.editor else { return };
+        self.scale = self.display_scale;
+        let (w, h) = self.window_px();
+        let (canvas, _) = e.canvas(w.max(1), h.max(1));
+        let palette = e.palette().clone();
+        self.centre = [canvas.width as f32 / 2.0, canvas.height as f32 / 2.0];
+        self.canvases = vec![canvas];
+        self.level = 0;
+        if let Some(g) = &mut self.gpu {
+            g.set_levels(&self.canvases, &[]);
+            g.set_palette(&palette);
+            g.set_overlay(None);
+        }
+        self.redraw();
+    }
+
+    /// A click on the editor's screen.
+    fn editor_click(&mut self) {
+        let (w, h) = self.window_px();
+        let (cx, cy) = ((self.cursor.x as f32 / self.scale) as i32, (self.cursor.y as f32 / self.scale) as i32);
+        let Some(e) = &mut self.editor else { return };
+        match e.click(cx, cy, w, h) {
+            editor::Outcome::Nothing => {}
+            editor::Outcome::Redraw => self.show_editor(),
+            editor::Outcome::Play(path) => {
+                self.editor = None;
+                let file = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+                let levels = Scenario::parse(&std::fs::read(&path).unwrap_or_default()).map_or([100, 100], |s| [s.home.rout_level, s.visitor.rout_level]);
+                if let Err(err) = self.start_battle(&file, [false, true], levels) {
+                    eprintln!("editor: {err:#}");
+                    self.back_to_start();
+                }
+                self.update_hud();
+                self.redraw();
+            }
+            editor::Outcome::Quit => {
+                self.editor = None;
+                self.back_to_start();
+            }
+        }
+    }
+
+    /// A key on the editor's screen: typing into its fields, else arrows
+    /// scroll the battlefield.
+    fn editor_key(&mut self, key: &Key, text: Option<&str>) {
+        let (w, h) = self.window_px();
+        let Some(e) = &mut self.editor else { return };
+        let named = |n: NamedKey| key.as_ref() == Key::Named(n);
+        if !e.key(text, named(NamedKey::Backspace), named(NamedKey::Enter)) {
+            let (dx, dy) = match key.as_ref() {
+                Key::Named(NamedKey::ArrowLeft) => (-60, 0),
+                Key::Named(NamedKey::ArrowRight) => (60, 0),
+                Key::Named(NamedKey::ArrowUp) => (0, -60),
+                Key::Named(NamedKey::ArrowDown) => (0, 60),
+                _ => (0, 0),
+            };
+            e.scroll_by(dx, dy, w, h);
+        }
+        self.show_editor();
+    }
 
     /// Show one of the rewrite's own screens.
     fn open_shell(&mut self, screen: shell::Screen) {
@@ -3439,7 +3529,9 @@ impl ApplicationHandler for Viewer {
                     g.resize(size);
                 }
                 // the setup screens fit themselves to the window again
-                if self.shell.is_some() {
+                if self.editor.is_some() {
+                    self.show_editor();
+                } else if self.shell.is_some() {
                     self.show_shell();
                 } else if self.setup.is_some() {
                     self.show_setup();
@@ -3457,6 +3549,9 @@ impl ApplicationHandler for Viewer {
             WindowEvent::MouseInput { state: ElementState::Pressed, .. } if self.intro => self.end_intro(),
             WindowEvent::MouseInput { state: ElementState::Pressed, .. } if self.slides.is_some() => self.end_slides(),
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed && self.plain_key(&event.logical_key, event.text.as_deref()) => {}
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed && self.editor.is_some() => {
+                self.editor_key(&event.logical_key, event.text.as_deref())
+            }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed && self.setup.is_some() => {
                 if event.logical_key.as_ref() == Key::Named(NamedKey::Escape) {
                     event_loop.exit();
@@ -3594,6 +3689,23 @@ impl ApplicationHandler for Viewer {
             WindowEvent::CursorLeft { .. } => {
                 self.edge = None;
                 self.update_cursor();
+            }
+            // the editor: its list over the panel, else the battlefield
+            WindowEvent::MouseWheel { delta, .. } if self.editor.is_some() => {
+                let (dx, dy) = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => (-x * 40.0, -y * 40.0),
+                    MouseScrollDelta::PixelDelta(p) => (-p.x as f32, -p.y as f32),
+                };
+                let (w, h) = self.window_px();
+                let cx = (self.cursor.x as f32 / self.scale) as i32;
+                if let Some(e) = &mut self.editor {
+                    if editor::EditorScreen::on_panel(cx, w) {
+                        e.scroll_list((dy / 18.0) as i32);
+                    } else {
+                        e.scroll_by(dx as i32, dy as i32, w, h);
+                    }
+                }
+                self.show_editor();
             }
             // the battles' list scrolls a row a notch
             WindowEvent::MouseWheel { delta, .. } if matches!(self.shell, Some(shell::Screen::Selector { .. })) => {
@@ -3955,6 +4067,7 @@ fn main() -> Result<()> {
         net_options: None,
         net_start: None,
         shell: (launcher && theme.is_none()).then_some(shell::Screen::Content),
+        editor: None,
         shell_buttons: Vec::new(),
         shell_pressed: None,
         script: std::env::var("GBOH_CLICKS").unwrap_or_default().split(';').filter_map(script_step).collect(),
@@ -4081,7 +4194,8 @@ struct Battle {
 /// Load `file` (a scenario, or a bare map) from `data_dir`, the computer
 /// playing the sides marked (home, visitor) with their first plans.
 fn load_battle(data_dir: &Path, file: &str, computer: [bool; 2], deploy: bool) -> Result<Battle> {
-    let load = |name: &str| find_ci(data_dir, name).and_then(|p| std::fs::read(p).ok());
+    // (the game's files, else the editor's scenarios, maps and plans)
+    let load = |name: &str| find_ci(data_dir, name).or_else(|| find_ci(&editor::scenarios_dir(), name)).and_then(|p| std::fs::read(p).ok());
     // a scenario brings its map and units
     let scenario =
         if file.to_ascii_lowercase().ends_with(".scn") { Some(Scenario::parse(&load(file).with_context(|| format!("{file} not found"))?)?) } else { None };

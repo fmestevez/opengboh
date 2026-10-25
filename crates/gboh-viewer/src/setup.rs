@@ -209,11 +209,13 @@ pub enum Outcome {
     Content,
     Settings,
     Selector,
+    /// The scenario editor.
+    Editor,
 }
 
 /// The rewrite's buttons on the start screen, top left (dialog units: a
 /// big push button each).
-const EXTRA: [&str; 3] = ["Content Manager", "Settings", "All Battles"];
+const EXTRA: [&str; 4] = ["Content Manager", "Settings", "All Battles", "Scenario Editor"];
 
 fn extra_rect(start: &Option<Dialog>, k: usize) -> (i16, i16, i16, i16) {
     // (a control placed off the dialog is hidden: Hannibal's history video)
@@ -723,7 +725,7 @@ impl Setup {
                         x >= rx && x < rx + rw && y >= ry && y < ry + rh
                     })
                     .unwrap_or(0);
-                [Outcome::Content, Outcome::Settings, Outcome::Selector][k].clone()
+                [Outcome::Content, Outcome::Settings, Outcome::Selector, Outcome::Editor][k].clone()
             }
             Screen::Start => match Self::control_at(&self.start, x, y) {
                 Some(106) => {

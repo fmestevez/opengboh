@@ -2061,3 +2061,46 @@ to the other player):
   point; rallied units stay marked; staff leaders (no units of their own)
   pay nothing extra to order another's group; and for Hannibal,
   superiority in Alexander's order (no stacking).
+
+## The Collector's Edition and its scenario editor
+
+The *Great Battles Collector's Edition* (Caesar's GOG folder) adds
+`gbce.exe`, Caesar's engine with every unit of the three games, which plays
+scenarios made with `DATA/scenario editor.exe` (the editor keeps its unit
+catalogue in `DATA/Scenario Editor/`). opengboh reads and plays these
+scenarios by Caesar's rules, and has its own editor after the original.
+
+- **Scenarios** (`gboh_formats::scn::Layout::Editor`): a u32 0 and a u32
+  version 2 mark them, then a GUID, title, author, description, the map,
+  both sides (nation, retreat edge, u16 rout level), alliance pairs, the AI
+  plans, a turn limit (on, turns − 1, the side that must win by then), the
+  groups (id, the name the plans know it by, twenty timed orders: type 1
+  defend, 2 move, 3 attack, turns, hex; a behaviour, 1 defend or 3 attack)
+  and the units. A unit is a u32 kind (0 leader … 17 cohort), name, facing,
+  movement, nation, hex, a −1, its **artwork** (an index into the editor's
+  table of 120 sprite sets), its catalogue id and its group, then the
+  kind's fields (leaders: initiative, command range, charisma, elite;
+  combat units: TQ, size, two-hex, a cataphract byte for heavy cavalry;
+  missile units also the missile, range and supply; legionaries and
+  cohorts their type). The nation only decides the side: the art comes
+  from the artwork, so armies mix the games' units.
+- **Maps**: the games' layout behind a u32 0 and a GUID.
+- **The unit catalogue** (`MainUnits.unt`): a u32 count and as many unit
+  records, 2,632 units of all twelve nations.
+- **AI plans**: written by the editor on saving, one per side
+  (`<name>_H1.AI`, `<name>_V1.AI`), from its groups' orders: each group
+  carries out its orders in turn, each for its turns (a move until the hex
+  is reached), then attacks or defends as its behaviour says.
+
+The editor (the start screen's **Scenario Editor**, on Caesar's data):
+**Map** paints levels (no two neighbours more than a level apart), water,
+woods, rough ground and roads, and puts streams and walls on hex sides;
+**Units** places units from the catalogue, every unit fighting for one of
+the two sides and joining a leader's group (a leader forms one), facing
+the enemy from its side's retreat edge, a two-hex unit needing its second
+hex free; **Groups** gives each group its orders and behaviour;
+**Scenario** sets the title, sides, retreat edges, rout levels and turn
+limit; **File** starts on a map (or a blank one), opens a scenario (a
+game's own is taken over, its units keeping their art and stats), saves
+it with its map and plans to opengboh's `scenarios` folder (never the
+game's) and plays it.

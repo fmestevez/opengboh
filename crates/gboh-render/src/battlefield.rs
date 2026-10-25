@@ -280,6 +280,16 @@ impl Scene {
         })
     }
 
+    /// The view of a changed `map` (the editor's: its terrain redrawn),
+    /// keeping this scene's unit art rather than loading it again.
+    pub fn rebuild_terrain(&mut self, map_file: &str, map: &Map, pal: &Palette, load: &mut Loader, load_title: &mut Loader) -> Result<(), Error> {
+        let fresh = Self::build_view(map_file, map, self.layout.zoom, self.layout.reversed, pal, self.seed, &[], load, load_title)?;
+        let unit_art = std::mem::take(&mut self.unit_art);
+        let flag_art = self.flag_art.take();
+        *self = Self { unit_art, flag_art, grid_on: self.grid_on, ..fresh };
+        Ok(())
+    }
+
     /// Milliseconds a step in screen direction `dir` takes a unit of type
     /// `type_id` facing screen direction `facing`, by the walking data.
     pub fn step_ms(&self, type_id: usize, facing: usize, dir: usize) -> Option<i32> {

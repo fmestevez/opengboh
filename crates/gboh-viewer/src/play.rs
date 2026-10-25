@@ -1372,7 +1372,8 @@ impl Play {
 }
 
 /// The face centre of map hex `(x, y)` in `scene`'s canvas pixels.
-fn centre(scene: &Scene, x: usize, y: usize) -> (i32, i32) {
+/// The canvas pixel at the middle of map hex `(x, y)`.
+pub fn centre(scene: &Scene, x: usize, y: usize) -> (i32, i32) {
     let (w, _, face) = scene.layout.zoom.block();
     let (r, c) = scene.layout.to_tile(x, y);
     let (bx, by) = scene.layout.block_origin(r, c);

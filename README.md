@@ -41,9 +41,9 @@ are still approximations; `docs/formats.md` marks them 🟡.
 
 In progress or missing:
 
-* a scenario editor (after the *Collector's Edition* one, with every unit
-  and nation of the three games), and playing the *Collector's Edition*
-  scenarios it makes;
+* the scenario editor is new: it makes and plays scenarios with every unit
+  and nation of the three games, but lacks some of the original's tools
+  (resizing maps, packages, hex property dialogs);
 * some rules the manuals describe without the numbers to implement them,
   and the manuals' printed combat tables as an option;
 * opengboh is developed and tested on macOS; it should build on Windows and
@@ -68,7 +68,11 @@ with three buttons of opengboh's own:
 * **Settings**: the theme (whose intro, start screen and art the menus
   use), the game's preferences, and the **Rules** (below);
 * **All Battles**: every imported game's battles and campaigns in one
-  list.
+  list;
+* **Scenario Editor**: make your own battles, after the *Collector's
+  Edition*'s editor, with every unit and nation of the three games
+  (it needs Caesar imported, whose data has all their art). Its scenarios,
+  and the Collector's Edition's own, play like the games' battles.
 
 The rest of the start screen is the game's own: Start Battle, Start
 Campaign, Multiplayer, Load Saved Game, the tutorial.
