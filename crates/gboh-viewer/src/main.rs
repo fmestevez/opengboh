@@ -1379,7 +1379,8 @@ impl Viewer {
         let Some(p) = &mut self.play else { return };
         let reversed = !self.scenes[self.level].layout.reversed;
         let grid = self.scenes[self.level].grid_on;
-        let scenes = match build_scenes(&self.data_dir, &self.map_file, &p.game.map, reversed) {
+        let every = p.game.battle.layout == gboh_formats::scn::Layout::Editor;
+        let scenes = match build_scenes(&self.data_dir, &self.map_file, &p.game.map, reversed, every) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("reverse view: {e:#}");
@@ -4090,7 +4091,8 @@ fn load_battle(data_dir: &Path, file: &str, computer: [bool; 2], deploy: bool) -
     let map = Map::parse(&load(map_file).with_context(|| format!("{map_file} not found"))?)?;
     let flagged = scenario.as_ref().map_or_else(Vec::new, |s| gboh_game::command::opening_flags(s, &map, 1));
     let views: Vec<UnitView> = units.iter().enumerate().filter_map(|(i, u)| UnitView::of_scenario(&map, i, u)).collect();
-    let scenes = build_scenes(data_dir, map_file, &map, false)?;
+    let every = scenario.as_ref().is_some_and(|s| s.layout == gboh_formats::scn::Layout::Editor);
+    let scenes = build_scenes(data_dir, map_file, &map, false, every)?;
     let canvases: Vec<Canvas> = scenes.iter().map(|s| s.compose(&views, &flagged)).collect();
     let mut ai = Vec::new();
     if let Some(s) = &scenario {
@@ -4110,14 +4112,15 @@ fn load_battle(data_dir: &Path, file: &str, computer: [bool; 2], deploy: bool) -
 }
 
 /// The battlefield of `map` (loaded from `map_file`) at the three zooms,
-/// reversed if `reversed`.
-fn build_scenes(data_dir: &Path, map_file: &str, map: &Map, reversed: bool) -> Result<Vec<Scene>> {
+/// reversed if `reversed`; with the game's unit types, or (`every`, a
+/// *Collector's Edition* scenario, whose data has them all) every game's.
+fn build_scenes(data_dir: &Path, map_file: &str, map: &Map, reversed: bool, every: bool) -> Result<Vec<Scene>> {
     let mut load = |name: &str| find_ci(data_dir, name).and_then(|p| std::fs::read(p).ok());
     let titles = eif_title_index(data_dir);
     let mut load_title = |title: &str| titles.get(title).and_then(|n| std::fs::read(data_dir.join(n)).ok());
     let palette = Palette::parse(&std::fs::read(palette_path(data_dir).context("GAME.PAL not found")?)?)?;
     let game = gboh_formats::game::Game::detect(data_dir).unwrap_or_default();
-    let types: Vec<usize> = gboh_formats::units::types_of(game).collect();
+    let types: Vec<usize> = if every { (0..gboh_formats::units::TYPE_COUNT).collect() } else { gboh_formats::units::types_of(game).collect() };
     Ok(ZOOMS.iter().map(|&z| Scene::build_view(map_file, map, z, reversed, &palette, 1, &types, &mut load, &mut load_title)).collect::<Result<Vec<_>, _>>()?)
 }
 

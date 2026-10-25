@@ -69,6 +69,45 @@ pub struct Map {
 }
 
 impl Map {
+    /// The map as a file: the games' layout, behind the *Collector's
+    /// Edition* editor's header (a u32 0 and `guid`) if given one.
+    pub fn write(&self, editor_guid: Option<[u8; 16]>) -> Vec<u8> {
+        let mut out = Vec::new();
+        if let Some(guid) = editor_guid {
+            out.extend(0u32.to_le_bytes());
+            out.extend(guid);
+        }
+        out.extend((self.name.len() as u16).to_le_bytes());
+        out.extend(self.name.bytes());
+        out.extend([self.width as u8, self.height as u8]);
+        out.extend(self.hex_id_origin.to_le_bytes());
+        out.extend(self.unk_b.to_le_bytes());
+        out.extend(&self.elevation);
+        for cell in &self.cells {
+            out.extend((cell.len() as u16).to_le_bytes());
+            for c in cell {
+                out.extend(c.to_le_bytes());
+            }
+        }
+        out
+    }
+
+    /// A new flat map, `width` × `height` hexes at elevation 1.
+    pub fn blank(name: &str, width: usize, height: usize) -> Self {
+        let n = (width * 2 + 2) * (height * 4 + 1);
+        Self {
+            name: name.into(),
+            width,
+            height,
+            hex_id_origin: 1000,
+            unk_b: 0,
+            elevation: vec![1; width * height],
+            cells: vec![Vec::new(); n],
+            caesar: false,
+            fast_roads: false,
+        }
+    }
+
     pub fn parse(data: &[u8]) -> Result<Self> {
         // (the Collector's Edition's editor writes a u32 0 and a GUID first)
         let data = if data.len() > 20 && data[..4] == [0; 4] { &data[20..] } else { data };

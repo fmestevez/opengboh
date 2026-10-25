@@ -323,6 +323,98 @@ impl Scenario {
         Ok(Self { layout, leaders, unk, title, map_file, unit_file, home, visitor, pairs, home_ai, visitor_ai, units, editor: None })
     }
 
+    /// The scenario as a *Collector's Edition* editor file (see the
+    /// module's notes): what [`Scenario::parse_editor`] reads. Units take
+    /// their editor kind from `kind` (0..=17) and their art from `artwork`.
+    pub fn write_editor(&self) -> Vec<u8> {
+        let info = self.editor.clone().unwrap_or_default();
+        let mut o = Vec::new();
+        let str8 = |o: &mut Vec<u8>, s: &str| {
+            let b: Vec<u8> = s.chars().take(255).map(|c| c as u8).collect();
+            o.push(b.len() as u8);
+            o.extend(b);
+        };
+        o.extend(0u32.to_le_bytes());
+        o.extend(2u32.to_le_bytes());
+        o.extend(info.guid);
+        str8(&mut o, &self.title);
+        str8(&mut o, &info.author);
+        o.extend((info.description.len() as u32).to_le_bytes());
+        o.extend(info.description.chars().map(|c| c as u8));
+        str8(&mut o, &self.map_file);
+        o.extend([self.home.nation, self.visitor.nation, self.home.retreat, self.visitor.retreat]);
+        o.extend(self.home.rout_level.to_le_bytes());
+        o.extend(self.visitor.rout_level.to_le_bytes());
+        o.push(self.pairs.len() as u8);
+        for &(a, b) in &self.pairs {
+            o.extend([a, b]);
+        }
+        for ai in [&self.home_ai, &self.visitor_ai] {
+            o.push(ai.len() as u8);
+            for f in ai.iter() {
+                str8(&mut o, f);
+            }
+        }
+        let (on, turns, side) = info.turn_limit.map_or((0, 0, 0), |(t, s)| (1, t.saturating_sub(1), s));
+        o.push(on);
+        o.extend(turns.to_le_bytes());
+        o.push(side);
+        o.extend((info.groups.len() as u16).to_le_bytes());
+        for g in &info.groups {
+            o.extend(g.id.to_le_bytes());
+            o.extend((g.name.len() as u16).to_le_bytes());
+            o.extend(g.name.bytes());
+            for k in 0..20 {
+                let (t, d, h) = g.orders.get(k).copied().unwrap_or((0, 0, 0));
+                o.extend(t.to_le_bytes());
+                o.extend(d.to_le_bytes());
+                o.extend(h.to_le_bytes());
+            }
+            o.extend(g.behaviour.to_le_bytes());
+        }
+        o.extend((self.units.len() as u32).to_le_bytes());
+        for u in &self.units {
+            o.extend((u.kind as u32).to_le_bytes());
+            str8(&mut o, &u.name);
+            o.extend((u.facing as u32).to_le_bytes());
+            o.extend(u.unk_a.to_le_bytes());
+            o.extend((u.nation as u32).to_le_bytes());
+            o.extend(u.hex.to_le_bytes());
+            o.extend((-1i16).to_le_bytes());
+            o.extend(u.artwork.to_le_bytes());
+            o.extend(u.catalogue.to_le_bytes());
+            o.extend(u.unk_b.to_le_bytes());
+            match &u.extra {
+                UnitExtra::Leader([charisma, range, initiative, _]) => {
+                    o.extend(initiative.to_le_bytes());
+                    o.extend(range.to_le_bytes());
+                    o.extend(charisma.to_le_bytes());
+                    o.push(u.elite);
+                }
+                UnitExtra::Combat { a, b, c, more } => {
+                    o.extend(b.to_le_bytes());
+                    o.extend(a.to_le_bytes());
+                    o.push(*c);
+                    if let Some(m) = more {
+                        o.push(*m);
+                    }
+                }
+                UnitExtra::Missile { a, b, c, missile, m1, m2, legion, .. } => {
+                    o.extend(b.to_le_bytes());
+                    o.extend(a.to_le_bytes());
+                    o.push(*c);
+                    o.extend((*missile as u32).to_le_bytes());
+                    o.extend(m1.to_le_bytes());
+                    o.extend(m2.to_le_bytes());
+                    if let Some(l) = legion {
+                        o.push((*l - 1).max(0) as u8);
+                    }
+                }
+            }
+        }
+        o
+    }
+
     /// Read a scenario of the *Collector's Edition* editor's (see the
     /// module's notes) into the games' model: sizes and TQ in the games'
     /// order, leaders' ratings as theirs (charisma, command range,

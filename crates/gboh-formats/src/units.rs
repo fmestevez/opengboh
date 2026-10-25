@@ -828,6 +828,14 @@ mod tests {
         let map = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).find(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case("Last.map")).unwrap();
         let map = crate::map::Map::parse(&std::fs::read(map.path()).unwrap()).unwrap();
         assert_eq!((map.width, map.height, map.hex_id_origin), (45, 38, 1000));
+        // both write back byte for byte
+        let path =
+            |n: &str| std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).find(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case(n)).unwrap().path();
+        let raw = std::fs::read(path("Last.map")).unwrap();
+        assert_eq!(map.write(Some(raw[4..20].try_into().unwrap())), raw);
+        let raw = std::fs::read(path("Last.scn")).unwrap();
+        let scn = crate::scn::Scenario::parse(&raw).unwrap();
+        assert_eq!(scn.write_editor(), raw);
     }
 
     /// Every unit of Hannibal's scenarios gets a type whose sprite set is
