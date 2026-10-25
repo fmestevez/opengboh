@@ -68,6 +68,7 @@ pub const MAX_SIZE: usize = 89;
 type Order = (u32, u16, u16);
 
 /// A scenario being edited, with its map.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Editor {
     pub scn: Scenario,
     pub map: Map,

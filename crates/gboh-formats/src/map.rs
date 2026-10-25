@@ -47,7 +47,7 @@ impl Side {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Map {
     pub name: String,
     pub width: usize,

@@ -2138,7 +2138,10 @@ limit; **File** starts on a map (or a blank one), opens a scenario (a
 game's own is taken over, its units keeping their art and stats) or a
 package (unpacked into the scenarios folder, asking before replacing a
 different file), saves it with its map and plans to opengboh's
-`scenarios` folder (never the game's), packs it, and plays it.
+`scenarios` folder (never the game's), packs it, and plays it. The Units tab shows one of
+the unit's men and its stats (the one selected, else the one to place).
+Every change can be undone and redone (Ctrl+Z, Ctrl+Shift+Z or Ctrl+Y, or
+Cmd on macOS; a drag is one change), up to a hundred.
 
 ## opengboh's own folder
 

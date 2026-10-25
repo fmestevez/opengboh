@@ -69,7 +69,7 @@ impl Layout {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Scenario {
     /// The layout the file was read in.
     pub layout: Layout,
@@ -111,7 +111,7 @@ pub struct Group {
     pub behaviour: u32,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Side {
     pub nation: u8,
     /// Map direction (1 N, 3 E, 5 S, 7 W) the army's routed units flee in.
@@ -120,7 +120,7 @@ pub struct Side {
     pub rout_level: u16,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Unit {
     pub kind: u8,
     pub name: String,
@@ -151,7 +151,7 @@ pub struct Unit {
 }
 
 /// Fields that depend on the unit's class in the original code.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum UnitExtra {
     /// `LeaderUnitData`.
     Leader([u16; 4]),

@@ -64,7 +64,22 @@ impl Viewer {
     /// scroll the battlefield.
     pub(crate) fn editor_key(&mut self, key: &Key, text: Option<&str>) {
         let (w, h) = self.window_px();
+        let (command, shift) = (self.modifiers.control_key() || self.modifiers.super_key(), self.modifiers.shift_key());
         let Some(e) = &mut self.editor else { return };
+        // Ctrl (or Cmd) Z undoes; with Shift, or Ctrl Y, redoes
+        if command {
+            if let Key::Character(c) = key.as_ref() {
+                match c.to_ascii_lowercase().as_str() {
+                    "z" if shift => e.redo(),
+                    "z" => e.undo(),
+                    "y" => e.redo(),
+                    _ => return,
+                }
+                e.flush();
+                self.show_editor();
+            }
+            return;
+        }
         let named = |n: NamedKey| key.as_ref() == Key::Named(n);
         if !e.key(text, named(NamedKey::Backspace), named(NamedKey::Enter)) {
             let (dx, dy) = match key.as_ref() {

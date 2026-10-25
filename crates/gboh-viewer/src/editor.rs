@@ -118,7 +118,12 @@ pub(crate) enum Act {
     Save,
     Play,
     Quit,
+    Undo,
+    Redo,
 }
+
+/// The most changes there are to undo.
+const UNDO_DEPTH: usize = 100;
 
 /// What the screen asks the viewer to do.
 pub enum Outcome {
@@ -135,6 +140,8 @@ pub struct EditorScreen {
     scene: Option<Scene>,
     /// The battlefield with its units, drawn once per change.
     composed: Canvas,
+    /// The map's size the battlefield was drawn for.
+    scene_size: (usize, usize),
     palette: Palette,
     font: Font,
     /// Palette indices of the panel's colours: parchment, dark ink and
@@ -155,6 +162,11 @@ pub struct EditorScreen {
     setting_hex: Option<usize>,
     /// The hex last painted in a drag.
     painted: Option<(usize, usize)>,
+    /// The scenario as it was before each change (the last the newest),
+    /// the changes undone, and the scenario as last committed to them.
+    undo: Vec<Editor>,
+    redo: Vec<Editor>,
+    last: Editor,
     /// A side brush's drag: whether it puts the feature on (else takes it
     /// off, as the click that began it did), and the side last done.
     side_drag: Option<(bool, (usize, usize), MapSide)>,
@@ -209,6 +221,7 @@ impl EditorScreen {
             ed: Editor::new(Map::blank("New Map", 31, 31), "NEWMAP.MAP"),
             scene: None,
             composed: Canvas::new(1, 1, 0),
+            scene_size: (0, 0),
             palette,
             font: Font::small(data_dir).in_ink(colors[1]),
             colors,
@@ -224,6 +237,9 @@ impl EditorScreen {
             group: None,
             setting_hex: None,
             painted: None,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            last: Editor::new(Map::blank("New Map", 1, 1), ""),
             side_drag: None,
             stale: None,
             moved: false,
@@ -237,6 +253,7 @@ impl EditorScreen {
             scenarios: Vec::new(),
             message: "Start a scenario on a map, or open one (File).".into(),
         };
+        s.last = s.ed.clone();
         s.list_files();
         s.rebuild(true);
         s
@@ -276,7 +293,10 @@ impl EditorScreen {
         if self.scene.is_none() {
             let types: Vec<usize> = (0..gboh_formats::units::TYPE_COUNT).collect();
             match Scene::build_view(&map_file, &self.ed.map, Zoom::Normal, false, &self.palette, 1, &types, &mut load, &mut load_title) {
-                Ok(s) => self.scene = Some(s),
+                Ok(s) => {
+                    self.scene = Some(s);
+                    self.scene_size = (self.ed.map.width, self.ed.map.height);
+                }
                 Err(e) => self.message = format!("can't draw the map: {e}"),
             }
         } else if terrain
@@ -406,7 +426,7 @@ impl EditorScreen {
                 y += (kinds.len() as u32).div_ceil(3) as i32 * (ROW + 2) + 6;
                 // the catalogue
                 let shown = self.shown();
-                let rows = ((h as i32 - y - 140) / ROW).max(3) as usize;
+                let rows = ((h as i32 - y - 210) / ROW).max(3) as usize;
                 frame(&mut c, (x0 - 2, y - 2, inner + 4, rows as i32 * ROW + 4), ink);
                 for (k, &i) in shown.iter().skip(self.list_top).take(rows).enumerate() {
                     let u = &self.catalogue[i];
@@ -424,6 +444,28 @@ impl EditorScreen {
                 acts.push((Act::ListUp, up));
                 acts.push((Act::ListDown, down));
                 y += rows as i32 * ROW + 10;
+                // the unit selected, else the one to place: a man of it, and
+                // what it is
+                let shown = self.selected.and_then(|i| self.ed.scn.units.get(i)).or(self.template.and_then(|t| self.catalogue.get(t)));
+                if let Some(u) = shown {
+                    let r = (x0, y, 60, 56);
+                    fill(&mut c, r, white);
+                    frame(&mut c, r, ink);
+                    self.figure(&mut c, u, r);
+                    let kind = KINDS.get(u.kind as usize).copied().unwrap_or("?");
+                    let nation = NATIONS.get(u.nation as usize).copied().unwrap_or("?");
+                    let stats = match &u.extra {
+                        gboh_formats::scn::UnitExtra::Leader([i, range, charisma, elite]) => {
+                            format!("Initiative {i}, range {range}, charisma {charisma}{}", if *elite > 0 { ", elite" } else { "" })
+                        }
+                        gboh_formats::scn::UnitExtra::Combat { a, b, .. } => format!("TQ {b}, size {a}"),
+                        gboh_formats::scn::UnitExtra::Missile { a, b, m1, .. } => format!("TQ {b}, size {a}, range {m1}"),
+                    };
+                    for (k, text) in [u.name.as_str(), &format!("{kind}, {nation}"), &stats].into_iter().enumerate() {
+                        self.font.draw(&mut c, text, x0 + 68, y + 6 + k as i32 * 16);
+                    }
+                    y += 62;
+                }
                 match self.selected.and_then(|i| self.ed.scn.units.get(i)) {
                     Some(u) => {
                         line(&mut c, &format!("Selected: {}", u.name), &mut y);
@@ -593,10 +635,42 @@ impl EditorScreen {
                 }
             }
         }
+        // undo and redo, over the message line
+        let by = h as i32 - 2 * ROW - 14;
+        for (k, (act, label, can)) in
+            [(Act::Undo, "Undo", !self.undo.is_empty() || self.ed != self.last), (Act::Redo, "Redo", !self.redo.is_empty())].into_iter().enumerate()
+        {
+            let r = (x0 + k as i32 * 64, by, 60, ROW + 2);
+            self.button(&mut c, r, label, false);
+            if can {
+                acts.push((act, r));
+            }
+        }
         // the message line
         fill(&mut c, (view_w + 2, h as i32 - ROW - 6, PANEL - 2, ROW + 6), gold);
         self.font.draw(&mut c, &self.message, x0, h as i32 - ROW - 1);
         (c, acts)
+    }
+
+    /// One of `unit`'s men, twice his size, in the middle of `r`.
+    fn figure(&self, c: &mut Canvas, unit: &Unit, (x, y, w, h): Rect) {
+        let Some((sprite, _)) = gboh_formats::units::unit_type(unit)
+            .and_then(|t| self.scene.as_ref()?.unit_sprites(t))
+            .and_then(|art| art.walk_cel(4, 0).or_else(|| art.walk_cel(0, 0)))
+        else {
+            return;
+        };
+        let (sw, sh) = (sprite.width as i32 * 2, sprite.height as i32 * 2);
+        let (ox, oy) = (x + (w - sw) / 2, y + (h - sh) / 2);
+        for py in 0..sh.min(h) {
+            for px in 0..sw.min(w) {
+                let p = sprite.pixels[(py / 2) as usize * sprite.width + (px / 2) as usize];
+                let (dx, dy) = (ox + px, oy + py);
+                if p != 0 && dx >= x && dy >= y && dx >= 0 && dy >= 0 && (dx as usize) < c.width && (dy as usize) < c.height {
+                    c.pixels[dy as usize * c.width + dx as usize] = p;
+                }
+            }
+        }
     }
 
     fn button(&self, c: &mut Canvas, (x, y, w, h): (i32, i32, i32, i32), label: &str, on: bool) {
@@ -626,6 +700,8 @@ impl EditorScreen {
 
     /// A click at window pixel `(x, y)`: on the panel, or on the map.
     pub fn click(&mut self, x: i32, y: i32, w: usize, h: usize) -> Outcome {
+        // (what was typed before is a change of its own)
+        self.commit();
         let view_w = w as i32 - PANEL;
         if x >= view_w {
             let (_, acts) = self.canvas(w, h);
@@ -865,6 +941,8 @@ impl EditorScreen {
                 Err(e) => self.message = e,
             },
             Act::Quit => return Outcome::Quit,
+            Act::Undo => self.undo(),
+            Act::Redo => self.redo(),
         }
         if redraw_units || redraw_terrain {
             self.rebuild(redraw_terrain);
@@ -874,6 +952,10 @@ impl EditorScreen {
 
     /// Edit a fresh scenario (`ed`): redraw its map from scratch.
     fn start(&mut self, ed: Editor) {
+        // (a scenario of its own: nothing of the last to undo)
+        self.undo.clear();
+        self.redo.clear();
+        self.last = ed.clone();
         self.ed = ed;
         self.scene = None;
         self.selected = None;
@@ -1022,10 +1104,60 @@ impl EditorScreen {
         }
     }
 
-    /// The end of a drag.
+    /// The end of a drag (or a click): what it changed is one change to
+    /// undo.
     pub fn drag_end(&mut self) {
         self.painted = None;
         self.side_drag = None;
+        self.commit();
+    }
+
+    /// If the scenario changed since the last commit, keep how it was, to
+    /// undo.
+    fn commit(&mut self) {
+        if self.ed == self.last {
+            return;
+        }
+        self.undo.push(std::mem::replace(&mut self.last, self.ed.clone()));
+        if self.undo.len() > UNDO_DEPTH {
+            self.undo.remove(0);
+        }
+        self.redo.clear();
+    }
+
+    /// Undo the last change.
+    pub fn undo(&mut self) {
+        self.commit();
+        let Some(prev) = self.undo.pop() else { return };
+        self.redo.push(std::mem::replace(&mut self.ed, prev));
+        self.restored();
+        self.message = "Undone.".into();
+    }
+
+    /// Redo the last change undone.
+    pub fn redo(&mut self) {
+        let Some(next) = self.redo.pop() else { return };
+        self.undo.push(std::mem::replace(&mut self.ed, next));
+        self.restored();
+        self.message = "Redone.".into();
+    }
+
+    /// After an undo or redo: the screen drawn afresh for the scenario.
+    fn restored(&mut self) {
+        self.last = self.ed.clone();
+        if self.scene_size != (self.ed.map.width, self.ed.map.height) {
+            self.scene = None;
+            self.scroll = (0, 0);
+        }
+        self.selected = None;
+        self.setting_hex = None;
+        if self.group.is_some_and(|g| self.ed.leader_of(g).is_none()) {
+            self.group = None;
+        }
+        if self.inspected.is_some_and(|(x, y)| x >= self.ed.map.width || y >= self.ed.map.height) {
+            self.inspected = None;
+        }
+        self.stale = Some(true);
     }
 
     /// Typing into the field in focus: returns whether it took the key.
@@ -1033,6 +1165,7 @@ impl EditorScreen {
         let Some(f) = self.focus else { return false };
         if enter {
             self.focus = None;
+            self.commit();
             return true;
         }
         let info = self.ed.scn.editor.get_or_insert_with(Default::default);
@@ -1155,6 +1288,21 @@ mod tests {
         e.drag((sx0, sy0), (sx1, sy1), ww, wh);
         e.drag_end();
         assert_eq!(streams(&e, sx), 0);
+        // undone a change at a time (a drag is one), and redone
+        let blank = e.ed.clone();
+        e.brush = BRUSHES.iter().position(|b| b.0 == Brush::Hex(Paint::Rocky)).unwrap();
+        let (rx0, ry0) = at(&e, 3, 3);
+        let (rx1, ry1) = at(&e, 3, 9);
+        e.click(rx0, ry0, ww, wh);
+        e.drag((rx0, ry0), (rx1, ry1), ww, wh);
+        e.drag_end();
+        let rocky = e.ed.clone();
+        assert!(rocky != blank);
+        e.undo();
+        assert!(e.ed == blank, "the drag undone at once");
+        e.redo();
+        assert!(e.ed == rocky);
+        e.flush();
         // a level slopes the ground around it
         e.brush = BRUSHES.iter().position(|b| b.0 == Brush::Hex(Paint::Level(3))).unwrap();
         let (x, y) = at(&e, 8, 8);
@@ -1210,6 +1358,11 @@ mod tests {
         assert!(!acts.is_empty());
         if let Ok(out) = std::env::var("GBOH_SHOTS") {
             crate::ui::write_ppm(&canvas, &e.palette, &Path::new(&out).join("editor.ppm")).unwrap();
+            e.tab = Tab::Units;
+            e.selected = None;
+            e.template = e.catalogue.iter().position(|u| u.name.contains("Hypaspist")).or(Some(foot));
+            let (units, _) = e.canvas(1200, 800);
+            crate::ui::write_ppm(&units, &e.palette, &Path::new(&out).join("editor-units.ppm")).unwrap();
         }
         unsafe { std::env::remove_var("GBOH_SAVES") };
         let _ = std::fs::remove_dir_all(&saves);
