@@ -141,9 +141,12 @@ impl Editor {
         h.x >= 0 && h.y >= 0 && (h.x as usize) < self.map.width && (h.y as usize) < self.map.height
     }
 
-    /// Paint hex `(x, y)`. A level is refused next to a hex more than one
-    /// level away (as the original's "Cannot have two hexes together that
-    /// have more than 1 altitude difference").
+    /// Paint hex `(x, y)`. No two neighbours may be more than a level apart
+    /// (the original's rule): where the original refuses such a level
+    /// ("Cannot have two hexes together that have more than 1 altitude
+    /// difference"), here the land around is raised or lowered to slope
+    /// down to it. Water is never changed that way: a level that would
+    /// need it to is refused.
     pub fn paint(&mut self, x: usize, y: usize, paint: Paint) -> Result<(), String> {
         if x >= self.map.width || y >= self.map.height {
             return Err("off the map".into());
@@ -154,11 +157,26 @@ impl Editor {
             _ => None,
         };
         if let Some(z) = level {
-            let near = Hex::new(x as i32, y as i32).neighbours();
-            if near.iter().any(|&n| self.on_map(n) && (self.map.elevation_at(n.x as usize, n.y as usize) as i32 - z as i32).abs() > 1) {
-                return Err("a neighbouring hex is more than one level away".into());
+            let w = self.map.width;
+            let mut levels = self.map.elevation.clone();
+            levels[y * w + x] = z;
+            let mut queue = vec![Hex::new(x as i32, y as i32)];
+            while let Some(h) = queue.pop() {
+                let lh = levels[h.y as usize * w + h.x as usize] as i32;
+                for n in h.neighbours().into_iter().filter(|&n| self.on_map(n)) {
+                    let k = n.y as usize * w + n.x as usize;
+                    let ln = levels[k] as i32;
+                    if (ln - lh).abs() <= 1 {
+                        continue;
+                    }
+                    if ln == 0 {
+                        return Err("too high beside water: paint the shore lower first".into());
+                    }
+                    levels[k] = (if ln > lh { lh + 1 } else { lh - 1 }).max(1) as u8;
+                    queue.push(n);
+                }
             }
-            self.map.elevation[y * self.map.width + x] = z;
+            self.map.elevation = levels;
             return Ok(());
         }
         let (gx, gy) = Map::hex_cell(x, y);
@@ -630,7 +648,22 @@ mod tests {
     fn paints_terrain() {
         let mut e = editor();
         e.paint(5, 5, Paint::Level(2)).unwrap();
-        assert!(e.paint(5, 6, Paint::Level(4)).is_err());
+        // a level slopes the land around down to it
+        e.paint(5, 6, Paint::Level(4)).unwrap();
+        assert_eq!((e.map.elevation_at(5, 6), e.map.elevation_at(5, 5), e.map.elevation_at(5, 4)), (4, 3, 2));
+        for y in 0..e.map.height {
+            for x in 0..e.map.width {
+                for n in Hex::new(x as i32, y as i32).neighbours().into_iter().filter(|&n| e.on_map(n)) {
+                    assert!((e.map.elevation_at(x, y) as i32 - e.map.elevation_at(n.x as usize, n.y as usize) as i32).abs() <= 1);
+                }
+            }
+        }
+        // water lowers the land beside it, but stays water
+        e.paint(10, 6, Paint::Level(3)).unwrap();
+        e.paint(10, 6, Paint::Water).unwrap();
+        assert_eq!(e.map.elevation_at(10, 6), 0);
+        assert!(e.paint(10, 7, Paint::Level(3)).is_err(), "too high beside water");
+        e.paint(10, 7, Paint::Level(1)).unwrap();
         e.paint(5, 5, Paint::Woods).unwrap();
         assert_eq!(e.map.hex_features(5, 5), &[1]);
         e.paint(5, 5, Paint::Road).unwrap();

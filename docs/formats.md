@@ -2118,9 +2118,12 @@ scenarios by Caesar's rules, and has its own editor after the original.
   is reached), then attacks or defends as its behaviour says.
 
 The editor (the start screen's **Scenario Editor**, on Caesar's data):
-**Map** paints levels (no two neighbours more than a level apart), water,
-woods, rough ground and roads (by clicking or dragging), and puts streams
-and walls on hex sides; its **Properties** brush shows a hex's level and
+**Map** paints levels, water, woods, rough ground and roads as a brush
+(as the button goes down, and on along a drag). No two neighbours may be
+more than a level apart: where the original refuses such a level, the land
+around is raised or lowered to slope down to it (water is never changed
+so; a level too high beside water is refused). Streams and walls go on the
+side of the hex nearest the click; its **Properties** brush shows a hex's level and
 ground and sets its six sides, **Clear hex** clears them, and the map
 resizes (keeping its terrain, refused if units would fall off; the width
 odd as in the original, but up to 89 hexes a side, the games' largest,

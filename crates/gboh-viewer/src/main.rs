@@ -3345,7 +3345,11 @@ impl Viewer {
         let fit = (size.width as f32 / fw).min(size.height as f32 / fh).max(0.25);
         self.scale = fit;
         let (w, h) = ((size.width as f32 / fit).ceil() as usize, (size.height as f32 / fit).ceil() as usize);
-        let mut canvas = setup.backdrop(w.max(screen.width), h.max(screen.height));
+        let (cw, ch) = (w.max(screen.width), h.max(screen.height));
+        // (a dialog smaller than the start screen stands out from what's
+        // behind it)
+        let mut canvas =
+            if screen.width < 640 || screen.height < 480 { setup.dialog_backdrop(cw, ch, (screen.width, screen.height)) } else { setup.backdrop(cw, ch) };
         let off = ((canvas.width as i32 - screen.width as i32) / 2, (canvas.height as i32 - screen.height as i32) / 2);
         canvas.blit(&gboh_render::Sprite { width: screen.width, height: screen.height, pixels: screen.pixels }, off.0, off.1);
         self.setup_offset = off;
@@ -3635,13 +3639,23 @@ impl ApplicationHandler for Viewer {
                 },
                 _ => {}
             },
+            // the editor acts as the button goes down (a brush), and a drag
+            // from there paints on, or pans its battlefield
+            WindowEvent::MouseInput { state, button: MouseButton::Left, .. } if self.editor.is_some() => {
+                if state == ElementState::Pressed {
+                    self.drag = Some(self.cursor);
+                    self.editor_click();
+                } else {
+                    self.drag = None;
+                    if let Some(e) = &mut self.editor {
+                        e.drag_end();
+                    }
+                }
+            }
             WindowEvent::MouseInput { state, button: MouseButton::Left, .. } if self.map_drag(state == ElementState::Pressed) => {}
             WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
                 if state == ElementState::Released {
                     self.sliding = None;
-                    if let Some(e) = &mut self.editor {
-                        e.drag_end();
-                    }
                 }
                 // no dragging the battlefield from under a dialog or a menu
                 self.drag = (state == ElementState::Pressed && !self.modal() && self.menu_open.is_none()).then_some(self.cursor);
@@ -3688,9 +3702,9 @@ impl ApplicationHandler for Viewer {
                 if let Some(e) = &mut self.editor {
                     e.drag(from, to, w, h);
                 }
+                // (drawn once the events waiting are handled)
                 self.drag = Some(position);
                 self.cursor = position;
-                self.show_editor();
             }
             WindowEvent::CursorMoved { position, .. } => {
                 if let Some(from) = self.drag {
@@ -3776,6 +3790,9 @@ impl ApplicationHandler for Viewer {
         if self.quit {
             event_loop.exit();
             return;
+        }
+        if self.editor.as_mut().is_some_and(|e| e.flush()) {
+            self.show_editor();
         }
         if !self.script.is_empty() {
             if Instant::now() >= self.script_next {

@@ -155,6 +155,12 @@ pub struct EditorScreen {
     setting_hex: Option<usize>,
     /// The hex last painted in a drag.
     painted: Option<(usize, usize)>,
+    /// A redraw owed (with the terrain if `true`), done once the window's
+    /// events are handled ([`EditorScreen::flush`]), so a drag paints as
+    /// fast as the mouse moves.
+    stale: Option<bool>,
+    /// Whether the battlefield scrolled since the last flush.
+    moved: bool,
     /// The hex whose properties are shown.
     inspected: Option<(usize, usize)>,
     /// The size the map would be resized to.
@@ -215,6 +221,8 @@ impl EditorScreen {
             group: None,
             setting_hex: None,
             painted: None,
+            stale: None,
+            moved: false,
             inspected: None,
             resize_to: (31, 31),
             replacing: None,
@@ -595,8 +603,7 @@ impl EditorScreen {
         self.font.draw(c, label, x + (w - tw).max(4) / 2, y + (h - 11) / 2);
     }
 
-    /// The map hex under window pixel `(x, y)`, and the side nearest it
-    /// (when near the hex's edge).
+    /// The map hex under window pixel `(x, y)`, and the side nearest it.
     fn hex_at(&self, x: i32, y: i32) -> Option<((usize, usize), Option<MapSide>)> {
         let scene = self.scene.as_ref()?;
         let (px, py) = (x + self.scroll.0, y + self.scroll.1);
@@ -604,8 +611,7 @@ impl EditorScreen {
         let (hx, hy) = (h.x as usize, h.y as usize);
         let (cx, cy) = play::centre(scene, hx, hy);
         let (dx, dy) = ((px - cx) as f32, (cy - py) as f32);
-        let (w, _, _) = scene.layout.zoom.block();
-        let side = ((dx * dx + dy * dy).sqrt() > w as f32 * 0.28).then(|| {
+        let side = (dx != 0.0 || dy != 0.0).then(|| {
             // screen sectors: right N, upper right NW, upper left SW, left S,
             // lower left SE, lower right NE
             let a = dy.atan2(dx).to_degrees().rem_euclid(360.0);
@@ -629,7 +635,11 @@ impl EditorScreen {
         let Some(((hx, hy), side)) = self.hex_at(x, y) else { return Outcome::Nothing };
         let result = match self.tab {
             Tab::Map => match BRUSHES[self.brush].0 {
-                Brush::Hex(p) => self.ed.paint(hx, hy, p).map(|_| true),
+                Brush::Hex(p) => {
+                    // (a drag from here paints on)
+                    self.painted = Some((hx, hy));
+                    self.ed.paint(hx, hy, p).map(|_| true)
+                }
                 Brush::Side(code) => match side {
                     Some(s) => {
                         self.ed.toggle_side(hx, hy, s, code);
@@ -642,6 +652,7 @@ impl EditorScreen {
                     Ok(false)
                 }
                 Brush::ClearHex => {
+                    self.painted = Some((hx, hy));
                     self.ed.clear_hex(hx, hy);
                     Ok(true)
                 }
@@ -951,18 +962,43 @@ impl EditorScreen {
         if Self::on_panel(from.0, w) {
             return;
         }
-        let Brush::Hex(paint) = BRUSHES[self.brush].0 else { return self.scroll_by(from.0 - to.0, from.1 - to.1, w, h) };
-        if self.tab != Tab::Map {
+        let brush = BRUSHES[self.brush].0;
+        if self.tab != Tab::Map || !matches!(brush, Brush::Hex(_) | Brush::ClearHex) {
             return self.scroll_by(from.0 - to.0, from.1 - to.1, w, h);
         }
-        let Some((hex, _)) = self.hex_at(to.0, to.1).filter(|_| !Self::on_panel(to.0, w)) else { return };
-        if self.painted == Some(hex) {
-            return;
+        // every hex on the way (the mouse reports a fast drag in leaps)
+        let (dx, dy) = (to.0 - from.0, to.1 - from.1);
+        let steps = (dx.abs().max(dy.abs()) / 6).max(1);
+        for k in 1..=steps {
+            let (x, y) = (from.0 + dx * k / steps, from.1 + dy * k / steps);
+            let Some((hex, _)) = self.hex_at(x, y).filter(|_| !Self::on_panel(x, w)) else { continue };
+            if self.painted == Some(hex) {
+                continue;
+            }
+            self.painted = Some(hex);
+            let done = match brush {
+                Brush::Hex(paint) => self.ed.paint(hex.0, hex.1, paint),
+                _ => {
+                    self.ed.clear_hex(hex.0, hex.1);
+                    Ok(())
+                }
+            };
+            match done {
+                Ok(()) => self.stale = Some(true),
+                Err(e) => self.message = e,
+            }
         }
-        self.painted = Some(hex);
-        match self.ed.paint(hex.0, hex.1, paint) {
-            Ok(()) => self.rebuild(true),
-            Err(e) => self.message = e,
+    }
+
+    /// Do the redraw owed, if any: returns whether the screen changed.
+    pub fn flush(&mut self) -> bool {
+        let moved = std::mem::take(&mut self.moved);
+        match self.stale.take() {
+            Some(terrain) => {
+                self.rebuild(terrain);
+                true
+            }
+            None => moved,
         }
     }
 
@@ -998,6 +1034,7 @@ impl EditorScreen {
         let max_x = (self.composed.width as i32 - (w as i32 - PANEL)).max(0);
         let max_y = (self.composed.height as i32 - h as i32).max(0);
         self.scroll = ((self.scroll.0 + dx).clamp(0, max_x), (self.scroll.1 + dy).clamp(0, max_y));
+        self.moved = true;
     }
 
     /// Whether `x` is over the panel.
@@ -1061,6 +1098,28 @@ mod tests {
         assert!(e.catalogue.len() > 2000);
         let k = e.maps.iter().position(|m| m.eq_ignore_ascii_case("PHARSAL.MAP")).unwrap();
         e.act(Act::NewOn(k));
+        // a brush: painted as the button goes down, then along a drag in
+        // one leap, redrawn once at the flush
+        e.tab = Tab::Map;
+        e.brush = BRUSHES.iter().position(|b| b.0 == Brush::Hex(Paint::Woods)).unwrap();
+        let at = |e: &EditorScreen, x: usize, y: usize| {
+            let (cx, cy) = play::centre(e.scene.as_ref().unwrap(), x, y);
+            (cx - e.scroll.0, cy - e.scroll.1)
+        };
+        // (a window as big as the battlefield, all of it in view)
+        let (ww, wh) = (e.composed.width + PANEL as usize, e.composed.height);
+        let ((x0, y0), (x1, y1)) = (at(&e, 4, 6), at(&e, 4, 12));
+        e.click(x0, y0, ww, wh);
+        e.drag((x0, y0), (x1, y1), ww, wh);
+        assert!(e.stale.is_some());
+        assert!(e.flush() && e.stale.is_none());
+        e.drag_end();
+        assert!((6..=12).all(|y| e.ed.ground(4, y) == Paint::Woods), "{}", e.message);
+        // a level slopes the ground around it
+        e.brush = BRUSHES.iter().position(|b| b.0 == Brush::Hex(Paint::Level(3))).unwrap();
+        let (x, y) = at(&e, 8, 8);
+        e.click(x, y, ww, wh);
+        assert_eq!(e.ed.map.elevation_at(8, 8), 3, "{}", e.message);
         e.act(Act::Nation(true, 10));
         e.act(Act::Nation(false, 3));
         e.ed.scn.title = "Test".into();

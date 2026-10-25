@@ -238,6 +238,8 @@ pub struct Setup {
     yellow: u8,
     /// The frames' colour.
     dark: u8,
+    /// The palette dimmed (index to index), behind dialogs.
+    dim: [u8; 256],
     button: Vec<Sprite>,
     big_button: Vec<Sprite>,
     radio: Vec<Sprite>,
@@ -289,23 +291,26 @@ impl Setup {
         let buttons = eif(data_dir, "DLGBTN.EIF");
         let campaign = eif(data_dir, "CAMPAIGN.EIF");
         let back = eif(data_dir, "BACKGND.EIF");
-        let yellow =
-            crate::palette_path(data_dir).and_then(|p| std::fs::read(p).ok()).and_then(|d| gboh_formats::pal::Palette::parse(&d).ok()).map_or(251, |pal| {
-                (10..246)
-                    .min_by_key(|&i| {
-                        let [r, g, b] = pal.colors[i];
-                        (255 - r as i32).pow(2) + (230 - g as i32).pow(2) + (b as i32).pow(2)
-                    })
-                    .unwrap_or(251) as u8
-            });
-        let white = crate::palette_path(data_dir)
-            .and_then(|p| std::fs::read(p).ok())
-            .and_then(|d| gboh_formats::pal::Palette::parse(&d).ok())
-            .map_or(255, |pal| (1..=255usize).max_by_key(|&i| pal.colors[i].iter().map(|&c| c as u32).sum::<u32>()).unwrap_or(255) as u8);
-        let dark = crate::palette_path(data_dir)
-            .and_then(|p| std::fs::read(p).ok())
-            .and_then(|d| gboh_formats::pal::Palette::parse(&d).ok())
-            .map_or(0xf8, |pal| (1..=255usize).min_by_key(|&i| pal.colors[i].iter().map(|&c| c as u32).sum::<u32>()).unwrap_or(0xf8) as u8);
+        let pal = crate::palette_path(data_dir).and_then(|p| std::fs::read(p).ok()).and_then(|d| gboh_formats::pal::Palette::parse(&d).ok());
+        let yellow = pal.as_ref().map_or(251, |pal| {
+            (10..246)
+                .min_by_key(|&i| {
+                    let [r, g, b] = pal.colors[i];
+                    (255 - r as i32).pow(2) + (230 - g as i32).pow(2) + (b as i32).pow(2)
+                })
+                .unwrap_or(251) as u8
+        });
+        let white = pal.as_ref().map_or(255, |pal| (1..=255usize).max_by_key(|&i| pal.colors[i].iter().map(|&c| c as u32).sum::<u32>()).unwrap_or(255) as u8);
+        // each colour at a fifth of its brightness, for what lies behind a
+        // dialog
+        let mut dim = [0u8; 256];
+        if let Some(pal) = &pal {
+            for (i, d) in dim.iter_mut().enumerate() {
+                let want = pal.colors[i].map(|c| c as i32 / 5);
+                *d = (1..=255usize).min_by_key(|&k| pal.colors[k].iter().zip(want).map(|(&a, b)| (a as i32 - b).pow(2)).sum::<i32>()).unwrap_or(0) as u8;
+            }
+        }
+        let dark = pal.as_ref().map_or(0xf8, |pal| (1..=255usize).min_by_key(|&i| pal.colors[i].iter().map(|&c| c as u32).sum::<u32>()).unwrap_or(0xf8) as u8);
         let exe = crate::ui::exe_path(data_dir).and_then(|p| std::fs::read(p).ok());
         let res = exe.and_then(|d| Resources::parse(&d).ok());
         let string = |id: u16| res.as_ref().and_then(|r| r.string(id));
@@ -394,6 +399,7 @@ impl Setup {
             font: if game == gboh_formats::game::Game::Alexander { crate::ui::Font::load(data_dir) } else { crate::ui::Font::load(data_dir).in_ink(dark) },
             dark: if game == gboh_formats::game::Game::Alexander { 0xf8 } else { dark },
             yellow,
+            dim,
             button: cels(&buttons, "Pushbutton"),
             big_button: cels(&buttons, "Big Pushbutton"),
             radio: cels(&buttons, "Radio"),
@@ -457,7 +463,9 @@ impl Setup {
     /// Go on with scenario `file` as a battle of its own (the original's
     /// index 11, "Custom"): who plays it is asked next.
     pub fn choose_custom(&mut self, data_dir: &Path, file: &str) -> bool {
-        let Some(scn) = crate::find_ci(data_dir, file).and_then(|p| std::fs::read(p).ok()).and_then(|d| gboh_formats::scn::Scenario::parse(&d).ok()) else {
+        // (the game's own, else the editor's)
+        let path = crate::find_ci(data_dir, file).or_else(|| crate::find_ci(&crate::editor::scenarios_dir(), file));
+        let Some(scn) = path.and_then(|p| std::fs::read(p).ok()).and_then(|d| gboh_formats::scn::Scenario::parse(&d).ok()) else {
             return false;
         };
         let nation = |n: u8| self.nations.get(n as usize).cloned().unwrap_or_default();
@@ -523,6 +531,31 @@ impl Setup {
         if let Some(m) = &self.marble {
             canvas.tile(m, 0, 0);
         }
+        canvas
+    }
+
+    /// A `w` × `h` canvas for a dialog of `size` to stand out on, in the
+    /// middle: the start screen's picture on the marble, dimmed, with the
+    /// dialog's place framed and shadowed. (The dialogs are marble too, and
+    /// on the marble alone they were lost.)
+    pub fn dialog_backdrop(&self, w: usize, h: usize, size: (usize, usize)) -> Canvas {
+        let mut canvas = self.backdrop(w, h);
+        if let Some(a) = &self.start_art {
+            canvas.blit(a, (w as i32 - a.width as i32) / 2, (h as i32 - a.height as i32) / 2);
+        }
+        for p in canvas.pixels.iter_mut() {
+            *p = self.dim[*p as usize];
+        }
+        let (x, y) = ((w as i32 - size.0 as i32) / 2, (h as i32 - size.1 as i32) / 2);
+        let mut fill = |x0: i32, y0: i32, fw: i32, fh: i32| {
+            for yy in y0.max(0)..(y0 + fh).min(h as i32) {
+                for xx in x0.max(0)..(x0 + fw).min(w as i32) {
+                    canvas.pixels[yy as usize * w + xx as usize] = self.dark;
+                }
+            }
+        };
+        fill(x + 6, y + 6, size.0 as i32, size.1 as i32);
+        fill(x - 2, y - 2, size.0 as i32 + 4, size.1 as i32 + 4);
         canvas
     }
 
