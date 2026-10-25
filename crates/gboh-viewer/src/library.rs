@@ -44,15 +44,23 @@ impl Title {
         }
     }
 
+    /// The engine's name for the game.
+    pub fn game(self) -> gboh_formats::game::Game {
+        use gboh_formats::game::Game;
+        match self {
+            Title::Alexander => Game::Alexander,
+            Title::Hannibal => Game::Hannibal,
+            Title::Caesar => Game::Caesar,
+        }
+    }
+
     pub fn from_key(key: &str) -> Option<Title> {
         Title::ALL.into_iter().find(|t| t.key() == key.trim().to_ascii_lowercase())
     }
 
-    /// Whether the rewrite plays this title's battles yet (only Alexander's
-    /// rules have been ported; the others' data can be imported and used
-    /// for the look).
+    /// Whether the rewrite plays this title's battles yet (all three's).
     pub fn playable(self) -> bool {
-        self == Title::Alexander
+        true
     }
 }
 
@@ -69,7 +77,7 @@ fn game_dir(t: Title) -> PathBuf {
 /// The imported `DATA` directory of `t`, if it has been imported.
 pub fn data_dir(t: Title) -> Option<PathBuf> {
     let d = crate::find_ci(&game_dir(t), "DATA")?;
-    crate::find_ci(&d, "GAME.PAL").map(|_| d)
+    crate::palette_path(&d).map(|_| d)
 }
 
 /// The titles imported, in their order.
@@ -87,22 +95,26 @@ pub struct Found {
 }
 
 /// Look for an installation of `want` in `folder` (the game's folder, or
-/// its `DATA` directory): a `DATA` directory with `GAME.PAL`, and beside it
+/// its `DATA` directory): a `DATA` directory with the game's palette, and beside it
 /// an executable whose title string names the game.
 pub fn detect(folder: &Path, want: Title) -> Result<Found, String> {
     let (top, data) = match crate::find_ci(folder, "DATA") {
         Some(d) => (folder.to_path_buf(), d),
-        None if crate::find_ci(folder, "GAME.PAL").is_some() => (folder.parent().map(Path::to_path_buf).unwrap_or_default(), folder.to_path_buf()),
+        None if crate::palette_path(folder).is_some() => (folder.parent().map(Path::to_path_buf).unwrap_or_default(), folder.to_path_buf()),
         None => return Err(format!("No DATA folder in {}.", folder.display())),
     };
-    if crate::find_ci(&data, "GAME.PAL").is_none() {
-        return Err(format!("{} has no GAME.PAL: not a Great Battles game.", data.display()));
+    if crate::palette_path(&data).is_none() {
+        return Err(format!("{} has no palette file: not a Great Battles game.", data.display()));
     }
-    let exes: Vec<PathBuf> = std::fs::read_dir(&top)
+    let mut exes: Vec<PathBuf> = std::fs::read_dir(&top)
         .map_err(|e| e.to_string())?
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("exe")))
         .collect();
+    // the game's own executable first (Caesar's folder also holds its
+    // scenario editor)
+    let own = want.game().exe_file();
+    exes.sort_by_key(|p| !p.file_name().is_some_and(|n| n.eq_ignore_ascii_case(own)));
     // the executable whose first string (the game's title) names it
     let named = |p: &PathBuf| {
         std::fs::read(p)
@@ -210,7 +222,7 @@ impl Settings {
 mod tests {
     use super::*;
 
-    /// Recognises the game's own folder (and its DATA directory); runs only
+    /// Recognises the games' own folders (and their DATA directories); runs only
     /// with `GBOH_DATA` set.
     #[test]
     fn detects_alexander() {
@@ -223,6 +235,23 @@ mod tests {
         let wrong = detect(top, Title::Caesar).unwrap_err();
         assert!(wrong.contains("Alexander"), "{wrong}");
         assert_eq!(Settings { theme: Some(Title::Caesar) }.theme_in_force(&[Title::Alexander]), Some(Title::Alexander));
+    }
+
+    /// Hannibal's and Caesar's folders (theirs beside Alexander's, as in the
+    /// developer's set-up); Caesar's is found by `caesar.exe`, not its
+    /// editor's.
+    #[test]
+    fn detects_hannibal_and_caesar() {
+        let Ok(dir) = std::env::var("GBOH_DATA") else { return };
+        let downloads = Path::new(&dir).ancestors().nth(3).unwrap().to_path_buf();
+        for (t, folder) in [(Title::Hannibal, "hannibal/app"), (Title::Caesar, "caesar/app")] {
+            let top = downloads.join(folder);
+            if !top.exists() {
+                continue;
+            }
+            let found = detect(&top, t).unwrap();
+            assert!(found.exe.file_name().unwrap().to_string_lossy().eq_ignore_ascii_case(t.game().exe_file()), "{found:?}");
+        }
     }
 
     /// Imports a small installation (the executable and a DATA folder with

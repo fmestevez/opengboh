@@ -7,6 +7,10 @@
 //! Remap tables map a palette index to another index. Table 0 darkens
 //! (shadows), table 1 darkens slightly, tables 2..=4 brighten.
 
+/// The palette's file name in each game's `DATA` directory (Alexander's,
+/// Hannibal's, Caesar's).
+pub const FILES: [&str; 3] = ["GAME.PAL", "HANNIBAL.PAL", "CAESAR.PAL"];
+
 use crate::read::Reader;
 use crate::{Error, Result};
 

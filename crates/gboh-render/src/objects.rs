@@ -25,6 +25,15 @@ pub enum ObjectArt {
     Stones,
     /// `Stones (Green)`, used on maps with `unk_b == 2`.
     GreenStones,
+    /// Hannibal's: trees at Trebbia, and Baecula's towers and camp walls
+    /// (each also for the reversed view).
+    SnowTrees,
+    Tower,
+    TowerReverse,
+    Baecula,
+    BaeculaReverse,
+    /// Caesar's fortifications' walls.
+    Walls,
 }
 
 impl ObjectArt {
@@ -33,8 +42,26 @@ impl ObjectArt {
             ObjectArt::Trees => "Trees",
             ObjectArt::Stones => "Stones",
             ObjectArt::GreenStones => "Stones (Green)",
+            ObjectArt::SnowTrees => "Snow Trees",
+            ObjectArt::Tower => "Tower",
+            ObjectArt::TowerReverse => "Tower Reverse",
+            ObjectArt::Baecula => "Baecula",
+            ObjectArt::BaeculaReverse => "Baecula Reverse",
+            ObjectArt::Walls => "Walls",
         }
     }
+
+    pub const ALL: [ObjectArt; 9] = [
+        ObjectArt::Trees,
+        ObjectArt::Stones,
+        ObjectArt::GreenStones,
+        ObjectArt::SnowTrees,
+        ObjectArt::Tower,
+        ObjectArt::TowerReverse,
+        ObjectArt::Baecula,
+        ObjectArt::BaeculaReverse,
+        ObjectArt::Walls,
+    ];
 }
 
 /// One scattered object.
@@ -115,7 +142,7 @@ pub struct ObjectSprites {
 
 impl ObjectSprites {
     pub fn load(eif: &Eif) -> Self {
-        let strips = [ObjectArt::Trees, ObjectArt::Stones, ObjectArt::GreenStones]
+        let strips = ObjectArt::ALL
             .into_iter()
             .filter_map(|art| {
                 let s = eif.strips.iter().find(|s| s.name == art.strip_name())?;
@@ -125,6 +152,11 @@ impl ObjectSprites {
             })
             .collect();
         Self { strips }
+    }
+
+    /// How many cels strip `art` has.
+    pub fn count(&self, art: ObjectArt) -> usize {
+        self.strips.iter().find(|(a, _)| *a == art).map_or(0, |s| s.1.len())
     }
 
     fn get(&self, art: ObjectArt, cel: usize) -> Option<&Cel> {

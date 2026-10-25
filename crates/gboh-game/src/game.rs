@@ -24,9 +24,52 @@ type Snapshot = (Vec<(crate::hex::Hex, u8, i32, UnitState)>, usize, u16);
 pub type Designation = (Vec<(usize, bool)>, Vec<usize>);
 
 /// A battle being played.
+/// Hannibal's Roman nation (scenario byte).
+const ROMAN: u8 = 6;
+
+/// Hannibal's battles in its table's order, by map file: Metaurus,
+/// Bagradas, Cannae, Cynoscephalae, Zama, Trebbia, Baecula, Ilipa,
+/// Beneventum, the Great Plains, Magnesia, Trasimene, Dertosa.
+const HANNIBAL_BATTLES: [&str; 13] =
+    ["METAURUS", "BAGRADAS", "CANNAE", "CYNO", "ZAMA", "TREBBIA", "BAECULA", "ILIPA", "BENEVENT", "GPLAINS", "MAGNESIA", "TRASIMEN", "DERTOSA"];
+
+/// Per Hannibal battle: the (0-based) turn that ends it when turn limits
+/// are on, and the army (0 home, 1 visitor) it then goes to.
+const HANNIBAL_TURN_LIMITS: [(u16, usize); 13] =
+    [(14, 1), (7, 0), (9, 1), (7, 1), (7, 1), (7, 1), (14, 1), (11, 1), (5, 1), (5, 1), (9, 1), (2, 0), (7, 0)];
+
+/// The facing half round from `facing` (2 ↔ 6, 3 ↔ 7, 4 ↔ 8).
+fn opposite(facing: u8) -> u8 {
+    match facing {
+        2 => 6,
+        3 => 7,
+        4 => 8,
+        6 => 2,
+        7 => 3,
+        8 => 4,
+        f => f,
+    }
+}
+
+/// The battle number of a Hannibal map file.
+fn hannibal_battle(map_file: &str) -> Option<usize> {
+    let stem = map_file.split('.').next().unwrap_or("").to_ascii_uppercase();
+    HANNIBAL_BATTLES.iter().position(|b| *b == stem)
+}
+
+/// Whose rules a battle is fought by: Alexander's, or Hannibal's (its
+/// legions, pursuit, group orders, elite initiative...).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Rules {
+    #[default]
+    Alexander,
+    Hannibal,
+}
+
 #[derive(Clone)]
 pub struct Game {
     pub battle: Battle,
+    pub rules: Rules,
     pub map: Map,
     pub activation: Activation,
     pub rng: BorlandRand,
@@ -45,6 +88,20 @@ pub struct Game {
     /// Battle index (see `gboh_formats::scn::battle_index`), for the
     /// battles' own victory rules.
     pub battle_index: Option<usize>,
+    /// Hannibal's battle number (its table's order, from the map file),
+    /// and whether its turn limits apply (an option of its set-up).
+    pub hannibal_battle: Option<usize>,
+    pub turn_limits: bool,
+    /// Hannibal's Triarii tactical doctrine option.
+    pub triarii_doctrine: bool,
+    /// Hannibal's deployment phase, while on: its line (see
+    /// [`Game::deployment_line`]).
+    pub deployment: Option<(bool, i32)>,
+    /// Hannibal's Cannae: whether the wind blows this turn.
+    pub wind: bool,
+    /// Hannibal's Metaurus: unreliable units (Ligurians, Gauls) that have
+    /// proved themselves.
+    reliable: Vec<usize>,
     /// Pelium: points of Macedonian units out across the Apsos (1000 more
     /// once a leader follows them).
     pub exited: u16,
@@ -110,15 +167,19 @@ pub enum Verdict {
 impl Game {
     pub fn new(scn: &Scenario, map: Map, seed: u32) -> Self {
         let battle = Battle::from_scenario(scn, &map);
-        let activation = Activation::new(&battle, battle_index(&scn.map_file));
+        let mut activation = Activation::new(&battle, battle_index(&scn.map_file));
+        activation.romans_idle_first_turn = scn.map_file.to_ascii_uppercase().starts_with("TRASIMEN");
+        // (Caesar's are fought by Hannibal's rules, its engine's next version: 🟡)
+        let rules = if scn.layout.newer() { Rules::Hannibal } else { Rules::Alexander };
         Self {
             battle,
+            rules,
             map,
             activation,
             rng: BorlandRand::new(seed),
             armies: [
-                (scn.home.nation, scn.home.rout_level as u16),
-                (scn.visitor.nation, scn.visitor.rout_level as u16),
+                (scn.home.nation, scn.home.rout_level),
+                (scn.visitor.nation, scn.visitor.rout_level),
             ],
             points: None,
             resupplied: Vec::new(),
@@ -126,6 +187,12 @@ impl Game {
             leader_moved: false,
             log: Vec::new(),
             battle_index: battle_index(&scn.map_file),
+            hannibal_battle: hannibal_battle(&scn.map_file),
+            turn_limits: false,
+            triarii_doctrine: true,
+            deployment: None,
+            wind: false,
+            reliable: Vec::new(),
             exited: 0,
             group_move: None,
             group_tried: HashMap::new(),
@@ -144,6 +211,10 @@ impl Game {
 
     /// Start the next turn; returns its first leader.
     pub fn begin_turn(&mut self) -> Option<usize> {
+        // Hannibal's Cannae: wind on seven turns in ten (from direction 2)
+        if self.rules == Rules::Hannibal && self.hannibal_battle == Some(2) {
+            self.wind = self.rng.random() % 10 < 7;
+        }
         let l = self.activation.begin_turn(&self.battle, &mut self.rng);
         self.activate(l)
     }
@@ -177,6 +248,15 @@ impl Game {
             u.reorder_hit = false;
             u.fired = false;
         }
+        // Hannibal's Cannae wind: a unit facing into it has a hex less (🟡
+        // the original takes it from the move's budget as it searches)
+        if self.wind {
+            for u in &mut self.battle.units {
+                if matches!(u.facing, 6 | 7) {
+                    u.mp = (u.mp - 1).max(0);
+                }
+            }
+        }
         self.resupplied = match leader {
             Some(l) => {
                 let units = commanded(&self.battle, &self.map, l);
@@ -202,7 +282,110 @@ impl Game {
 
     /// Move `unit` to `to` (see `orders::move_to`), logging the hexes it
     /// walked through (up to where reaction fire may have stopped it).
+    /// Hannibal's deployment line (`FUN_004aa5d7`): halfway between the two
+    /// armies, across the axis of the retreat edges (rows if one army
+    /// retreats north, else columns); `None` if they're within a hex of each
+    /// other (no free deployment then). Returns whether it's a row, and its
+    /// coordinate.
+    pub fn deployment_line(&self) -> Option<(bool, i32)> {
+        let edge = |nation: u8| self.battle.units.iter().find(|u| u.side == nation).map_or(0, |u| u.retreat);
+        let (a, b) = (self.armies[0].0, self.armies[1].0);
+        // the "low" army retreats north or west
+        let (low, high) = if matches!(edge(a), 1 | 7) { (a, b) } else { (b, a) };
+        let rows = edge(low) == 1 || edge(high) == 1;
+        let coord = |u: &crate::battle::Unit| if rows { u.hex.y } else { u.hex.x };
+        let placed = |n: u8| self.battle.units.iter().filter(move |u| u.side == n && u.on_field());
+        let lo = placed(low).map(coord).max()?;
+        let hi = placed(high).map(coord).min()?;
+        (hi - lo > 1).then_some((rows, lo + (hi - lo) / 2))
+    }
+
+    /// Whether `unit` may be deployed on `hex` (`FUN_0053075f`): on its
+    /// army's side of the deployment line fixed when the phase began
+    /// (towards its retreat edge), not impassable, and empty.
+    pub fn can_deploy(&self, unit: usize, hex: crate::hex::Hex) -> bool {
+        let Some((_, line)) = self.deployment else { return false };
+        let u = &self.battle.units[unit];
+        let side_ok = match u.retreat {
+            1 => hex.y < line,
+            3 => hex.x > line,
+            5 => hex.y > line,
+            _ => hex.x < line,
+        };
+        let hexes: Vec<crate::hex::Hex> = std::iter::once(hex).chain(u.two_hex().then(|| crate::battle::flank(hex, u.facing)).flatten()).collect();
+        let fits = hexes.len() == if u.two_hex() { 2 } else { 1 } && hexes.iter().all(|&h| {
+            crate::movement::on_map(&self.map, h)
+                && !crate::movement::impassable(&self.map, h)
+                && (0..self.battle.units.len()).all(|o| o == unit || !self.battle.units[o].on_field() || !self.battle.hexes(o).contains(&h))
+        });
+        side_ok && fits
+    }
+
+    /// Put `unit` on `hex` during the deployment phase (see
+    /// [`Game::can_deploy`]).
+    pub fn deploy(&mut self, unit: usize, hex: crate::hex::Hex) -> bool {
+        if !self.can_deploy(unit, hex) {
+            return false;
+        }
+        self.battle.units[unit].hex = hex;
+        true
+    }
+
+    /// Hannibal's backward movement (`FUN_00528241`): a unit steps back
+    /// through its rear, two movement points at most, keeping its facing.
+    /// The hexes it can reach that way.
+    pub fn backward_options(&self, unit: usize) -> Vec<crate::hex::Hex> {
+        let u = &self.battle.units[unit];
+        if self.rules != Rules::Hannibal || u.state != UnitState::Fighting || u.leader.is_some() || u.mp <= 0 {
+            return Vec::new();
+        }
+        let mut b = self.battle.clone();
+        b.units[unit].facing = opposite(u.facing);
+        crate::movement::highlighted(&b, &self.map, unit, u.mp.min(2))
+    }
+
+    /// Step `unit` back to `to` (see [`Game::backward_options`]).
+    pub fn order_backward(&mut self, unit: usize, to: crate::hex::Hex) -> Result<Vec<(usize, i32)>, orders::Refused> {
+        if !self.backward_options(unit).contains(&to) {
+            return Err(orders::Refused::Unreachable);
+        }
+        let facing = self.battle.units[unit].facing;
+        let mp = self.battle.units[unit].mp;
+        self.battle.units[unit].facing = opposite(facing);
+        self.battle.units[unit].mp = mp.min(2);
+        let r = self.order_move(unit, to);
+        self.battle.units[unit].facing = facing;
+        if r.is_err() {
+            self.battle.units[unit].mp = mp;
+        }
+        r
+    }
+
+    /// Hannibal's Metaurus (`FUN_0053c518`): its Ligurians and Gauls take an
+    /// order only with a Roman unit within seven hexes, and the first time
+    /// pass a TQ check or rout. Returns whether the unit may act.
+    pub fn reliable(&mut self, unit: usize) -> Result<(), orders::Refused> {
+        let u = &self.battle.units[unit];
+        let doubtful = self.rules == Rules::Hannibal && self.hannibal_battle == Some(0) && (u.name.contains("Liguria") || u.name.contains("Gaul"));
+        if !doubtful || self.reliable.contains(&unit) {
+            return Ok(());
+        }
+        let here = u.hex;
+        let romans = self.battle.units.iter().any(|o| o.nation == ROMAN && o.leader.is_none() && o.state == UnitState::Fighting && o.hex.distance(here) <= 7);
+        if !romans {
+            return Err(orders::Refused::Unreachable);
+        }
+        if self.rng.next() % 10 <= self.battle.units[unit].tq as u32 {
+            self.reliable.push(unit);
+            Ok(())
+        } else {
+            self.rout(unit, self.battle.units[unit].max_mp.max(0) as u32);
+            Err(orders::Refused::Routed)
+        }
+    }
+
     pub fn order_move(&mut self, unit: usize, to: crate::hex::Hex) -> Result<Vec<(usize, i32)>, orders::Refused> {
+        self.reliable(unit)?;
         let start = self.battle.units[unit].hex;
         let mp = self.battle.units[unit].mp;
         let path = crate::movement::path_to(&self.battle, &self.map, unit, mp, to).unwrap_or_default();
@@ -324,6 +507,9 @@ impl Game {
         let Some(&first) = group.first() else { return Some("no group") };
         let facing = self.battle.units[first].facing;
         let orderable = self.orderable();
+        // (Hannibal's: no command test; refused only with an enemy beside)
+        let hannibal = self.rules == Rules::Hannibal;
+        let reach = if hannibal { 1 } else { 2 };
         for &u in &group {
             let o = &self.battle.units[u];
             if o.state != UnitState::Fighting {
@@ -332,11 +518,11 @@ impl Game {
             if o.facing != facing {
                 return Some("units face different ways");
             }
-            if !orderable.contains(&u) {
+            if !hannibal && !orderable.contains(&u) {
                 return Some("a unit is out of command");
             }
             let near = self.battle.units.iter().any(|e| {
-                e.side != o.side && e.on_field() && self.battle.hexes(u).iter().any(|h| h.distance(e.hex) <= 2)
+                e.side != o.side && e.on_field() && self.battle.hexes(u).iter().any(|h| h.distance(e.hex) <= reach)
             });
             if near {
                 return Some("a unit is near the enemy");
@@ -359,11 +545,16 @@ impl Game {
         let ini = self.battle.units[l].leader.map_or(0, |r| r.initiative) as i32;
         let full = ((ini - 2) * 20 + 30).min(100);
         let one = ((ini - 2) * 20 + 50).min(100);
-        let mut roll = (self.rng.next() % 100) as i32;
+        // (Hannibal's roll on `random()`; its Roman leaders never fail)
+        let hannibal = self.rules == Rules::Hannibal;
+        let mut roll = (if hannibal { self.rng.random() } else { self.rng.next() } % 100) as i32;
         match self.group_streak.get(&l).copied().unwrap_or(0) {
             0 => {}
             1 => roll = (roll - 30).max(0),
             _ => roll = 0,
+        }
+        if hannibal && self.battle.units[l].nation == ROMAN {
+            roll = 0;
         }
         self.group_tried.insert(l, true);
         let result = if roll < full {
@@ -378,6 +569,192 @@ impl Game {
         }
         self.group_move = Some(result);
         Some(result)
+    }
+
+    /// Hannibal's roll for a group order (`FUN_0056a817`), for the retreat,
+    /// attack and restore cohesion orders as for the group move: success
+    /// takes all the leader's orders and charges nothing for the units;
+    /// failure ends his orders and counts towards the next roll's bonus.
+    fn group_order_roll(&mut self) -> bool {
+        let Some(l) = self.activation.active() else { return false };
+        if self.points.as_ref().is_some_and(|p| p.used > 0) || self.leader_moved {
+            return false;
+        }
+        let ini = self.battle.units[l].leader.map_or(0, |r| r.initiative) as i32;
+        let full = ((ini - 2) * 20 + 30).min(100);
+        let mut roll = (self.rng.random() % 100) as i32;
+        match self.group_streak.get(&l).copied().unwrap_or(0) {
+            0 => {}
+            1 => roll = (roll - 30).max(0),
+            _ => roll = 0,
+        }
+        if self.battle.units[l].nation == ROMAN {
+            roll = 0;
+        }
+        if let Some(p) = &mut self.points {
+            p.used = p.max;
+        }
+        if roll < full {
+            self.group_streak.insert(l, 0);
+            true
+        } else {
+            *self.group_streak.entry(l).or_insert(0) += 1;
+            false
+        }
+    }
+
+    /// Each unit of the leader's group moves its full allowance as far as
+    /// it can towards `toward(unit)` (the original's per-unit move).
+    fn group_step(&mut self, units: &[usize], toward: impl Fn(&Self, usize) -> Option<crate::hex::Hex>) {
+        for &u in units {
+            if self.battle.units[u].state != UnitState::Fighting {
+                continue;
+            }
+            let Some(target) = toward(self, u) else { continue };
+            let here = self.battle.units[u].hex;
+            let mp = self.battle.units[u].mp;
+            let best = crate::movement::reachable(&self.battle, &self.map, u, mp)
+                .into_iter()
+                .filter(|(h, _)| h.distance(target) < here.distance(target))
+                .min_by_key(|(h, c)| (h.distance(target), *c, h.x, h.y))
+                .map(|(h, _)| h);
+            if let Some(to) = best {
+                let _ = self.order_move(u, to);
+            }
+        }
+    }
+
+    /// Hannibal's group retreat (`FUN_005704f0`): on a good roll every unit
+    /// of the leader's group makes for his army's retreat edge.
+    pub fn group_retreat(&mut self) -> bool {
+        let Some(l) = self.activation.active() else { return false };
+        if !self.group_order_roll() {
+            return false;
+        }
+        let edge = self.battle.units[l].retreat;
+        let (w, h) = (self.map.width as i32, self.map.height as i32);
+        let group = self.group(l);
+        self.group_step(&group, |g, u| {
+            let at = g.battle.units[u].hex;
+            Some(match edge {
+                1 => crate::hex::Hex::new(at.x, 0),
+                3 => crate::hex::Hex::new(w - 1, at.y),
+                5 => crate::hex::Hex::new(at.x, h - 1),
+                _ => crate::hex::Hex::new(0, at.y),
+            })
+        });
+        for u in group {
+            self.spend(u, false);
+        }
+        true
+    }
+
+    /// Hannibal's group attack (`FUN_00570bca`): on a good roll every unit
+    /// of the group closes on its nearest enemy, and those that reach one
+    /// attack it (🟡 the original also fires missiles where it can't).
+    pub fn group_attack(&mut self) -> bool {
+        let Some(l) = self.activation.active() else { return false };
+        if !self.group_order_roll() {
+            return false;
+        }
+        let group = self.group(l);
+        self.group_step(&group, |g, u| {
+            let (here, side) = (g.battle.units[u].hex, g.battle.units[u].side);
+            g.battle.units.iter().filter(|o| o.side != side && o.leader.is_none() && o.on_field()).map(|o| o.hex).min_by_key(|h| (h.distance(here), h.x, h.y))
+        });
+        for &u in &group {
+            let targets = self.in_front(u);
+            if let Some(&t) = targets.first() {
+                let _ = self.designate_shock(u, t);
+            }
+            self.spend(u, false);
+        }
+        true
+    }
+
+    /// Hannibal's group restore cohesion (`FUN_005715f6`): on a good roll
+    /// every unit of the group with hits tries to recover.
+    pub fn group_restore(&mut self) -> bool {
+        let Some(l) = self.activation.active() else { return false };
+        if !self.group_order_roll() {
+            return false;
+        }
+        let ini = self.battle.units[l].leader.map_or(0, |r| r.initiative);
+        for u in self.group(l) {
+            if self.battle.units[u].hits > 0 && self.battle.units[u].state == UnitState::Fighting {
+                orders::recover(&mut self.battle, &self.map, u, ini, &mut self.rng);
+                self.spend(u, true);
+            }
+        }
+        true
+    }
+
+    /// Whether the active leader may order a manipular line extension: a
+    /// Roman (in Hannibal's rules) with legionaries in his group, before any
+    /// other order.
+    pub fn can_extend_line(&self) -> bool {
+        let Some(l) = self.activation.active() else { return false };
+        self.rules == Rules::Hannibal
+            && self.battle.units[l].nation == ROMAN
+            && self.points.as_ref().is_none_or(|p| p.used == 0)
+            && !self.leader_moved
+            && self.group(l).iter().any(|&u| self.battle.units[u].legion.is_some())
+    }
+
+    /// Hannibal's manipular line extension (`FUN_0056fe45`): no roll, the
+    /// leader's whole activation. A maniple of his group whose one flank
+    /// holds a maniple of the same line and group steps into the hex on its
+    /// other flank if empty, the outermost first, so the line spreads (🟡
+    /// the original's step directions are not recovered). Returns how many
+    /// stepped.
+    pub fn extend_line(&mut self) -> usize {
+        if !self.can_extend_line() {
+            return 0;
+        }
+        let Some(l) = self.activation.active() else { return 0 };
+        let group = self.group(l);
+        let centre = {
+            let n = group.len().max(1) as i32;
+            let (sx, sy) = group.iter().fold((0, 0), |(x, y), &u| (x + self.battle.units[u].hex.x, y + self.battle.units[u].hex.y));
+            crate::hex::Hex::new(sx / n, sy / n)
+        };
+        let mut order: Vec<usize> = group.iter().copied().filter(|&u| self.battle.units[u].legion.is_some()).collect();
+        order.sort_by_key(|&u| std::cmp::Reverse(self.battle.units[u].hex.distance(centre)));
+        let mut stepped = 0;
+        for u in order {
+            let o = &self.battle.units[u];
+            if o.state != UnitState::Fighting {
+                continue;
+            }
+            let (here, facing, legion, grp) = (o.hex, o.facing, o.legion, o.group);
+            let right = crate::battle::flank(here, facing);
+            let left = crate::battle::neighbour(here, (facing as usize + 5) % 8 + 1);
+            let partner = |h: Option<crate::hex::Hex>| {
+                h.is_some_and(|h| self.battle.units.iter().any(|x| x.hex == h && x.state == UnitState::Fighting && x.legion == legion && x.group == grp))
+            };
+            let empty = |h: Option<crate::hex::Hex>| {
+                h.is_some_and(|h| crate::movement::on_map(&self.map, h) && (0..self.battle.units.len()).all(|x| !self.battle.units[x].on_field() || !self.battle.hexes(x).contains(&h)))
+            };
+            let to = if partner(left) && empty(right) {
+                right
+            } else if partner(right) && empty(left) {
+                left
+            } else {
+                None
+            };
+            if let Some(to) = to {
+                self.log.push(Happened::Moved { unit: u, path: vec![here, to], running: false });
+                self.battle.units[u].hex = to;
+                stepped += 1;
+            }
+        }
+        if let Some(p) = &mut self.points {
+            p.used = p.max;
+        }
+        for u in group {
+            self.spend(u, false);
+        }
+        stepped
     }
 
     /// Where a granted group move can take the leader: steps through the
@@ -490,9 +867,34 @@ impl Game {
         }
     }
 
-    /// Units the active leader can order.
+    /// Units the active leader can order (Hannibal's Triarii held back
+    /// by their doctrine left out).
     pub fn orderable(&self) -> Vec<usize> {
-        self.orderable_now.clone()
+        self.orderable_now.iter().copied().filter(|&u| !self.triarii_held(u)).collect()
+    }
+
+    /// Hannibal's Triarii tactical doctrine (an option, `FUN_0048c8cd`):
+    /// Triarii stay put while a Roman legion unit stands within 6 hexes of
+    /// them, unless an enemy other than elephants comes within 3.
+    pub fn triarii_held(&self, unit: usize) -> bool {
+        if self.rules != Rules::Hannibal || !self.triarii_doctrine {
+            return false;
+        }
+        let u = &self.battle.units[unit];
+        if u.nation != ROMAN || !gboh_formats::units::title(u.type_id).is_some_and(|t| t.contains("Triarii")) {
+            return false;
+        }
+        let legion_near = self.battle.units.iter().any(|o| {
+            o.side == u.side && o.state == UnitState::Fighting && o.legion.is_some() && o.hex.distance(u.hex) <= 6
+        });
+        let threat = self.battle.units.iter().any(|o| {
+            o.side != u.side
+                && o.on_field()
+                && o.leader.is_none()
+                && crate::movement::MoveClass::of_type(o.type_id) != Some(crate::movement::MoveClass::Elephant)
+                && o.hex.distance(u.hex) <= 3
+        });
+        legion_near && !threat
     }
 
     /// Designate a shock for resolution when the leader finishes.
@@ -516,11 +918,6 @@ impl Game {
             .collect()
     }
 
-    /// Designate `unit` to shock `target` (the manual's rules): the target
-    /// must be in its front; it also attacks every other enemy there not
-    /// already attacked this phase, and joins a shock already on its
-    /// target. Skirmishers cannot shock (the Agrianians can, and so can
-    /// anyone against chariots or routed units). Returns false if refused.
     /// Whether `unit` may shock `target`: in its front, and not a
     /// skirmisher attacking anything but chariots or routed units.
     pub fn can_shock(&self, unit: usize, target: usize) -> bool {
@@ -530,7 +927,7 @@ impl Game {
             return false;
         }
         let skirmisher = crate::movement::MoveClass::of_type(u.type_id) == Some(crate::movement::MoveClass::Skirmisher);
-        let soft = matches!(t.type_id, 22 | 23) || t.state == UnitState::Routed;
+        let soft = gboh_formats::units::chariot(t.type_id) || t.state == UnitState::Routed;
         self.in_front(unit).contains(&target) && !(skirmisher && u.type_id != 42 && !soft)
     }
 
@@ -539,6 +936,11 @@ impl Game {
         orders::volley(&mut self.battle.clone(), shooter, target, &mut self.rng.clone()).is_ok()
     }
 
+    /// Designate `unit` to shock `target` (the manual's rules): the target
+    /// must be in its front; it also attacks every other enemy there not
+    /// already attacked this phase, and joins a shock already on its
+    /// target. Skirmishers cannot shock (the Agrianians can, and so can
+    /// anyone against chariots or routed units). Returns false if refused.
     pub fn designate_shock(&mut self, unit: usize, target: usize) -> bool {
         if !self.can_shock(unit, target) {
             return false;
@@ -576,13 +978,17 @@ impl Game {
                 o.state = UnitState::Gone;
                 self.log.push(Happened::Eliminated { unit: u, hex: o.hex, facing: o.facing });
             }
+            // (where the routed stood, for a pursuer that fails its roll)
+            let stood: Vec<(usize, crate::hex::Hex)> = out.routed.iter().map(|&u| (u, self.battle.units[u].hex)).collect();
             for &u in &out.routed {
                 self.rout(u, 2);
             }
             if let Some((l, effect)) = out.leader {
                 self.leader_casualty(l, effect, 2);
             }
-            if let Some(h) = target_hex {
+            if self.rules == Rules::Hannibal {
+                self.pursue_or_advance(&attackers, &defenders, &stood, target_hex);
+            } else if let Some(h) = target_hex {
                 self.advance(&attackers, &defenders, h);
             }
             outcomes.push(out);
@@ -672,6 +1078,129 @@ impl Game {
         }
     }
 
+    /// Hannibal's after a shock (`FUN_004af008`'s end): for each defender
+    /// that broke (not an elephant), the first attacker of horse that held
+    /// pursues it; failing that, one attacker advances, once a shock.
+    fn pursue_or_advance(&mut self, attackers: &[(usize, bool)], defenders: &[usize], stood: &[(usize, crate::hex::Hex)], target_hex: Option<crate::hex::Hex>) {
+        use crate::movement::MoveClass;
+        let mut used = Vec::new();
+        let mut advanced = false;
+        for &(d, at) in stood {
+            let elephant = MoveClass::of_type(self.battle.units[d].type_id) == Some(MoveClass::Elephant);
+            let pursuer = (!elephant)
+                .then(|| {
+                    attackers.iter().map(|&(a, _)| a).find(|&a| {
+                        let o = &self.battle.units[a];
+                        !used.contains(&a) && o.state == UnitState::Fighting && MoveClass::of_type(o.type_id).is_some_and(|c| c.horse())
+                    })
+                })
+                .flatten();
+            match pursuer {
+                Some(p) => {
+                    used.push(p);
+                    if !self.pursue(p, d) {
+                        // a failed roll: into the hex the routed held
+                        let empty = self.battle.units.iter().all(|u| !u.on_field() || u.hex != at);
+                        if empty && !self.battle.units[p].two_hex() {
+                            self.battle.units[p].hex = at;
+                        }
+                    }
+                }
+                None if !advanced => {
+                    if let Some(h) = target_hex {
+                        self.advance(attackers, defenders, h);
+                    }
+                    advanced = true;
+                }
+                None => break,
+            }
+        }
+        if stood.is_empty()
+            && let Some(h) = target_hex
+        {
+            self.advance(attackers, defenders, h);
+        }
+    }
+
+    /// Hannibal's cavalry pursuit (`FUN_0057ef41`, `FUN_0057f86f`): a roll
+    /// of `rand() % 10` (+2 against foot) of at least 4 (heavy cavalry), 6
+    /// (Roman cavalry, lancers) or 8 (light cavalry); not from a hex in an
+    /// enemy's zone. The pursuer rides at the routed unit, stopping before
+    /// an occupied hex or in an enemy's zone; it catches it on a roll of no
+    /// more than its TQ if it ends next to it with no other enemy there.
+    /// Caught foot that fail a check at TQ 1 are eliminated (horse are
+    /// chased along their flight, 🟡 not ported). Enemy leaders next to the
+    /// pursuer at the end step away. Returns whether it pursued (false: it
+    /// may advance instead).
+    fn pursue(&mut self, p: usize, target: usize) -> bool {
+        use crate::movement::MoveClass::*;
+        let side = self.battle.units[p].side;
+        if self.battle.units[target].state == UnitState::Gone || crate::movement::in_enemy_zoc(&self.battle, &self.map, side, self.battle.units[p].hex) {
+            return true;
+        }
+        let threshold = match crate::movement::MoveClass::of_type(self.battle.units[p].type_id) {
+            Some(HeavyCavalry) => 4,
+            Some(RomanCavalry | Lancer) => 6,
+            _ => 8,
+        };
+        let t_class = crate::movement::MoveClass::of_type(self.battle.units[target].type_id);
+        let foot = !t_class.is_some_and(|c| c.horse() || matches!(c, Chariot | Elephant));
+        let roll = (self.rng.next() % 10) as i32 + if foot { 2 } else { 0 };
+        if roll < threshold {
+            return false;
+        }
+        // the way to the routed unit, one step at a time
+        let goal = self.battle.units[target].hex;
+        let mut at = self.battle.units[p].hex;
+        let mut path = Vec::new();
+        while at.distance(goal) > 1 {
+            let Some(next) = at.neighbours().into_iter().filter(|n| crate::movement::on_map(&self.map, *n)).min_by_key(|n| n.distance(goal)) else { break };
+            if next.distance(goal) >= at.distance(goal) || (0..self.battle.units.len()).any(|u| self.battle.units[u].on_field() && self.battle.hexes(u).contains(&next)) {
+                break;
+            }
+            path.push(next);
+            at = next;
+            if crate::movement::in_enemy_zoc(&self.battle, &self.map, side, next) {
+                break;
+            }
+        }
+        let tq = self.battle.units[p].tq as u32;
+        let caught = self.rng.next() % 10 <= tq
+            && at.distance(goal) == 1
+            && !at.neighbours().iter().any(|n| *n != goal && self.battle.units.iter().any(|u| u.side != side && u.state == UnitState::Fighting && u.hex == *n));
+        if let Some(&last) = path.last() {
+            let from = self.battle.units[p].hex;
+            self.log.push(Happened::Moved { unit: p, path: std::iter::once(from).chain(path.iter().copied()).collect(), running: false });
+            self.battle.units[p].hex = last;
+        }
+        if let Some(s) = at.neighbours().iter().position(|n| *n == goal)
+            && let Some(f) = [2u8, 3, 4, 6, 7, 8].into_iter().find(|&f| crate::movement::forward(f).is_some_and(|d| d.contains(&s)))
+        {
+            self.battle.units[p].facing = f;
+        }
+        if caught && foot && (self.rng.next() % 10).saturating_sub(1) != 0 {
+            let o = &mut self.battle.units[target];
+            o.state = UnitState::Gone;
+            let (hex, facing) = (o.hex, o.facing);
+            self.log.push(Happened::Eliminated { unit: target, hex, facing });
+        }
+        // enemy leaders beside the pursuer step away
+        let here = self.battle.units[p].hex;
+        let leaders: Vec<usize> = self.battle.leaders().filter(|&l| self.battle.units[l].side != side && self.battle.units[l].hex.distance(here) == 1).collect();
+        for l in leaders {
+            // (at risk: finished, then wounded on d100 25..70, killed above)
+            if crate::orders::leader_withdraw(&mut self.battle, &self.map, l, p, &mut self.rng) {
+                self.leader_casualty(l, LeaderCasualty::Finished, 0);
+                match self.rng.random() % 100 {
+                    25..70 => self.leader_casualty(l, LeaderCasualty::Wounded, 1),
+                    70.. => self.leader_casualty(l, LeaderCasualty::Killed, 1),
+                    _ => {}
+                }
+            }
+        }
+        true
+    }
+
     /// Let a script give the active leader's orders, as the original does:
     /// one `Orders for` call per order, repeated until the script calls
     /// `FinishLeader`, the leader has no points left, or a call changes
@@ -680,6 +1209,7 @@ impl Game {
     pub fn ai_orders(&mut self, machine: &mut crate::ai::Machine) -> Result<Vec<String>, crate::ai::Error> {
         let Some(l) = self.activation.active() else { return Ok(Vec::new()) };
         let name = self.battle.units[l].name.clone();
+        machine.define_groups(self.battle.units.iter().filter(|u| u.leader.is_some()).map(|u| (u.name.clone(), u.group as i32)));
         let mut log = Vec::new();
         for _ in 0..40 {
             let before = self.snapshot();
@@ -746,8 +1276,16 @@ impl Game {
                         }
                         continue;
                     }
-                    let horse = matches!(class, Some(HeavyCavalry | LightCavalry | Lancer));
+                    let horse = class.is_some_and(|c| c.horse());
                     if horse && orders::withdraw(&mut self.battle, &self.map, u, elephant, &mut self.rng) {
+                        continue;
+                    }
+                    // (Hannibal's: routed units in the way are trampled out)
+                    if o.state == UnitState::Routed && self.rules == Rules::Hannibal {
+                        let o = &mut self.battle.units[u];
+                        o.state = UnitState::Gone;
+                        let (hex, facing) = (o.hex, o.facing);
+                        self.log.push(Happened::Eliminated { unit: u, hex, facing });
                         continue;
                     }
                     if o.state == UnitState::Routed || matches!(class, Some(Chariot | Oxybeles)) {
@@ -837,6 +1375,9 @@ impl Game {
     /// End the turn: routed units flee their full movement allowance, then
     /// the armies' rout points are compared with their levels.
     pub fn end_turn(&mut self) -> Verdict {
+        if self.rules == Rules::Hannibal {
+            self.free_units();
+        }
         for u in 0..self.battle.units.len() {
             if self.battle.units[u].state == UnitState::Routed {
                 let mp = self.battle.units[u].max_mp.max(0) as u32;
@@ -851,7 +1392,57 @@ impl Game {
             u.done = false;
         }
         self.activation.turn += 1;
+        self.arrivals();
         self.verdict()
+    }
+
+    /// Hannibal's free units (`FUN_004b9302`): units with no leader (group
+    /// 0xffff) act on their own, as the computer's do: each closes on its
+    /// nearest enemy and attacks it if it can. (🟡 The original draws a
+    /// "Free Units" chit of initiative 3 among the leaders; the rewrite lets
+    /// them act at the end of the turn. Its off-map ones, entering at random,
+    /// aren't ported.)
+    fn free_units(&mut self) {
+        let free: Vec<usize> = (0..self.battle.units.len())
+            .filter(|&u| {
+                let o = &self.battle.units[u];
+                o.group == 0xffff && o.leader.is_none() && o.state == UnitState::Fighting
+            })
+            .collect();
+        if free.is_empty() {
+            return;
+        }
+        let saved = std::mem::take(&mut self.shocks);
+        self.group_step(&free, |g, u| {
+            let (here, side) = (g.battle.units[u].hex, g.battle.units[u].side);
+            g.battle.units.iter().filter(|o| o.side != side && o.leader.is_none() && o.on_field()).map(|o| o.hex).min_by_key(|h| (h.distance(here), h.x, h.y))
+        });
+        for &u in &free {
+            if let Some(&t) = self.in_front(u).first() {
+                self.designate_shock(u, t);
+            }
+        }
+        for (attackers, defenders) in std::mem::take(&mut self.shocks) {
+            let out = shock::resolve(&mut self.battle, &attackers, &defenders, &mut self.rng);
+            for &u in &out.eliminated {
+                self.battle.units[u].state = UnitState::Gone;
+            }
+            for &u in &out.routed {
+                self.rout(u, 2);
+            }
+        }
+        self.shocks = saved;
+    }
+
+    /// Units due this turn take their places on the field (🟡 the
+    /// original's counter taken to start at 0 as the rewrite's does).
+    pub fn arrivals(&mut self) {
+        let turn = self.activation.turn;
+        for u in &mut self.battle.units {
+            if u.state == UnitState::Waiting && u.arrival <= turn {
+                u.state = UnitState::Fighting;
+            }
+        }
     }
 
     /// Rout points an army has lost (units out of the battle).
@@ -869,6 +1460,9 @@ impl Game {
     /// An army that has reached its rout level withdraws. If both have, the
     /// one less far past its level wins; on a tie the Macedonians (manual).
     pub fn verdict(&self) -> Verdict {
+        if self.rules == Rules::Hannibal {
+            return self.hannibal_verdict();
+        }
         // the Macedonian army is the original's first side
         let mac = self.armies.iter().position(|a| a.0 == 2).unwrap_or(0);
         let enemy = 1 - mac;
@@ -897,6 +1491,33 @@ impl Game {
         // turn limits: the Macedonians lose if no army has broken by then
         if self.turn_limit().is_some_and(|n| self.activation.turn >= n) {
             return Verdict::Won(enemy);
+        }
+        Verdict::Continue
+    }
+
+    /// Hannibal's (`FUN_00554a2f`): the rout rule, as Alexander's (the army
+    /// less far past its level wins); Hannibal's death loses his army the
+    /// battle; and, if the option is on, a battle's last turn gives it to
+    /// the army its table names (🟡 its sides taken as home and visitor).
+    fn hannibal_verdict(&self) -> Verdict {
+        let over = |a: usize| self.rout_points(a) as i32 - self.armies[a].1 as i32;
+        match (over(0) >= 0, over(1) >= 0) {
+            (true, false) => return Verdict::Won(1),
+            (false, true) => return Verdict::Won(0),
+            (true, true) => return Verdict::Won(if over(0) < over(1) { 0 } else { 1 }),
+            (false, false) => {}
+        }
+        let hannibal = self.battle.units.iter().find(|u| u.leader.is_some() && u.state == UnitState::Gone && u.name.contains("Hannibal"));
+        if let Some(h) = hannibal {
+            let his = self.armies.iter().position(|a| a.0 == h.side).unwrap_or(0);
+            return Verdict::Won(1 - his);
+        }
+        if self.turn_limits
+            && let Some(b) = self.hannibal_battle
+            && let Some(&(last, winner)) = HANNIBAL_TURN_LIMITS.get(b)
+            && self.activation.turn >= last
+        {
+            return Verdict::Won(winner);
         }
         Verdict::Continue
     }
@@ -966,6 +1587,11 @@ mod tests {
             tq: 6,
             hits: 0,
             state: UnitState::Fighting,
+            arrival: 0,
+            elite: false,
+            superior: None,
+            link: -1,
+            legion: None,
             missile: None,
             fired: false,
             wounded: false,
@@ -979,6 +1605,13 @@ mod tests {
         let battle = Battle { units };
         let activation = Activation::new(&battle, None);
         Game {
+            triarii_doctrine: false,
+            deployment: None,
+            wind: false,
+            reliable: Vec::new(),
+            hannibal_battle: None,
+            turn_limits: false,
+            rules: Rules::Alexander,
             battle,
             battle_index: None,
             log: Vec::new(),
@@ -1031,6 +1664,36 @@ mod tests {
         // the visitor's hoplites (TQ 6) reach its level of 6
         g.battle.units[0].state = UnitState::Gone;
         assert_eq!(g.verdict(), Verdict::Won(0));
+    }
+
+    /// Hannibal's backward movement: two points at most, behind the unit,
+    /// its facing kept.
+    #[test]
+    fn hannibal_units_step_back() {
+        let hastati = gboh_formats::units::HANNIBAL + 35;
+        let mut g = game(vec![unit(hastati, 6, Hex::new(5, 5), None)]);
+        g.rules = Rules::Hannibal;
+        let back = g.backward_options(0);
+        assert!(!back.is_empty());
+        assert!(back.iter().all(|h| h.distance(Hex::new(5, 5)) <= 2));
+        // facing 3 (east): the hexes behind are to the west
+        assert!(back.iter().all(|h| h.x <= 5), "{back:?}");
+        let to = back[0];
+        g.order_backward(0, to).unwrap();
+        assert_eq!((g.battle.units[0].hex, g.battle.units[0].facing), (to, 3));
+    }
+
+    /// Hannibal's Roman leaders never fail a group order.
+    #[test]
+    fn roman_group_orders_succeed() {
+        let ratings = LeaderRatings { charisma: 0, command_range: 4, initiative: 1, personal_combat: 0 };
+        let hastati = gboh_formats::units::HANNIBAL + 35;
+        let mut g = game(vec![unit(hastati - 30, 6, Hex::new(2, 2), Some(ratings)), unit(hastati, 6, Hex::new(2, 3), None)]);
+        g.rules = Rules::Hannibal;
+        for _ in 0..20 {
+            assert_eq!(g.begin_turn(), Some(0));
+            assert!(g.group_order_roll());
+        }
     }
 
     #[test]

@@ -20,10 +20,41 @@ pub enum Missile {
     Javelin,
     Bolt,
     Stone,
+    /// Hannibal's: thrown from horseback (and elephants), by light
+    /// infantry, and the legions' pila.
+    MountedJavelin,
+    LightJavelin,
+    Pilum,
+    /// Caesar's barbarians' thrown axes.
+    Axe,
 }
 
 impl Missile {
-    pub const ALL: [Missile; 4] = [Missile::Arrow, Missile::Javelin, Missile::Bolt, Missile::Stone];
+    pub const ALL: [Missile; 8] = [
+        Missile::Arrow,
+        Missile::Javelin,
+        Missile::Bolt,
+        Missile::Stone,
+        Missile::MountedJavelin,
+        Missile::LightJavelin,
+        Missile::Pilum,
+        Missile::Axe,
+    ];
+
+    /// Caesar's missile art table's entry `k`.
+    pub fn caesar(k: u8) -> Option<Self> {
+        Some(match k {
+            0 => Missile::Arrow,
+            1 => Missile::Bolt,
+            2 => Missile::Javelin,
+            3 => Missile::Axe,
+            4 => Missile::MountedJavelin,
+            5 => Missile::LightJavelin,
+            6 => Missile::Pilum,
+            7 => Missile::Stone,
+            _ => return None,
+        })
+    }
 
     /// The EIF title of the art at full size.
     pub fn title(self) -> &'static str {
@@ -32,7 +63,16 @@ impl Missile {
             Missile::Javelin => "Javelins",
             Missile::Bolt => "Bolt",
             Missile::Stone => "Stone",
+            Missile::MountedJavelin => "Mounted Javelins",
+            Missile::LightJavelin => "Light Javelins",
+            Missile::Pilum => "Pilum Javelins",
+            Missile::Axe => "Axes",
         }
+    }
+
+    /// Whether it's a javelin of some kind.
+    pub fn javelin(self) -> bool {
+        matches!(self, Missile::Javelin | Missile::MountedJavelin | Missile::LightJavelin | Missile::Pilum | Missile::Axe)
     }
 }
 
@@ -75,6 +115,10 @@ impl DebrisSprites {
             (Missile::Bolt, cels("Arrow")),
             (Missile::Javelin, cels("Javelin")),
             (Missile::Stone, cels("Stone")),
+            (Missile::MountedJavelin, cels("Javelin")),
+            (Missile::LightJavelin, cels("Javelin")),
+            (Missile::Pilum, cels("Javelin")),
+            (Missile::Axe, cels("Javelin")),
         ];
         Self { strips }
     }
@@ -97,7 +141,7 @@ pub fn debris_offset(missile: Missile, r1: u32, r2: u32) -> (i32, i32) {
     let (w, h) = (130, 76);
     let dx = (r1 % (w / 10)) as i32 + w as i32 / 5;
     let dy = match missile {
-        Missile::Javelin => (r2 % (h / 6)) as i32 + h as i32 / 3,
+        m if m.javelin() => (r2 % (h / 6)) as i32 + h as i32 / 3,
         _ => (r2 % (h / 8)) as i32 + h as i32 / 4,
     };
     (-dx, -dy)

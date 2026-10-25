@@ -11,9 +11,15 @@ pub fn eif(dir: &Path, name: &str) -> Option<Eif> {
     Eif::parse(&std::fs::read(path).ok()?).ok()
 }
 
-/// The resources of the player's `alex.exe`, beside `DATA`.
+/// The game's executable, beside its `DATA` directory.
+pub fn exe_path(data_dir: &Path) -> Option<std::path::PathBuf> {
+    let game = gboh_formats::game::Game::detect(data_dir).unwrap_or_default();
+    data_dir.parent().and_then(|p| crate::find_ci(p, game.exe_file()))
+}
+
+/// The resources of the player's executable, beside `DATA`.
 pub fn exe_resources(data_dir: &Path) -> Option<gboh_formats::pe::Resources> {
-    let exe = data_dir.parent().and_then(|p| crate::find_ci(p, "ALEX.EXE"))?;
+    let exe = exe_path(data_dir)?;
     gboh_formats::pe::Resources::parse(&std::fs::read(exe).ok()?).ok()
 }
 
@@ -57,16 +63,21 @@ impl Font {
         Self::load_from(data_dir, "MSSANS.EIF", "Alphanumeric", '!')
     }
 
-    /// The smaller `MS8TEXT.EIF` ("MS Sans Serif 8"), close to the system
-    /// font the original's dialogs write in.
+    /// The smaller `MS8TEXT.EIF` ("MS Sans Serif 8"; Hannibal's and
+    /// Caesar's `MSSANS2.EIF`), close to the system font the original's
+    /// dialogs write in.
     pub fn small(data_dir: &Path) -> Self {
         // its 93 glyphs run from `!` with both brackets in the one glyph of
         // `(` and none for `)`; drawn in the palette's darkest colour, as the
         // original's dialogs write in black
-        let ink = crate::find_ci(data_dir, "GAME.PAL")
+        let ink = crate::palette_path(data_dir)
             .and_then(|p| std::fs::read(p).ok())
             .and_then(|d| gboh_formats::pal::Palette::parse(&d).ok())
             .and_then(|pal| (1..=255u8).min_by_key(|&i| pal.colors[i as usize].iter().map(|&c| c as u32).sum::<u32>()));
+        // Hannibal and Caesar have instead "MS Sans Serif 2", whole
+        if crate::find_ci(data_dir, "MS8TEXT.EIF").is_none() {
+            return Self { ink, ..Self::load_from(data_dir, "MSSANS2.EIF", "Alphanumeric", '!') };
+        }
         let mut font = Self { ink, missing: Some(')'), ..Self::load_from(data_dir, "MS8TEXT.EIF", "Strip #1", '!') };
         // split the bracket glyph into `(` and `)`
         if let Some((both, base)) = font.glyphs.get(('(' as usize) - ('!' as usize)).cloned() {
@@ -79,6 +90,11 @@ impl Font {
             font.brackets = Some((half(0, mid), half(mid, both.width)));
         }
         font
+    }
+
+    /// The font drawn in palette index `ink`.
+    pub fn in_ink(self, ink: u8) -> Self {
+        Self { ink: Some(ink), ..self }
     }
 
     fn load_from(data_dir: &Path, file: &str, strip_name: &str, first: char) -> Self {

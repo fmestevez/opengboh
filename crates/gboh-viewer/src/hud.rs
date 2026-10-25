@@ -38,6 +38,12 @@ pub enum Tool {
     TileHorizontal,
     Cascade,
     Undo,
+    /// Hannibal's: close the game, the leader's group move, manipular line
+    /// extension, a unit's backward movement.
+    CloseGame,
+    GroupMove,
+    LineExtension,
+    BackwardMovement,
 }
 
 /// The buttons: which, their art (file and strip) and the x of their
@@ -96,6 +102,77 @@ const TIPS: [(Tool, u32, u32, u32); 20] = [
 const SHOW_OVERVIEW: (u32, u32) = (0x621b64, 0x621b52);
 const GRID_OFF: (u32, u32) = (0x621c0b, 0x621bf5);
 
+/// Hannibal's toolbar (its set-up builds it in this order, separators
+/// between the groups; 🟡 the x positions follow Alexander's spacing).
+const HANNIBAL_TOOLBAR: [(Tool, &str, &str, i32); 24] = [
+    (Tool::CloseGame, "BUTTONS3.EIF", "GameClose", 17),
+    (Tool::FinishLeader, "BUTTONS3.EIF", "NextPhase", 45),
+    (Tool::CenterOnLeader, "BUTTONS2.EIF", "CenterOnLeader", 69),
+    (Tool::GroupMove, "BUTTONS3.EIF", "GroupMove", 93),
+    (Tool::LineExtension, "BUTTONS3.EIF", "MLE", 117),
+    (Tool::RotateLeft, "BUTTONS1.EIF", "RotateCounterClockwise", 145),
+    (Tool::RotateRight, "BUTTONS1.EIF", "RotateClockwise", 169),
+    (Tool::AboutFace, "BUTTONS3.EIF", "AboutFace", 193),
+    (Tool::BackwardMovement, "BUTTONS3.EIF", "BackwardMovement", 217),
+    (Tool::MissileVolley, "BUTTONS1.EIF", "MissleVolley", 241),
+    (Tool::RestoreCohesion, "BUTTONS1.EIF", "RestoreCohesion", 265),
+    (Tool::Rally, "BUTTONS1.EIF", "Rally", 289),
+    (Tool::UnitDetails, "BUTTONS3.EIF", "ViewUnitDetails", 313),
+    (Tool::OpenMap, "BUTTONS2.EIF", "MapOpen", 341),
+    (Tool::Overview, "BUTTONS2.EIF", "HideOverview", 365),
+    (Tool::HexGrid, "BUTTONS3.EIF", "ShowHexGridOn", 389),
+    (Tool::ReverseView, "BUTTONS3.EIF", "Rotate180", 413),
+    (Tool::ZoomIn, "BUTTONS2.EIF", "ZoomIn", 441),
+    (Tool::ZoomNormal, "BUTTONS2.EIF", "ZoomOut", 465),
+    (Tool::ZoomOut, "BUTTONS2.EIF", "ZoomOut2", 489),
+    (Tool::TileVertical, "BUTTONS2.EIF", "TileVertical", 517),
+    (Tool::TileHorizontal, "BUTTONS2.EIF", "TileHorizontal", 541),
+    (Tool::Cascade, "BUTTONS2.EIF", "Cascade", 565),
+    (Tool::Undo, "BUTTONS3.EIF", "Undo", 593),
+];
+
+/// Where Hannibal's buttons' texts lie in `hannibal.exe` (as [`TIPS`]).
+const HANNIBAL_TIPS: [(Tool, u32, u32, u32); 24] = [
+    (Tool::CloseGame, 0x63043a, 0x630477, 0x630444),
+    (Tool::FinishLeader, 0x63049e, 0x6304d3, 0x6304a8),
+    (Tool::CenterOnLeader, 0x630500, 0x630535, 0x63050f),
+    (Tool::GroupMove, 0x630568, 0x6305a6, 0x630572),
+    (Tool::LineExtension, 0x6305cd, 0x6305cd, 0x6305d1),
+    (Tool::RotateLeft, 0x63060c, 0x63064e, 0x630623),
+    (Tool::RotateRight, 0x630690, 0x6306c3, 0x6306a0),
+    (Tool::AboutFace, 0x6306f6, 0x630711, 0x630700),
+    (Tool::BackwardMovement, 0x630738, 0x630771, 0x630749),
+    (Tool::MissileVolley, 0x6307a6, 0x6307dd, 0x6307b3),
+    (Tool::RestoreCohesion, 0x63080c, 0x630847, 0x63081c),
+    (Tool::Rally, 0x630878, 0x630896, 0x63087e),
+    (Tool::UnitDetails, 0x6308bd, 0x6308ed, 0x6308cd),
+    (Tool::OpenMap, 0x630913, 0x63092b, 0x63091b),
+    (Tool::Overview, 0x63094e, 0x63096d, 0x63095b),
+    (Tool::HexGrid, 0x6309d1, 0x6309f4, 0x6309df),
+    (Tool::ReverseView, 0x630a52, 0x630a77, 0x630a5c),
+    (Tool::ZoomIn, 0x630aa2, 0x630ab9, 0x630aa9),
+    (Tool::ZoomNormal, 0x630ada, 0x630b01, 0x630ae2),
+    (Tool::ZoomOut, 0x630b22, 0x630b3c, 0x630b2b),
+    (Tool::TileVertical, 0x630b63, 0x630b8c, 0x630b70),
+    (Tool::TileHorizontal, 0x630bb9, 0x630be6, 0x630bc8),
+    (Tool::Cascade, 0x630c17, 0x630c33, 0x630c1f),
+    (Tool::Undo, 0x630c54, 0x630c54, 0x630c59),
+];
+const HANNIBAL_SHOW_OVERVIEW: (u32, u32) = (0x6309b5, 0x6309a3);
+const HANNIBAL_GRID_OFF: (u32, u32) = (0x630a3b, 0x630a25);
+
+/// A toolbar: its buttons with their art and places, and where their texts
+/// lie in the executable (with the overview's and grid's other ones).
+#[derive(Clone, Copy)]
+struct Toolbar {
+    buttons: &'static [(Tool, &'static str, &'static str, i32)],
+    tips: &'static [(Tool, u32, u32, u32)],
+    other: [(u32, u32); 2],
+}
+
+const ALEXANDER_TOOLBAR: Toolbar = Toolbar { buttons: &TOOLBAR, tips: &TIPS, other: [SHOW_OVERVIEW, GRID_OFF] };
+const HANNIBAL_TOOLBAR_SET: Toolbar = Toolbar { buttons: &HANNIBAL_TOOLBAR, tips: &HANNIBAL_TIPS, other: [HANNIBAL_SHOW_OVERVIEW, HANNIBAL_GRID_OFF] };
+
 /// Heights of the toolbar and the status bar.
 pub const TOOLBAR_HEIGHT: i32 = 30;
 pub const STATUS_HEIGHT: i32 = 50;
@@ -105,6 +182,8 @@ pub const TOOLBAR_TOP: i32 = crate::menu::MENU_HEIGHT;
 pub const TOP: i32 = TOOLBAR_TOP + TOOLBAR_HEIGHT;
 
 pub struct Hud {
+    /// The game's toolbar.
+    toolbar: Toolbar,
     /// Where the left button is held down (window pixels), if it is: a
     /// button under it is drawn pressed.
     pub pressed: std::cell::Cell<Option<(i32, i32)>>,
@@ -344,21 +423,35 @@ const MAP_IN_SCROLL: (i32, i32) = (30, 26);
 impl Hud {
     pub fn new(data_dir: &Path) -> Self {
         let files: Vec<_> = ["BUTTONS1.EIF", "BUTTONS2.EIF", "BUTTONS3.EIF"].iter().map(|f| (*f, eif(data_dir, f))).collect();
-        let buttons = TOOLBAR
+        // (Caesar's: Hannibal's for now 🟡)
+        let toolbar = if gboh_formats::game::Game::detect(data_dir).is_some_and(|g| g != gboh_formats::game::Game::Alexander) { HANNIBAL_TOOLBAR_SET } else { ALEXANDER_TOOLBAR };
+        let buttons = toolbar
+            .buttons
             .iter()
-            .map(|&(_, file, strip, _)| files.iter().find(|(f, _)| *f == file).map_or_else(Vec::new, |(_, e)| cels(e, strip)))
+            .map(|&(_, file, strip, _)| {
+                files.iter().find(|(f, _)| *f == file).map_or_else(Vec::new, |(_, e)| {
+                    cels(e, strip)
+                })
+            })
             .collect();
         Self {
+            toolbar,
             pressed: std::cell::Cell::new(None),
             tooltip: std::cell::RefCell::new(None),
             tips: Vec::new(),
             other_tips: Default::default(),
-            font: Font::load(data_dir),
+            // (Hannibal's glyphs are pale in its palette: drawn in its
+            // darkest colour, as the small font is)
+            font: match Font::small(data_dir).ink() {
+                Some(ink) if gboh_formats::game::Game::detect(data_dir).is_some_and(|g| g != gboh_formats::game::Game::Alexander) => Font::load(data_dir).in_ink(ink),
+                _ => Font::load(data_dir),
+            },
             small: Font::small(data_dir),
             marble: first(&eif(data_dir, "BACKGND.EIF"), "Blocks"),
             slider: cels(&eif(data_dir, "SLIDER.EIF"), "Horizontal"),
             buttons,
-            bar: cels(&eif(data_dir, "ALEXSB.EIF"), "sbArt"),
+            // (Hannibal's and Caesar's: `STATBAR.EIF`)
+            bar: Some(cels(&eif(data_dir, "ALEXSB.EIF"), "sbArt")).filter(|c| !c.is_empty()).unwrap_or_else(|| cels(&eif(data_dir, "STATBAR.EIF"), "sbArt")),
             details_art: first(&eif(data_dir, "DIALOG.EIF"), "Unit Overview"),
             results_art: first(&eif(data_dir, "DIALOG.EIF"), "Combat Results"),
             overall_art: first(&eif(data_dir, "DIALOG.EIF"), "Overall Combat Results"),
@@ -376,12 +469,12 @@ impl Hud {
                 .unwrap_or_default(),
             end_dialog: None,
             army_dialog: None,
-            remap: crate::find_ci(data_dir, "GAME.PAL")
+            remap: crate::palette_path(data_dir)
                 .and_then(|p| std::fs::read(p).ok())
                 .and_then(|d| gboh_formats::pal::Palette::parse(&d).ok())
                 .and_then(|p| p.remap.try_into().ok())
                 .unwrap_or([std::array::from_fn(|i| i as u8); 5]),
-            pale_yellow: crate::find_ci(data_dir, "GAME.PAL")
+            pale_yellow: crate::palette_path(data_dir)
                 .and_then(|p| std::fs::read(p).ok())
                 .and_then(|d| gboh_formats::pal::Palette::parse(&d).ok())
                 .and_then(|p| (1..=255u8).min_by_key(|&i| {
@@ -416,7 +509,7 @@ impl Hud {
     /// The executable's strings and the details window's layout (from
     /// `alex.exe` beside `DATA`).
     fn with_exe(mut self, data_dir: &Path) -> Self {
-        let exe = data_dir.parent().and_then(|p| crate::find_ci(p, "ALEX.EXE")).and_then(|p| std::fs::read(p).ok());
+        let exe = crate::ui::exe_path(data_dir).and_then(|p| std::fs::read(p).ok());
         self.strings = exe.and_then(|d| gboh_formats::pe::Resources::parse(&d).ok());
         self.details_dialog = self.strings.as_ref().and_then(|r| r.dialog("VIEWUNIT"));
         self.results_dialog = self.strings.as_ref().and_then(|r| r.dialog("SHOWCOMBATRESULTS"));
@@ -426,12 +519,14 @@ impl Hud {
         self.end_dialog = self.strings.as_ref().and_then(|r| r.dialog("ENDOFGAMEDLG"));
         // the toolbar's texts, if the executable is the version they are
         // known in
-        if let Some(d) = data_dir.parent().and_then(|p| crate::find_ci(p, "ALEX.EXE")).and_then(|p| std::fs::read(p).ok()) {
+        if let Some(d) = crate::ui::exe_path(data_dir).and_then(|p| std::fs::read(p).ok()) {
             let at = |va: u32| gboh_formats::pe::string_at(&d, va).unwrap_or_default();
-            let known = TOOLBAR.iter().zip(TIPS).all(|(&(tool, _, cel, _), (t, name, _, _))| tool == t && at(name) == cel);
+            let tb = self.toolbar;
+            let known = tb.buttons.iter().zip(tb.tips).all(|(&(tool, _, cel, _), &(t, name, _, _))| tool == t && at(name) == cel);
             if known {
-                self.tips = TIPS.iter().map(|&(t, _, short, long)| (t, at(short), at(long))).collect();
-                self.other_tips = [(at(SHOW_OVERVIEW.0), at(SHOW_OVERVIEW.1)), (at(GRID_OFF.0), at(GRID_OFF.1))];
+                self.tips = tb.tips.iter().map(|&(t, _, short, long)| (t, at(short), at(long))).collect();
+                let [show, off] = tb.other;
+                self.other_tips = [(at(show.0), at(show.1)), (at(off.0), at(off.1))];
             }
         }
         self
@@ -1215,7 +1310,7 @@ impl Hud {
     /// The toolbar button at `(x, y)` (window pixels at one battlefield
     /// pixel each).
     pub fn tool_at(&self, x: i32, y: i32) -> Option<Tool> {
-        TOOLBAR.iter().find(|&&(_, _, _, cx)| (x - cx).abs() < 12 && (TOOLBAR_TOP + 4..TOOLBAR_TOP + 26).contains(&y)).map(|t| t.0)
+        self.toolbar.buttons.iter().find(|&&(_, _, _, cx)| (x - cx).abs() < 12 && (TOOLBAR_TOP + 4..TOOLBAR_TOP + 26).contains(&y)).map(|t| t.0)
     }
 
     /// The bars for a `width` × `height` window: buttons that `enabled`
@@ -1279,7 +1374,7 @@ impl Hud {
                 }
             }
         }
-        for (&(tool, _, _, cx), cels) in TOOLBAR.iter().zip(&self.buttons) {
+        for (&(tool, _, _, cx), cels) in self.toolbar.buttons.iter().zip(&self.buttons) {
             // up, down, disabled, disabled down
             let down = self.held((cx - 12, TOOLBAR_TOP + 4, 24, 22)) as usize;
             if let Some(c) = cels.get(if enabled(tool) { 0 } else { 2 } + down) {
@@ -1441,7 +1536,7 @@ mod tests {
             let ((_, _, _, _), (tx, ty, _, _)) = Hud::reader_place(640, 480);
             let link_row = ty + 2 + LIST_LINE * (hud.reader_lines(&reader, 640, 480).iter().position(|(_, p)| *p == Some(2)).unwrap() as i32) + 3;
             assert_eq!(hud.reader_at(&reader, 640, 480, tx + 10, link_row), Some(ReaderClick::Link(3)));
-            let prefs = crate::prefs::Prefs { combat_animation: false, ..Default::default() }.dialog();
+            let prefs = crate::prefs::Prefs { combat_animation: false, ..Default::default() }.dialog(gboh_formats::game::Game::Alexander);
             for (k, p) in [&missile, &momentum, &files, &prefs].into_iter().enumerate() {
                 let c = hud.canvas(ww, wh, |_| true, ["", "", ""], None, None, None, None, &[], None, None, Some(p), None);
                 if let Ok(out) = std::env::var("GBOH_SHOTS") {

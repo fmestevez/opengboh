@@ -207,7 +207,7 @@ impl Layout {
     }
 
     pub fn shifted(r: usize) -> bool {
-        r % 2 == 0
+        r.is_multiple_of(2)
     }
 
     /// Space above row 0: five elevation levels plus room for the tallest
@@ -472,21 +472,23 @@ impl Painter<'_> {
             let low = self.elev(ll);
             halves[0] = Some(if raised(left) { (low, z - low + 1, -step) } else { (low, z - low, 0) });
             // shifted rows have no lower-right neighbour in the last column
-            if Layout::shifted(r) && c == self.layout.cols - 1 {
-                if let Some(t) = two_down {
-                    let low = low.min(self.elev(t));
-                    halves[1] = Some((low, z - low, 0));
-                }
+            if Layout::shifted(r)
+                && c == self.layout.cols - 1
+                && let Some(t) = two_down
+            {
+                let low = low.min(self.elev(t));
+                halves[1] = Some((low, z - low, 0));
             }
         }
         if let Some(lr) = lr {
             let low = self.elev(lr);
             halves[1] = Some(if raised(right) { (low, z - low + 1, -step) } else { (low, z - low, 0) });
-            if Layout::shifted(r) && c == 0 {
-                if let Some(t) = two_down {
-                    let low = low.min(self.elev(t));
-                    halves[0] = Some((low, z - low, 0));
-                }
+            if Layout::shifted(r)
+                && c == 0
+                && let Some(t) = two_down
+            {
+                let low = low.min(self.elev(t));
+                halves[0] = Some((low, z - low, 0));
             }
         }
         // the original draws the right half first

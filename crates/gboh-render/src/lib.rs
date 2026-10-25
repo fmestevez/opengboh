@@ -6,6 +6,7 @@
 //! data and sprites into pixels.
 
 pub mod battlefield;
+pub mod hanland;
 pub mod missiles;
 pub mod objects;
 pub mod runaways;
@@ -33,6 +34,20 @@ impl From<Image> for Sprite {
 pub fn strip(eif: &Eif, name: &str) -> Option<Vec<Sprite>> {
     let s = eif.strips.iter().find(|s| s.name == name)?;
     s.cels.iter().map(|c| c.decode().ok().map(Sprite::from)).collect()
+}
+
+/// As [`strip`], the RLE cels' effect pixels (stored without colours)
+/// made shadow pixels (index 255): Hannibal's shading cels are drawn so.
+pub fn strip_with_shadows(eif: &Eif, name: &str) -> Option<Vec<Sprite>> {
+    let s = eif.strips.iter().find(|s| s.name == name)?;
+    s.cels
+        .iter()
+        .map(|c| {
+            let img = c.decode().ok()?;
+            let pixels = img.pixels.iter().zip(&img.effect).map(|(&p, &e)| if p == 0 && e != 0 { 255 } else { p }).collect();
+            Some(Sprite { width: img.width, height: img.height, pixels })
+        })
+        .collect()
 }
 
 /// An 8-bit indexed framebuffer.
@@ -139,9 +154,16 @@ const WATER_FRAMES: [[(u8, [u8; 3]); 5]; 4] = {
     ]
 };
 
-/// Apply frame `frame` (mod 4) of the battle water animation to `pal`.
-pub fn animate_water(pal: &mut Palette, frame: usize) {
-    for &(i, rgb) in &WATER_FRAMES[frame % 4] {
+/// Apply frame `frame` (mod 4) of `game`'s battle water animation to
+/// `pal`: Hannibal and Caesar cycle the same colours through indices
+/// 41..=45 (in the order of Alexander's 202, 205, 207, 208, 210).
+pub fn animate_water(pal: &mut Palette, frame: usize, game: gboh_formats::game::Game) {
+    use gboh_formats::game::Game;
+    for (k, &(i, rgb)) in WATER_FRAMES[frame % 4].iter().enumerate() {
+        let i = match game {
+            Game::Alexander => i,
+            Game::Hannibal | Game::Caesar => 41 + k as u8,
+        };
         pal.colors[i as usize] = rgb;
     }
 }

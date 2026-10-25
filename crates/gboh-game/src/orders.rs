@@ -8,6 +8,9 @@ use crate::movement::{MoveClass, arc, path_to, reachable};
 use gboh_formats::crt::BorlandRand;
 use gboh_formats::map::Map;
 
+/// Hannibal's map code for a tower (Baecula's camp).
+const TOWER: u16 = 14;
+
 /// Why an order was refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refused {
@@ -149,12 +152,14 @@ pub fn move_to(battle: &mut Battle, map: &Map, unit: usize, to: Hex, rng: &mut B
         battle.units[unit].mp = mp - costs[&h];
         battle.units[unit].hex = h;
         battle.units[unit].hits += terrain_hits(battle, map, unit, from, h);
-        for s in reacting(battle, unit) {
+        for s in reacting(battle, map, unit) {
             let class = MoveClass::of_type(battle.units[unit].type_id).unwrap_or(MoveClass::HeavyInfantry);
             let Some((weapon, left)) = battle.units[s].missile else { continue };
             battle.units[s].missile = Some((weapon, left - 1));
-            let cat = matches!(battle.units[unit].type_id, 41 | 44);
-            let r = Volley::reaction(weapon, class, cat).resolve(rng.next() % 10);
+            let cat = gboh_formats::units::cataphract(battle.units[unit].type_id);
+            // (Hannibal's die on `random()`)
+            let roll = if battle.hannibal() { rng.random() } else { rng.next() } % 10;
+            let r = Volley::reaction(weapon, class, cat).resolve(roll);
             battle.units[unit].hits += r.hits;
             moved.fire.push((s, r.hits));
         }
@@ -213,7 +218,7 @@ pub fn terrain_hits(battle: &Battle, map: &Map, unit: usize, from: Hex, to: Hex)
     let Some(class) = MoveClass::of_type(u.type_id) else { return 0 };
     let group = match class {
         Skirmisher => 1,
-        HeavyCavalry | Lancer | LightCavalry => 2,
+        HeavyCavalry | RomanCavalry | Lancer | LightCavalry => 2,
         Elephant => 3,
         Chariot => 4,
         _ => 0,
@@ -300,7 +305,8 @@ fn withdrawers(battle: &Battle, map: &Map, mover: usize) -> (Vec<usize>, Vec<usi
     use MoveClass::*;
     let m = &battle.units[mover];
     let m_class = MoveClass::of_type(m.type_id);
-    let m_horse = matches!(m_class, Some(HeavyCavalry | Lancer | LightCavalry));
+    let m_horse = matches!(m_class, Some(HeavyCavalry | RomanCavalry | Lancer | LightCavalry));
+    let hannibal = battle.hannibal();
     let (mut units, mut leaders) = (Vec::new(), Vec::new());
     let near: Vec<Hex> = battle.hexes(mover).iter().flat_map(|h| h.neighbours()).collect();
     for n in near {
@@ -320,6 +326,8 @@ fn withdrawers(battle: &Battle, map: &Map, mover: usize) -> (Vec<usize>, Vec<usi
                 continue;
             }
             let eligible = match MoveClass::of_type(o.type_id) {
+                // Hannibal's: horse withdraw only before foot
+                Some(HeavyCavalry | RomanCavalry | LightCavalry | Lancer) if hannibal => !m_horse,
                 Some(HeavyCavalry | LightCavalry) => true,
                 Some(Lancer) => !m_horse,
                 Some(Skirmisher) => matches!(m_class, Some(HeavyInfantry | Phalanx)),
@@ -359,8 +367,7 @@ pub fn withdraw(battle: &mut Battle, map: &Map, unit: usize, mover: usize, rng: 
     let u = &battle.units[unit];
     let class = MoveClass::of_type(u.type_id).unwrap_or(MoveClass::HeavyInfantry);
     let tq = u.tq as i32;
-    if matches!(class, MoveClass::HeavyCavalry | MoveClass::Lancer | MoveClass::LightCavalry)
-        && MoveClass::of_type(battle.units[mover].type_id) == Some(MoveClass::Elephant)
+    if class.horse() && MoveClass::of_type(battle.units[mover].type_id) == Some(MoveClass::Elephant)
     {
         let r = (rng.next() % 10) as i32;
         let hits = ((r - tq).max(0) - tq).max(1);
@@ -431,7 +438,7 @@ pub fn withdraw(battle: &mut Battle, map: &Map, unit: usize, mover: usize, rng: 
 /// combat units (oxybeles none), rolled with `random() % 100`. Returns
 /// whether he must roll for a casualty. (🟡 the original takes the highest
 /// risk along his way; the rewrite the approacher's.)
-fn leader_withdraw(battle: &mut Battle, map: &Map, leader: usize, mover: usize, rng: &mut BorlandRand) -> bool {
+pub(crate) fn leader_withdraw(battle: &mut Battle, map: &Map, leader: usize, mover: usize, rng: &mut BorlandRand) -> bool {
     let from = battle.units[mover].hex;
     let points = battle.units[leader].max_mp.max(1);
     let to = crate::movement::leader_moves(battle, map, leader, points).into_iter().max_by_key(|h| h.distance(from));
@@ -439,7 +446,7 @@ fn leader_withdraw(battle: &mut Battle, map: &Map, leader: usize, mover: usize, 
         battle.units[leader].hex = to;
     }
     let risk = match MoveClass::of_type(battle.units[mover].type_id) {
-        Some(MoveClass::HeavyCavalry | MoveClass::Lancer | MoveClass::LightCavalry) => 90,
+        Some(c) if c.horse() => 90,
         Some(MoveClass::Oxybeles) | None => 0,
         Some(_) => 60,
     };
@@ -447,8 +454,12 @@ fn leader_withdraw(battle: &mut Battle, map: &Map, leader: usize, mover: usize, 
 }
 
 /// Enemy missile units that react to `unit` standing where it is.
-fn reacting(battle: &Battle, unit: usize) -> Vec<usize> {
+fn reacting(battle: &Battle, map: &Map, unit: usize) -> Vec<usize> {
     let u = &battle.units[unit];
+    // Hannibal's: a unit on a tower (hex code 14) fires all round
+    let tower = |s: &crate::battle::Unit| {
+        battle.hannibal() && s.hex.x >= 0 && s.hex.y >= 0 && map.hex_features(s.hex.x as usize, s.hex.y as usize).contains(&TOWER) && s.hex.distance(u.hex) == 1
+    };
     battle
         .units
         .iter()
@@ -457,7 +468,7 @@ fn reacting(battle: &Battle, unit: usize) -> Vec<usize> {
             s.side != u.side
                 && s.state == UnitState::Fighting
                 && s.missile.is_some_and(|(_, n)| n > 0)
-                && arc(s.hex, s.facing, 1).contains(&u.hex)
+                && (arc(s.hex, s.facing, 1).contains(&u.hex) || tower(s))
         })
         .map(|(i, _)| i)
         .collect()
@@ -487,7 +498,7 @@ pub fn volley(battle: &mut Battle, shooter: usize, target: usize, rng: &mut Borl
         target: class,
         from_front: arc(t.hex, t.facing, 1).contains(&s.hex),
         moved: s.mp < s.max_mp,
-        target_cataphract: matches!(t.type_id, 41 | 44),
+        target_cataphract: gboh_formats::units::cataphract(t.type_id),
     };
     let hits = v.resolve(rng.next() % 10).hits;
     battle.units[shooter].missile = Some((weapon, left - 1));
@@ -522,7 +533,8 @@ pub fn recover(battle: &mut Battle, map: &Map, unit: usize, initiative: u16, rng
     let mut roll = (rng.next() % 100) as i32;
     let u = &battle.units[unit];
     if crate::movement::in_enemy_zoc(battle, map, u.side, u.hex) {
-        roll -= 40;
+        // (Hannibal's: 60)
+        roll -= if battle.hannibal() { 60 } else { 40 };
     }
     let roll = roll.max(0);
     let mut total = 0;
@@ -543,10 +555,15 @@ pub fn recover(battle: &mut Battle, map: &Map, unit: usize, initiative: u16, rng
 /// done for the turn. Returns the units replenished.
 pub fn resupply(battle: &mut Battle, units: &[usize], rng: &mut BorlandRand) -> Vec<usize> {
     use crate::missile::Weapon;
+    let hannibal = battle.hannibal();
     let mut out = Vec::new();
     for &u in units {
         let o = &battle.units[u];
         if o.state != UnitState::Fighting || o.done || o.mp < o.max_mp {
+            continue;
+        }
+        // (Hannibal's legions throw their one pilum and get no more)
+        if MoveClass::of_type(o.type_id) == Some(MoveClass::Legion) {
             continue;
         }
         if let Some((w, 0)) = o.missile {
@@ -554,7 +571,8 @@ pub fn resupply(battle: &mut Battle, units: &[usize], rng: &mut BorlandRand) -> 
             let o = &mut battle.units[u];
             o.missile = Some((w, (rng.random() % n) as u16));
             o.done = true;
-            o.reordered = true;
+            // (in Hannibal's rules resupplying isn't an order)
+            o.reordered = !hannibal;
             out.push(u);
         }
     }
@@ -641,6 +659,11 @@ mod tests {
             tq: 6,
             hits: 0,
             state: crate::battle::UnitState::Fighting,
+            arrival: 0,
+            elite: false,
+            superior: None,
+            link: -1,
+            legion: None,
             missile: None,
             fired: false,
             wounded: false,

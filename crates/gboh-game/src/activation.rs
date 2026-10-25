@@ -46,7 +46,17 @@ pub struct Activation {
     /// Successful momentum attempts by the current leader.
     momentum: u8,
     elite_uses: u16,
+    /// Hannibal's rules (elite initiative for any leader so marked, the
+    /// superior chain); and at Trasimene its Romans sit out the first turn.
+    hannibal: bool,
+    pub romans_idle_first_turn: bool,
 }
+
+/// Hannibal's: the computer's leaders take an elite initiative on later
+/// turns with this percent chance (the original's table: 40 for every
+/// battle).
+const HANNIBAL_ELITE_CHANCE: u32 = 40;
+const ROMAN: u8 = 6;
 
 impl Activation {
     pub fn new(battle: &Battle, battle_index: Option<usize>) -> Self {
@@ -59,6 +69,8 @@ impl Activation {
             current: None,
             momentum: 0,
             elite_uses: 0,
+            hannibal: battle.hannibal(),
+            romans_idle_first_turn: false,
         }
     }
 
@@ -92,8 +104,12 @@ impl Activation {
         self.done.iter_mut().for_each(|d| *d = false);
         self.current = None;
         self.momentum = 0;
-        if let Some(i) = self.elite(battle, rng) {
-            self.elite_uses = if self.turn == 0 { 1 } else { self.elite_uses + 1 };
+        if self.hannibal {
+            self.idle(battle);
+        }
+        let elite = if self.hannibal { self.hannibal_elite(battle, rng) } else { self.elite(battle, rng) };
+        if let Some(i) = elite {
+            self.elite_uses = if self.turn == 0 && !self.hannibal { 1 } else { self.elite_uses + 1 };
             self.done[i] = true;
             self.current = Some(i);
             return self.active();
@@ -117,6 +133,56 @@ impl Activation {
         self.leaders.iter().position(|&u| battle.units[u].name.contains(name))
     }
 
+    /// Hannibal's leaders who can't go this turn are counted as gone: those
+    /// not on the field (not arrived, or out), and at Trasimene the Romans
+    /// on the first turn.
+    fn idle(&mut self, battle: &Battle) {
+        for (i, &l) in self.leaders.iter().enumerate() {
+            let u = &battle.units[l];
+            if !u.on_field() || (self.romans_idle_first_turn && self.turn == 0 && u.nation == ROMAN) {
+                self.done[i] = true;
+            }
+        }
+    }
+
+    /// Hannibal's elite initiative (`FUN_00554496`): one of the leaders so
+    /// marked, at random, three times a battle at most; on the first turn
+    /// always, his chain of superiors followed to the top; later with
+    /// [`HANNIBAL_ELITE_CHANCE`] (🟡 a player is never asked: the rewrite
+    /// treats every leader as the computer's).
+    fn hannibal_elite(&self, battle: &Battle, rng: &mut BorlandRand) -> Option<usize> {
+        if self.elite_uses >= ELITE_USES {
+            return None;
+        }
+        let candidates: Vec<usize> = (0..self.leaders.len()).filter(|&i| !self.done[i] && battle.units[self.leaders[i]].elite).collect();
+        if candidates.is_empty() {
+            return None;
+        }
+        let pick = candidates[rng.random() as usize % candidates.len()];
+        if self.turn == 0 {
+            return Some(self.top_of_chain(battle, pick));
+        }
+        (rng.random() % 100 < HANNIBAL_ELITE_CHANCE).then_some(pick)
+    }
+
+    /// Up leader `i`'s chain of superiors to the last who hasn't gone this
+    /// turn.
+    fn top_of_chain(&self, battle: &Battle, mut i: usize) -> usize {
+        for _ in 0..self.leaders.len() {
+            let Some(s) = battle.units[self.leaders[i]].superior.and_then(|u| self.leaders.iter().position(|&l| l == u)) else { break };
+            if self.done[s] {
+                break;
+            }
+            i = s;
+        }
+        i
+    }
+
+    /// Whether the active leader is going again on momentum.
+    pub fn in_momentum(&self) -> bool {
+        self.momentum > 0
+    }
+
     /// Whether the active leader may still try for momentum (twice at most).
     pub fn momentum_left(&self) -> bool {
         self.current.is_some() && self.momentum < 2
@@ -138,6 +204,9 @@ impl Activation {
             }
         }
         self.momentum = 0;
+        if self.hannibal {
+            self.idle(battle);
+        }
         self.draw(battle, rng)
     }
 
@@ -154,6 +223,8 @@ impl Activation {
             }
             let w = initiative(battle, self.leaders[i]);
             if below <= roll && roll < below + w {
+                // (Hannibal's: a leader's superior goes first if he hasn't)
+                let i = if self.hannibal { self.top_of_chain(battle, i) } else { i };
                 self.done[i] = true;
                 self.current = Some(i);
                 return self.active();
@@ -194,6 +265,11 @@ mod tests {
             tq: 6,
             hits: 0,
             state: crate::battle::UnitState::Fighting,
+            arrival: 0,
+            elite: false,
+            superior: None,
+            link: -1,
+            legion: None,
             missile: None,
             fired: false,
             wounded: false,

@@ -25,6 +25,11 @@ pub struct Prefs {
     pub music_volume: u16,
     /// "Never show this again" ticked on the missile results.
     pub quiet_missiles: bool,
+    /// Hannibal's: the Triarii tactical doctrine, the group command
+    /// confirmation, and sparse trees.
+    pub triarii: bool,
+    pub confirm_group: bool,
+    pub sparse_trees: bool,
 }
 
 impl Default for Prefs {
@@ -42,6 +47,9 @@ impl Default for Prefs {
             volume: 5000,
             music_volume: 5000,
             quiet_missiles: false,
+            triarii: true,
+            confirm_group: true,
+            sparse_trees: false,
         }
     }
 }
@@ -50,7 +58,7 @@ impl Default for Prefs {
 type Flag = fn(&mut Prefs) -> &mut bool;
 
 /// The dialog's check boxes (control ids) and the preference each sets.
-const BOXES: [(u16, Flag); 9] = [
+const BOXES: [(u16, Flag); 11] = [
     (101, |p| &mut p.movement_animation),
     (102, |p| &mut p.combat_animation),
     (104, |p| &mut p.sounds),
@@ -60,13 +68,23 @@ const BOXES: [(u16, Flag); 9] = [
     (20, |p| &mut p.overall_combat_results),
     (18, |p| &mut p.intro_video),
     (19, |p| &mut p.auto_save),
+    // Hannibal's
+    (21, |p| &mut p.triarii),
+    (22, |p| &mut p.confirm_group),
 ];
+
+/// Hannibal's trees radio buttons: sparse, dense.
+pub const SPARSE: u16 = 255;
+pub const DENSE: u16 = 254;
 
 /// Where the dialog's two volume sliders lie, in dialog units: the
 /// original makes them in code (`FUN_00599944`, `Slider` controls of
 /// range 10000) in the gaps above "Sound Volume" and "Music Volume" (🟡
 /// their exact places are not traced).
 const SLIDERS: [(i16, i16); 2] = [(13, 72), (13, 115)];
+
+/// Hannibal's dialog has them two units lower.
+const HANNIBAL_SLIDERS: [(i16, i16); 2] = [(13, 74), (13, 117)];
 
 impl Prefs {
     /// The preferences file: beside the saves directory.
@@ -94,6 +112,9 @@ impl Prefs {
                 "intro_video" => p.intro_video = flag,
                 "auto_save" => p.auto_save = flag,
                 "quiet_missiles" => p.quiet_missiles = flag,
+                "triarii" => p.triarii = flag,
+                "confirm_group" => p.confirm_group = flag,
+                "sparse_trees" => p.sparse_trees = flag,
                 "volume" => p.volume = number.unwrap_or(p.volume),
                 "music_volume" => p.music_volume = number.unwrap_or(p.music_volume),
                 _ => {}
@@ -105,7 +126,7 @@ impl Prefs {
     pub fn to_text(&self) -> String {
         let f = |b: bool| if b { 1 } else { 0 };
         format!(
-            "movement_animation {}\ncombat_animation {}\nsounds {}\nambient_sounds {}\nmusic {}\nfinish_leader_dialog {}\noverall_combat_results {}\nintro_video {}\nauto_save {}\nquiet_missiles {}\nvolume {}\nmusic_volume {}\n",
+            "movement_animation {}\ncombat_animation {}\nsounds {}\nambient_sounds {}\nmusic {}\nfinish_leader_dialog {}\noverall_combat_results {}\nintro_video {}\nauto_save {}\nquiet_missiles {}\nvolume {}\nmusic_volume {}\ntriarii {}\nconfirm_group {}\nsparse_trees {}\n",
             f(self.movement_animation),
             f(self.combat_animation),
             f(self.sounds),
@@ -117,7 +138,10 @@ impl Prefs {
             f(self.auto_save),
             f(self.quiet_missiles),
             self.volume,
-            self.music_volume
+            self.music_volume,
+            f(self.triarii),
+            f(self.confirm_group),
+            f(self.sparse_trees)
         )
     }
 
@@ -128,11 +152,13 @@ impl Prefs {
         std::fs::write(path, self.to_text())
     }
 
-    /// The Preferences dialog showing these preferences.
-    pub fn dialog(&self) -> Plain {
+    /// The Preferences dialog showing these preferences (`game`'s layout).
+    pub fn dialog(&self, game: gboh_formats::game::Game) -> Plain {
         let mut me = self.clone();
-        let checked = BOXES.iter().filter(|(_, get)| *get(&mut me)).map(|(id, _)| *id).collect();
-        let sliders = vec![(SLIDERS[0].0, SLIDERS[0].1, self.volume), (SLIDERS[1].0, SLIDERS[1].1, self.music_volume)];
+        let mut checked: Vec<u16> = BOXES.iter().filter(|(_, get)| *get(&mut me)).map(|(id, _)| *id).collect();
+        checked.push(if self.sparse_trees { SPARSE } else { DENSE });
+        let at = if game != gboh_formats::game::Game::Alexander { HANNIBAL_SLIDERS } else { SLIDERS };
+        let sliders = vec![(at[0].0, at[0].1, self.volume), (at[1].0, at[1].1, self.music_volume)];
         Plain { name: "PREFERENCES", checked, sliders, ..Default::default() }
     }
 
@@ -142,6 +168,7 @@ impl Prefs {
         for (id, get) in BOXES {
             *get(&mut p) = d.checked.contains(&id);
         }
+        p.sparse_trees = d.checked.contains(&SPARSE);
         if let [(_, _, v), (_, _, m)] = d.sliders.as_slice() {
             p.volume = *v;
             p.music_volume = *m;
@@ -169,7 +196,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(Prefs::load(&dir.join("none")), Prefs::default());
         // through the dialog and back
-        let mut d = p.dialog();
+        let mut d = p.dialog(gboh_formats::game::Game::Alexander);
         assert!(!d.checked.contains(&102) && d.checked.contains(&101));
         d.checked.retain(|&c| c != 101);
         d.sliders[1].2 = 42;

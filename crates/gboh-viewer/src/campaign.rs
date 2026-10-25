@@ -6,7 +6,7 @@
 //! window 529 × 357 pixels at (35, 17) and scrolls across.
 
 use crate::ui::{Font, cels, eif, first};
-use gboh_game::campaign::{self, Campaign, PROVINCES};
+use gboh_game::campaign::{self, Campaign};
 use gboh_render::{Canvas, Sprite};
 use std::path::Path;
 
@@ -15,7 +15,7 @@ const VIEW: (i32, i32, i32, i32) = (35, 17, 529, 357);
 
 /// Per province: the shade and outline origin, name, unit icons, numerals
 /// and army flag.
-const PLACES: [[(i32, i32); 5]; PROVINCES] = [
+const PLACES: [[(i32, i32); 5]; campaign::PROVINCES] = [
     [(53, 18), (111, 38), (111, 57), (112, 27), (137, 16)],
     [(168, 18), (254, 93), (255, 112), (256, 82), (281, 71)],
     [(261, 161), (303, 246), (304, 264), (305, 234), (330, 223)],
@@ -53,6 +53,60 @@ const BATTLE_PROVINCE: [usize; 10] = [0, 0, 0, 1, 2, 4, 6, 6, 7, 7];
 
 /// The log box: left, top, width, height.
 const LOG: (i32, i32, i32, i32) = (47, 374, 505, 43);
+
+/// A campaign map's geometry: its window on the dialog and how far down the
+/// map sits in it; per province where its shade (and outline and hit mask),
+/// name, icons, numerals and flag go; the fleet's markers; whether battles
+/// are labelled; the dissolve's cell size.
+struct Places {
+    view: (i32, i32, i32, i32),
+    map_dy: i32,
+    area: Vec<(i32, i32)>,
+    names: Vec<Option<(i32, i32)>>,
+    icons: Vec<(i32, i32)>,
+    numerals: Vec<Option<(i32, i32)>>,
+    flag: Vec<(i32, i32)>,
+    navy: Vec<(usize, (i32, i32))>,
+    labels: bool,
+    cell: usize,
+}
+
+impl Places {
+    fn alexander() -> Self {
+        Self {
+            view: VIEW,
+            map_dy: 0,
+            area: PLACES.iter().map(|p| p[0]).collect(),
+            names: PLACES.iter().map(|p| Some(p[1])).collect(),
+            icons: PLACES.iter().map(|p| p[2]).collect(),
+            numerals: PLACES.iter().map(|p| Some(p[3])).collect(),
+            flag: PLACES.iter().map(|p| p[4]).collect(),
+            navy: NAVY.iter().enumerate().map(|(k, &at)| (k + 1, at)).collect(),
+            labels: true,
+            cell: 5,
+        }
+    }
+
+    /// Hannibal's (`CampaignDlg`, static init `0x595f7e`): the window at
+    /// (35, 8), the map 11 pixels down in it; no names (painted on the map),
+    /// numerals or labels; 2 × 2 dissolve cells.
+    fn hannibal() -> Self {
+        const AREA: [(i32, i32); 10] = [(368, 227), (71, 235), (20, 103), (50, 46), (265, 1), (434, 10), (532, 4), (528, 99), (618, 139), (551, 216)];
+        const ICONS: [(i32, i32); 10] = [(409, 254), (131, 268), (29, 162), (151, 117), (294, 43), (457, 45), (568, 35), (542, 130), (648, 168), (583, 235)];
+        Self {
+            view: (35, 8, 529, 357),
+            map_dy: 11,
+            area: AREA.to_vec(),
+            names: vec![None; 10],
+            icons: ICONS.to_vec(),
+            numerals: vec![None; 10],
+            flag: ICONS.iter().map(|&(x, y)| (x, y - 21)).collect(),
+            navy: vec![(4, (405, 97)), (8, (602, 196)), (9, (555, 239))],
+            labels: false,
+            cell: 2,
+        }
+    }
+}
 
 /// Unit icon values, largest first, and their cels (`One`, `Five`, `Ten`,
 /// `Fifty`).
@@ -129,10 +183,10 @@ fn shade_times(level: u8) -> usize {
     }
 }
 
-/// `s` with only the 5 × 5 cells of the first `n` of a shuffled order kept
-/// (`keep`), or only the others.
-fn cells(s: &Sprite, progress: f32, keep: bool) -> Sprite {
-    let (cw, ch) = (s.width.div_ceil(5), s.height.div_ceil(5));
+/// `s` with only the `cell` × `cell` squares of the first `n` of a
+/// shuffled order kept (`keep`), or only the others.
+fn cells(s: &Sprite, progress: f32, keep: bool, cell: usize) -> Sprite {
+    let (cw, ch) = (s.width.div_ceil(cell), s.height.div_ceil(cell));
     let count = cw * ch;
     let mut order: Vec<usize> = (0..count).collect();
     let mut seed = 0x2545_f491u32;
@@ -147,7 +201,7 @@ fn cells(s: &Sprite, progress: f32, keep: bool) -> Sprite {
     let mut out = s.clone();
     for y in 0..s.height {
         for x in 0..s.width {
-            if new[(y / 5) * cw + x / 5] != keep {
+            if new[(y / cell) * cw + x / cell] != keep {
                 out.pixels[y * s.width + x] = 0;
             }
         }
@@ -156,6 +210,12 @@ fn cells(s: &Sprite, progress: f32, keep: bool) -> Sprite {
 }
 
 pub struct CampaignArt {
+    kind: campaign::Kind,
+    places: Places,
+    /// Hannibal's results picture (the Victory or Defeat strip's second
+    /// cel).
+    victory_picture: Option<Sprite>,
+    defeat_picture: Option<Sprite>,
     font: Font,
     small: Font,
     background: Option<Sprite>,
@@ -185,12 +245,19 @@ impl CampaignArt {
         let art = eif(data_dir, "CAMPAIGN.EIF");
         let dialogs = eif(data_dir, "DIALOG.EIF");
         let strings = crate::ui::exe_resources(data_dir);
+        if gboh_formats::game::Game::detect(data_dir) == Some(gboh_formats::game::Game::Hannibal) {
+            return Self::hannibal(data_dir, art, strings);
+        }
         let province_names = art
             .as_ref()
             .and_then(|e| e.strips.iter().find(|s| s.name == "Area Names"))
             .map(|s| s.cels.iter().map(|c| c.name.clone()).collect())
             .unwrap_or_default();
         Self {
+            kind: campaign::Kind::Alexander,
+            places: Places::alexander(),
+            victory_picture: None,
+            defeat_picture: None,
             font: Font::load(data_dir),
             small: Font::small(data_dir),
             background: first(&dialogs, "Campaign Game"),
@@ -211,12 +278,70 @@ impl CampaignArt {
             province_names,
             dialog: strings.as_ref().and_then(|r| r.dialog("CAMPAIGNMAP")),
             strings,
-            darken: crate::find_ci(data_dir, "GAME.PAL")
+            darken: crate::palette_path(data_dir)
                 .and_then(|p| std::fs::read(p).ok())
                 .and_then(|d| gboh_formats::pal::Palette::parse(&d).ok())
                 .and_then(|p| p.remap.first().copied())
                 .unwrap_or(std::array::from_fn(|i| i as u8)),
         }
+    }
+
+    /// Hannibal's art (all in `CAMPAIGN.EIF`): its own background, no names
+    /// strip (the provinces' names from the executable's, its table at
+    /// `0x655114`), the Area Blackout cels used only to tell where the mouse
+    /// is.
+    fn hannibal(data_dir: &Path, art: Option<gboh_formats::eif::Eif>, strings: Option<gboh_formats::pe::Resources>) -> Self {
+        let exe = crate::ui::exe_path(data_dir).and_then(|p| std::fs::read(p).ok()).unwrap_or_default();
+        // (the table's pointers are set as the game starts: the names follow
+        // one another from 0x655500)
+        let mut va = 0x655500;
+        let province_names = (0..10)
+            .map(|_| {
+                let name = gboh_formats::pe::string_at(&exe, va).unwrap_or_default();
+                va += name.len() as u32 + 1;
+                name
+            })
+            .collect();
+        let pictures = |strip: &str| cels(&art, strip);
+        let (victory, defeat) = (pictures("Victory"), pictures("Defeat"));
+        let font = Font::small(data_dir);
+        Self {
+            kind: campaign::Kind::Hannibal,
+            places: Places::hannibal(),
+            victory: victory.first().cloned(),
+            defeat: defeat.first().cloned(),
+            victory_picture: victory.get(1).cloned(),
+            defeat_picture: defeat.get(1).cloned(),
+            small: Font::small(data_dir),
+            font,
+            background: first(&art, "Dialog"),
+            map: first(&art, "Map"),
+            scroll_ends: cels(&art, "Scroll Ends"),
+            // (its shading is stored as RLE effect runs)
+            shadows: art.as_ref().and_then(|e| gboh_render::strip_with_shadows(e, "Area Shadows")).unwrap_or_default(),
+            blacked: cels(&art, "Area Blackout"),
+            names: Vec::new(),
+            outlines: cels(&art, "Area Outlines"),
+            units: [cels(&art, "Units"), cels(&art, "Dark Units")],
+            navy: first(&art, "Navy"),
+            flag: first(&art, "Flags"),
+            numerals: Vec::new(),
+            labels: Vec::new(),
+            button: cels(&eif(data_dir, "DLGBTN.EIF"), "Pushbutton"),
+            province_names,
+            dialog: strings.as_ref().and_then(|r| r.dialog("CAMPAIGNMAP")),
+            strings,
+            darken: crate::palette_path(data_dir)
+                .and_then(|p| std::fs::read(p).ok())
+                .and_then(|d| gboh_formats::pal::Palette::parse(&d).ok())
+                .and_then(|p| p.remap.first().copied())
+                .unwrap_or(std::array::from_fn(|i| i as u8)),
+        }
+    }
+
+    /// Whose campaign the art is for.
+    pub fn kind(&self) -> campaign::Kind {
+        self.kind
     }
 
     /// The map dialog's size and where it lies in a `width` × `height`
@@ -227,19 +352,24 @@ impl CampaignArt {
     }
 
     /// A map position on the dialog.
-    fn on_dialog(pos: (i32, i32), scroll: i32) -> (i32, i32) {
-        (VIEW.0 + pos.0 - scroll, VIEW.1 + pos.1)
+    fn on_dialog(&self, pos: (i32, i32), scroll: i32) -> (i32, i32) {
+        let v = self.places.view;
+        (v.0 + pos.0 - scroll, v.1 + self.places.map_dy + pos.1)
     }
 
     /// The scroll that centres province `p` in the map's window.
     pub fn centre_on(&self, p: usize) -> i32 {
-        let (x, _) = PLACES[p][1];
-        (x - VIEW.2 / 2).clamp(0, self.max_scroll())
+        let x = match self.places.names.get(p).copied().flatten() {
+            Some((x, _)) => x,
+            // (Hannibal's: the area's middle)
+            None => self.places.area.get(p).map_or(0, |a| a.0) + self.shadows.get(p).map_or(0, |s| s.width as i32 / 2),
+        };
+        (x - self.places.view.2 / 2).clamp(0, self.max_scroll())
     }
 
     /// The furthest the map scrolls.
     pub fn max_scroll(&self) -> i32 {
-        self.map.as_ref().map_or(0, |m| (m.width as i32 - VIEW.2).max(0))
+        self.map.as_ref().map_or(0, |m| (m.width as i32 - self.places.view.2).max(0))
     }
 
     /// Each garrison icon of `province` (kind, value, cel, dialog place),
@@ -247,7 +377,7 @@ impl CampaignArt {
     fn icons(&self, c: &Campaign, province: usize, scroll: i32) -> Vec<(usize, u16, usize, (i32, i32))> {
         let mut out = Vec::new();
         for kind in [campaign::INFANTRY, campaign::CAVALRY] {
-            let (mut x, y) = Self::on_dialog(PLACES[province][2], scroll);
+            let (mut x, y) = self.on_dialog(self.places.icons[province], scroll);
             let y = y + 17 * kind as i32;
             for (k, n) in Campaign::icons(c.units[province][kind]).into_iter().enumerate() {
                 let cel = VALUE_CEL[k];
@@ -266,11 +396,12 @@ impl CampaignArt {
 
     /// The province whose area is at dialog pixel `(x, y)`.
     fn province_at(&self, scroll: i32, x: i32, y: i32) -> Option<usize> {
-        if x < VIEW.0 || x >= VIEW.0 + VIEW.2 || y < VIEW.1 || y >= VIEW.1 + VIEW.3 {
+        let v = self.places.view;
+        if x < v.0 || x >= v.0 + v.2 || y < v.1 || y >= v.1 + v.3 {
             return None;
         }
-        (0..PROVINCES).find(|&p| {
-            let (ox, oy) = Self::on_dialog(PLACES[p][0], scroll);
+        (0..self.places.area.len()).find(|&p| {
+            let (ox, oy) = self.on_dialog(self.places.area[p], scroll);
             self.blacked.get(p).is_some_and(|s| {
                 let (sx, sy) = (x - ox, y - oy);
                 sx >= 0 && sy >= 0 && (sx as usize) < s.width && (sy as usize) < s.height && s.pixels[sy as usize * s.width + sx as usize] != 0
@@ -293,14 +424,15 @@ impl CampaignArt {
     pub fn press(&self, c: &Campaign, m: &MapState, width: usize, height: usize, x: i32, y: i32) -> Option<Dragging> {
         let (ox, oy) = self.origin(width, height);
         let (x, y) = (x - ox, y - oy);
-        if x < VIEW.0 || x >= VIEW.0 + VIEW.2 || y < VIEW.1 || y >= VIEW.1 + VIEW.3 {
+        let v = self.places.view;
+        if x < v.0 || x >= v.0 + v.2 || y < v.1 || y >= v.1 + v.3 {
             return None;
         }
         let inside = |s: Option<&Sprite>, (sx, sy): (i32, i32)| s.is_some_and(|s| x >= sx && y >= sy && x < sx + s.width as i32 && y < sy + s.height as i32);
-        if c.current < PROVINCES && inside(self.flag.as_ref(), Self::on_dialog(PLACES[c.current][4], m.scroll)) {
+        if c.current < c.provinces() && inside(self.flag.as_ref(), self.on_dialog(self.places.flag[c.current], m.scroll)) {
             return Some(Dragging::Flag);
         }
-        for p in 0..PROVINCES {
+        for p in 0..c.provinces() {
             for (kind, value, cel, at) in self.icons(c, p, m.scroll) {
                 if inside(self.units[kind].get(cel), at) {
                     return Some(Dragging::Unit { from: p, kind, value });
@@ -352,14 +484,18 @@ impl CampaignArt {
             d.blit(b, 0, 0);
         }
         // the map, through its window
-        let mut view = Canvas::new(VIEW.2 as usize, VIEW.3 as usize, 0);
-        let shift = |(x, y): (i32, i32)| (x - VIEW.0, y - VIEW.1);
+        let pl = &self.places;
+        let v = pl.view;
+        let mut view = Canvas::new(v.2 as usize, v.3 as usize, 0);
+        let shift = |(x, y): (i32, i32)| (x - v.0, y - v.1);
         if let Some(map) = &self.map {
-            view.blit(map, -m.scroll, 0);
+            view.blit(map, -m.scroll, pl.map_dy);
         }
-        for p in (0..PROVINCES).rev() {
-            let at = shift(Self::on_dialog(PLACES[p][0], m.scroll));
-            if c.status[p] == campaign::HIDDEN {
+        let hannibal = self.kind == campaign::Kind::Hannibal;
+        for p in (0..c.provinces().min(pl.area.len())).rev() {
+            let at = shift(self.on_dialog(pl.area[p], m.scroll));
+            // (Hannibal's hidden provinces aren't blacked out: shaded as any)
+            if c.status[p] == campaign::HIDDEN && !hannibal {
                 if let Some(s) = self.blacked.get(p) {
                     view.blit(s, at.0, at.1);
                 }
@@ -367,7 +503,7 @@ impl CampaignArt {
                 match m.changing().filter(|&(q, _, _)| q == p) {
                     // dissolving from the old shading to the new, cell by cell
                     Some((_, old, t)) => {
-                        let (new_part, old_part) = (cells(s, t, true), cells(s, t, false));
+                        let (new_part, old_part) = (cells(s, t, true, pl.cell), cells(s, t, false, pl.cell));
                         for _ in 0..shade_times(c.subjugation[p]) {
                             view.blit_shadowed(&new_part, at.0, at.1, &self.darken);
                         }
@@ -386,15 +522,17 @@ impl CampaignArt {
                 if let Some(s) = self.outlines.get(p) {
                     view.blit(s, at.0, at.1);
                 }
-                if let Some(s) = self.names.get(p) {
-                    let n = shift(Self::on_dialog(PLACES[p][1], m.scroll));
+                if let (Some(s), Some(at)) = (self.names.get(p), pl.names[p]) {
+                    let n = shift(self.on_dialog(at, m.scroll));
                     view.blit(s, n.0, n.1);
                 }
             }
             // the garrison's total, then its icons
             let total = c.units[p][0] + c.units[p][1];
-            if total > 0 {
-                let (mut x, y) = shift(Self::on_dialog(PLACES[p][3], m.scroll));
+            if total > 0
+                && let Some(at) = pl.numerals[p]
+            {
+                let (mut x, y) = shift(self.on_dialog(at, m.scroll));
                 for ch in total.min(999).to_string().chars() {
                     if let Some(s) = ch.to_digit(10).and_then(|d| self.numerals.get(d as usize)) {
                         view.blit(s, x, y);
@@ -412,15 +550,15 @@ impl CampaignArt {
                 && !matches!(m.dragging, Some((Dragging::Flag, _)))
                 && let Some(s) = &self.flag
             {
-                let at = shift(Self::on_dialog(PLACES[p][4], m.scroll));
+                let at = shift(self.on_dialog(pl.flag[p], m.scroll));
                 view.blit(s, at.0, at.1);
             }
         }
-        for (b, &(x, y, w, h)) in LABELS.iter().enumerate() {
+        for (b, &(x, y, w, h)) in LABELS.iter().enumerate().filter(|_| pl.labels) {
             if c.status[BATTLE_PROVINCE[b]] == campaign::HIDDEN {
                 continue;
             }
-            let (lx, ly) = shift(Self::on_dialog((x, y), m.scroll));
+            let (lx, ly) = shift(self.on_dialog((x, y), m.scroll));
             if let Some(s) = self.labels.get(b) {
                 view.blit(s, lx + 2, ly + 2);
             }
@@ -429,15 +567,15 @@ impl CampaignArt {
                 frame(&mut view, (lx, ly, w, h), 255);
             }
         }
-        for (k, &pos) in NAVY.iter().enumerate() {
-            if c.navy[k + 1]
+        for &(k, pos) in &pl.navy {
+            if c.navy[k]
                 && let Some(s) = &self.navy
             {
-                let at = shift(Self::on_dialog(pos, m.scroll));
+                let at = shift(self.on_dialog(pos, m.scroll));
                 view.blit(s, at.0, at.1);
             }
         }
-        d.blit(&Sprite { width: view.width, height: view.height, pixels: view.pixels }, VIEW.0, VIEW.1);
+        d.blit(&Sprite { width: view.width, height: view.height, pixels: view.pixels }, v.0, v.1);
         // the rods, their knobs over the background's
         if let Some(s) = self.scroll_ends.get(((m.scroll / 5) % 3) as usize) {
             d.blit_shadowed(s, SCROLL_ENDS.0, SCROLL_ENDS.1, &self.darken);
@@ -451,7 +589,8 @@ impl CampaignArt {
             };
             if let Some(s) = s {
                 let (w, h) = (s.width as i32, s.height as i32);
-                d.blit(s, (x - w / 2).clamp(45, 554 - w), (y - h / 2).clamp(17, 368 - h));
+                let (top, bottom) = if hannibal { (8, 359) } else { (17, 368) };
+                d.blit(s, (x - w / 2).clamp(45, 554 - w), (y - h / 2).clamp(top, bottom - h));
             }
         }
         // the log: its last lines
@@ -488,6 +627,26 @@ impl CampaignArt {
             canvas.blit(a, ox, oy);
         }
         let string = |id: u16| self.strings.as_ref().and_then(|s| s.string(id)).unwrap_or_default();
+        // Hannibal's (`EndOfCampaignDlg`): the Carthaginian's picture, and
+        // four rows down the left: rounds, provinces conquered and wholly
+        // subjugated, the rating
+        if self.kind == campaign::Kind::Hannibal {
+            let picture = if r.victory { &self.victory_picture } else { &self.defeat_picture };
+            if let Some(p) = picture {
+                canvas.blit(p, ox + 174, oy + 89);
+            }
+            let rows = [
+                (44, 141, r.rounds.to_string()),
+                (45, 205, r.conquered.to_string()),
+                (166, 269, r.subjugated.to_string()),
+                (136, 335, r.rating_string.map(string).unwrap_or_default()),
+            ];
+            for (id, y, value) in rows {
+                self.font.draw(&mut canvas, &string(id), ox + 15, oy + y);
+                self.font.draw(&mut canvas, &value, ox + 15, oy + y + 15);
+            }
+            return canvas;
+        }
         let rows = [
             (44, 186, r.rounds.to_string()),
             (45, 272, r.conquered.to_string()),
@@ -524,20 +683,24 @@ fn frame(canvas: &mut Canvas, (x, y, w, h): (i32, i32, i32, i32), c: u8) {
 
 /// The log's line for a map event, in the rewrite's words (the original's
 /// are in its data); `names` are the provinces'.
-pub fn describe(e: &campaign::Event, names: &[String]) -> String {
+pub fn describe(e: &campaign::Event, names: &[String], kind: campaign::Kind) -> String {
     let name = |p: usize| names.get(p).cloned().unwrap_or_else(|| format!("Province {p}"));
+    let (goal, power) = match kind {
+        campaign::Kind::Alexander => ("conquer the world", "Macedon"),
+        campaign::Kind::Hannibal => ("subdue Italy", "Carthage"),
+    };
     let kind = |k: usize| if k == campaign::INFANTRY { "infantry" } else { "cavalry" };
     match e {
         campaign::Event::Round(r) => {
             let left = campaign::ROUNDS + 1 - r;
-            format!("--- Round {r} --- {left} round{} left to conquer the world.", if left == 1 { "" } else { "s" })
+            format!("--- Round {r} --- {left} round{} left to {goal}.", if left == 1 { "" } else { "s" })
         }
         campaign::Event::Final => "--- The results of the last round ---".to_string(),
         campaign::Event::Subjugation { province, level, rose: true } => {
             format!("{} is now {} subjugated.", name(*province), if *level == campaign::TOTAL { "wholly" } else { "partly" })
         }
         campaign::Event::Subjugation { province, level, rose: false } => {
-            format!("{} is {} free of Macedon.", name(*province), if *level == campaign::FREE { "wholly" } else { "partly" })
+            format!("{} is {} free of {power}.", name(*province), if *level == campaign::FREE { "wholly" } else { "partly" })
         }
         campaign::Event::Reinforcements { kind: k, count: 0 } => format!("No {} reinforcements this round.", kind(*k)),
         campaign::Event::Reinforcements { kind: k, count } => format!("{count} {} reinforcement{} gather in {}.", kind(*k), if *count == 1 { "" } else { "s" }, name(0)),
@@ -547,6 +710,33 @@ pub fn describe(e: &campaign::Event, names: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Hannibal's map and results; runs only with `GBOH_HANNIBAL` (and
+    /// writes them to `GBOH_SHOTS`, if set).
+    #[test]
+    fn draws_hannibal_campaign() {
+        let Ok(dir) = std::env::var("GBOH_HANNIBAL") else { return };
+        let dir = Path::new(&dir);
+        let art = CampaignArt::new(dir);
+        assert_eq!(art.kind(), campaign::Kind::Hannibal);
+        assert_eq!(art.province_names.len(), 10);
+        assert!(art.province_names.iter().all(|n| !n.is_empty()), "{:?}", art.province_names);
+        let mut c = Campaign::new_hannibal(3);
+        c.after_battle(true);
+        let events = c.opening();
+        let m = MapState { scroll: art.centre_on(4), subjugate: true, log: events.iter().map(|e| describe(e, &art.province_names, c.kind)).collect(), ..Default::default() };
+        let canvas = art.draw_map(&c, &m, 640, 480);
+        // the flag over Gaul can be picked up and dropped on Cisalpine Gaul
+        let (ox, oy) = art.origin(640, 480);
+        let (fx, fy) = art.on_dialog(art.places.flag[4], m.scroll);
+        assert_eq!(art.press(&c, &m, 640, 480, ox + fx + 5, oy + fy + 5), Some(Dragging::Flag));
+        let results = art.draw_results(&c.results(), 640, 480);
+        if let Ok(out) = std::env::var("GBOH_SHOTS") {
+            let pal = gboh_formats::pal::Palette::parse(&std::fs::read(crate::palette_path(dir).unwrap()).unwrap()).unwrap();
+            crate::ui::write_ppm(&canvas, &pal, &Path::new(&out).join("han_campaign.ppm")).unwrap();
+            crate::ui::write_ppm(&results, &pal, &Path::new(&out).join("han_campaign_results.ppm")).unwrap();
+        }
+    }
 
     /// Draws the campaign map and results; runs only with `GBOH_DATA` set
     /// (and writes them to `GBOH_SHOTS`, if set).
@@ -563,14 +753,14 @@ mod tests {
         c.after_battle(true);
         c.after_battle(true);
         c.opening();
-        let m = MapState { scroll: 0, battle: false, subjugate: true, log: events.iter().map(|e| describe(e, &art.province_names)).collect(), ..Default::default() };
+        let m = MapState { scroll: 0, battle: false, subjugate: true, log: events.iter().map(|e| describe(e, &art.province_names, campaign::Kind::Alexander)).collect(), ..Default::default() };
         let canvas = art.draw_map(&c, &m, 640, 480);
         // the flag can be picked up and dropped on Anatolia
         let (ox, oy) = art.origin(640, 480);
-        let (fx, fy) = CampaignArt::on_dialog(PLACES[0][4], 0);
+        let (fx, fy) = art.on_dialog(PLACES[0][4], 0);
         assert_eq!(art.press(&c, &m, 640, 480, ox + fx + 5, oy + fy + 5), Some(Dragging::Flag));
         let dragging = MapState { dragging: Some((Dragging::Flag, (0, 0))), ..m.clone() };
-        let (ax, ay) = CampaignArt::on_dialog(PLACES[1][1], 0);
+        let (ax, ay) = art.on_dialog(PLACES[1][1], 0);
         assert_eq!(art.drop_target(&c, &dragging, ax + 10, ay + 5), Some(1));
         assert_eq!(art.button_at(640, 480, ox + 114 * 7 / 4 + 5, oy + 261 * 13 / 8 + 5), Some(11));
         // halfway through a change: part old shading, part new

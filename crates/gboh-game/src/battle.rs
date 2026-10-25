@@ -56,6 +56,17 @@ pub struct Unit {
     pub tq: u16,
     /// Cohesion hits taken; the unit routs when they reach its TQ.
     pub hits: i32,
+    /// The turn it arrives on the field (0: there from the start).
+    pub arrival: u16,
+    /// A leader's elite initiative, and his superior (a unit index; the
+    /// leader whose group his scenario record links him to): Hannibal's.
+    pub elite: bool,
+    pub superior: Option<usize>,
+    /// The group a leader's scenario record links him to (−1 none).
+    pub link: i16,
+    /// Hannibal's legionaries: which line of the legion (1 hastati, 2
+    /// principes, 3 cohorts), which manipular line extension pairs by.
+    pub legion: Option<i16>,
     pub state: UnitState,
     /// Missile weapon and missiles left, for missile units.
     pub missile: Option<(crate::missile::Weapon, u16)>,
@@ -83,6 +94,9 @@ pub enum UnitState {
     Gone,
     /// Left the map by a scenario's exit (Pelium); not a loss.
     Exited,
+    /// Not yet on the field: it arrives at its hex on turn `arrival`
+    /// (Hannibal's and Caesar's scenarios); not counted in the rout totals.
+    Waiting,
 }
 
 impl Unit {
@@ -94,7 +108,7 @@ impl Unit {
     }
 
     pub fn two_hex(&self) -> bool {
-        matches!(self.type_id, 17 | 18)
+        gboh_formats::units::two_hex(self.type_id)
     }
 
     /// A two-hex unit's second hex: its neighbour in map direction
@@ -143,7 +157,9 @@ impl Battle {
                 let missile = match u.extra {
                     UnitExtra::Missile { missile, .. } => {
                         let class = crate::movement::MoveClass::of_type(type_id)?;
-                        crate::missile::Weapon::of(missile, class).map(|w| (w, w.supply()))
+                        // (a legion's pilum: one)
+                        let supply = |w: crate::missile::Weapon| if class == crate::movement::MoveClass::Legion { 1 } else { w.supply() };
+                        crate::missile::Weapon::of(missile, class).map(|w| (w, supply(w)))
                     }
                     _ => None,
                 };
@@ -170,7 +186,15 @@ impl Battle {
                     size,
                     tq,
                     hits: 0,
-                    state: UnitState::Fighting,
+                    state: if u.arrival > 0 { UnitState::Waiting } else { UnitState::Fighting },
+                    arrival: u.arrival,
+                    elite: u.elite != 0,
+                    legion: match u.extra {
+                        UnitExtra::Missile { legion, .. } => legion,
+                        _ => None,
+                    },
+                    superior: None,
+                    link: u.link,
                     missile,
                     fired: false,
                     wounded: false,
@@ -179,8 +203,22 @@ impl Battle {
                     done: false,
                 })
             })
-            .collect();
+            .collect::<Vec<Unit>>();
+        // a leader's link names his superior's group
+        let mut units = units;
+        for i in 0..units.len() {
+            let (link, side) = (units[i].link, units[i].side);
+            if units[i].leader.is_some() && link >= 0 {
+                units[i].superior = (0..units.len()).find(|&k| k != i && units[k].leader.is_some() && units[k].side == side && units[k].group as i32 == link as i32);
+            }
+        }
         Self { units }
+    }
+
+    /// Whether the battle is one of Hannibal's (its units are), whose
+    /// rules differ in places.
+    pub fn hannibal(&self) -> bool {
+        self.units.first().is_some_and(|u| u.type_id >= gboh_formats::units::HANNIBAL)
     }
 
     /// Indices of the leaders still in the battle.

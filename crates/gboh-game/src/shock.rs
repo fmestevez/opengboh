@@ -11,6 +11,9 @@ use crate::hex::Hex;
 use crate::movement::{MoveClass, forward};
 use gboh_formats::crt::BorlandRand;
 
+/// Hannibal's Carthaginian nation (scenario byte).
+const CARTHAGINIAN: u8 = 7;
+
 /// Angle of an attack from `from` on a unit at `at` with scenario facing
 /// `facing`: 0 front, 1 flank, 2 rear.
 pub fn angle(at: Hex, facing: u8, from: Hex) -> u8 {
@@ -107,6 +110,7 @@ pub fn resolve(battle: &mut Battle, attackers: &[(usize, bool)], defenders: &[us
     // pre-contact TQ checks for marked attackers
     let mut fighting = Vec::new();
     let (mut checked, mut all_light, mut chariot) = (false, true, false);
+    let mut foreign_elephant = false;
     for &(a, moved) in attackers {
         let d = standing[0];
         let frontal = angle(battle.units[d].hex, battle.units[d].facing, battle.units[a].hex) == 0;
@@ -114,6 +118,13 @@ pub fn resolve(battle: &mut Battle, attackers: &[(usize, bool)], defenders: &[us
             checked = true;
             all_light &= class(battle, a) == MoveClass::LightInfantry;
             chariot |= class(battle, a) == MoveClass::Chariot;
+            // Hannibal's: charging Celts shake the defenders as chariots do
+            // (the unit's name has the word); and elephants other than the
+            // Carthaginians' shake Carthaginian elephants (🟡)
+            if battle.hannibal() {
+                chariot |= battle.units[a].name.contains("Celts");
+                foreign_elephant |= class(battle, a) == MoveClass::Elephant && battle.units[a].nation != CARTHAGINIAN;
+            }
             let u = &battle.units[a];
             let (h, rout) = tq_check_unit(u.hits, u.tq as i32, rng.next() % 10);
             let before = u.hits;
@@ -138,7 +149,8 @@ pub fn resolve(battle: &mut Battle, attackers: &[(usize, bool)], defenders: &[us
                 continue;
             }
             let u = &battle.units[d];
-            let roll = rng.next() % 10 + chariot as u32;
+            let elephants = foreign_elephant && c == MoveClass::Elephant && battle.units[d].nation == CARTHAGINIAN;
+            let roll = rng.next() % 10 + (chariot || elephants) as u32;
             let (h, rout) = tq_check_unit(u.hits, u.tq as i32, roll);
             let before = u.hits;
             hit(&mut out, battle, d, h - before);
@@ -164,11 +176,14 @@ pub fn resolve(battle: &mut Battle, attackers: &[(usize, bool)], defenders: &[us
         angle: attack_angle,
         attacker_size: side_size(&fighting.iter().map(|&a| (class(battle, a), battle.units[a].size as i32)).collect::<Vec<_>>()),
         defender_size: side_size(&standing.iter().map(|&d| (class(battle, d), battle.units[d].size as i32)).collect::<Vec<_>>()),
-        attacker_cataphract: matches!(battle.units[lead].type_id, 41 | 44),
-        defender_cataphract: standing.iter().any(|&d| matches!(battle.units[d].type_id, 41 | 44)),
+        attacker_cataphract: gboh_formats::units::cataphract(battle.units[lead].type_id),
+        defender_cataphract: standing.iter().any(|&d| gboh_formats::units::cataphract(battle.units[d].type_id)),
         defender_missile: false,
         no_superiority: false,
         column_shift: 0,
+        hannibal: battle.hannibal(),
+        attacker_nation: battle.units[lead].nation,
+        defender_nation: battle.units[standing[0]].nation,
     };
     let r = shock.resolve(rng.next() % 10);
 
@@ -226,6 +241,11 @@ mod tests {
             tq,
             hits: 0,
             state: crate::battle::UnitState::Fighting,
+            arrival: 0,
+            elite: false,
+            superior: None,
+            link: -1,
+            legion: None,
             missile: None,
             fired: false,
             wounded: false,

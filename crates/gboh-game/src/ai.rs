@@ -95,6 +95,14 @@ pub const BUILTINS: &[(&str, usize)] = &[
     ("Random", 1),
     ("EnemyWithinRange", 2),
     ("FindHurtingUnit", 0),
+    // Hannibal's
+    ("DoGroupBerserk", 0),
+    ("DoGroupRetreat", 1),
+    ("GetGroup", 2),
+    ("GetGroupLeader", 1),
+    ("GroupMove", 2),
+    ("GroupRestoreCohesion", 0),
+    ("InMomentumPhase", 0),
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -139,6 +147,9 @@ pub enum Stmt {
 #[derive(Debug, Clone, Default)]
 pub struct Procedure {
     pub params: Vec<String>,
+    /// Which parameters are `var` ones (Caesar's scripts): passed by
+    /// reference, their last values written back to the caller's variables.
+    pub by_ref: Vec<bool>,
     pub body: Option<Vec<Stmt>>,
 }
 
@@ -339,11 +350,23 @@ impl Parser<'_> {
                     self.pos += 1;
                     let name = self.ident()?;
                     self.expect_sym("(")?;
-                    let params = if self.is_sym(")") { Vec::new() } else { self.names()? };
+                    let (mut params, mut by_ref) = (Vec::new(), Vec::new());
+                    while !self.is_sym(")") {
+                        let var = self.is_kw("var");
+                        if var {
+                            self.pos += 1;
+                        }
+                        params.push(self.ident()?);
+                        by_ref.push(var);
+                        if !self.eat_sym(",") {
+                            break;
+                        }
+                    }
                     self.expect_sym(")")?;
                     let body = if self.is_sym("{") { Some(self.block()?) } else { None };
                     let p = script.procs.entry(name).or_default();
                     p.params = params;
+                    p.by_ref = by_ref;
                     if body.is_some() {
                         p.body = body;
                     }
@@ -672,14 +695,18 @@ impl Machine {
         Self { script, globals, budget: BUDGET }
     }
 
-    /// Run the plan's orders for `leader` (matched by its first word, case
-    /// insensitively): evaluate the conditions, then call the first entry
-    /// whose condition holds. Returns whether an entry ran.
+    /// Run the plan's orders for `leader` (matched, case insensitively, by
+    /// its name's letters and digits — Caesar's `Tribune III (Caesarian)` is
+    /// `TribuneIIICaesarian` — else by its first word, as Alexander's
+    /// scripts name theirs): evaluate the conditions, then call the first
+    /// entry whose condition holds. Returns whether an entry ran.
     pub fn orders(&mut self, leader: &str, host: &mut dyn Host) -> Result<bool, Error> {
         self.budget = BUDGET;
         let Some(plan) = self.script.plan.clone() else { return Ok(false) };
-        let key = leader.split_whitespace().next().unwrap_or("");
-        let Some((_, entries)) = plan.orders.iter().find(|(l, _)| l.eq_ignore_ascii_case(key)) else { return Ok(false) };
+        let whole: String = leader.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+        let first = leader.split_whitespace().next().unwrap_or("");
+        let find = |key: &str| plan.orders.iter().find(|(l, _)| l.eq_ignore_ascii_case(key));
+        let Some((_, entries)) = find(&whole).or_else(|| find(first)) else { return Ok(false) };
         let mut frame = HashMap::new();
         self.exec(&plan.conditions, &mut frame, host)?;
         for (cond, call) in entries {
@@ -691,18 +718,43 @@ impl Machine {
         Ok(false)
     }
 
+    /// Name each command group after its leader, as the original does from
+    /// the scenario's groups: `Tribune III (Caesarian)` is
+    /// `TRIBUNE_III_CAESARIAN`, `Masinissa` `MASINISSA`, its value the
+    /// group's id. These override `constant.ai`'s (Hannibal's lists leaders
+    /// under numbers no scenario's groups have).
+    pub fn define_groups(&mut self, leaders: impl IntoIterator<Item = (String, i32)>) {
+        for (name, group) in leaders {
+            let mut key = String::new();
+            for word in name.split(|c: char| !c.is_ascii_alphanumeric()).filter(|w| !w.is_empty()) {
+                if !key.is_empty() {
+                    key.push('_');
+                }
+                key.push_str(&word.to_ascii_uppercase());
+            }
+            self.script.consts.insert(key, group);
+        }
+    }
+
     /// Call procedure or built-in `name`.
     pub fn call(&mut self, name: &str, args: &[i32], host: &mut dyn Host) -> Result<i32, Error> {
+        self.call_with(name, args, host).map(|(v, _)| v)
+    }
+
+    /// Call `name`, returning also a script procedure's final values of
+    /// its parameters.
+    fn call_with(&mut self, name: &str, args: &[i32], host: &mut dyn Host) -> Result<(i32, Vec<i32>), Error> {
         if let Some(p) = self.script.procs.get(name).cloned()
             && let Some(body) = &p.body
         {
             let mut frame: HashMap<String, i32> = p.params.iter().cloned().zip(args.iter().copied()).collect();
-            return Ok(match self.exec(body, &mut frame, host)? {
+            let v = match self.exec(body, &mut frame, host)? {
                 Flow::Return(v) => v,
                 Flow::Next => 0,
-            });
+            };
+            return Ok((v, p.params.iter().map(|n| frame.get(n).copied().unwrap_or(0)).collect()));
         }
-        host.call(&name.to_ascii_lowercase(), args).ok_or_else(|| Error(format!("unknown procedure {name}")))
+        host.call(&name.to_ascii_lowercase(), args).map(|v| (v, Vec::new())).ok_or_else(|| Error(format!("unknown procedure {name}")))
     }
 
     fn get(&self, name: &str, frame: &HashMap<String, i32>) -> i32 {
@@ -789,7 +841,14 @@ impl Machine {
             Expr::Neg(e) => -self.eval(e, frame, host)?,
             Expr::Call(name, args) => {
                 let vals = args.iter().map(|a| self.eval(a, frame, host)).collect::<Result<Vec<_>, _>>()?;
-                self.call(name, &vals, host)?
+                let (v, out) = self.call_with(name, &vals, host)?;
+                let by_ref = self.script.procs.get(name).map(|p| p.by_ref.clone()).unwrap_or_default();
+                for ((arg, &r), &value) in args.iter().zip(&by_ref).zip(&out) {
+                    if let (true, Expr::Var(n)) = (r, arg) {
+                        self.set(n, value, frame);
+                    }
+                }
+                v
             }
             Expr::Bin(op, a, b) => {
                 let a = self.eval(a, frame, host)?;
@@ -844,6 +903,23 @@ mod tests {
         let mut h = Recorder(Vec::new());
         assert_eq!(m.call("Sum", &[4], &mut h), Ok(10));
         assert_eq!(m.call("Check", &[], &mut h), Ok(1));
+    }
+
+    /// A `var` parameter's last value goes back to the caller's variable
+    /// (Caesar's scripts mark their moves done that way); group names are
+    /// constants.
+    #[test]
+    fn var_parameters_and_group_names() {
+        let s = script(
+            "var done; procedure Mark(hex, var flag) { flag = hex + 1; return 0; };
+             procedure Run() { Mark(4, done); return done; };",
+        );
+        let mut m = Machine::new(s);
+        let mut h = Recorder(Vec::new());
+        assert_eq!(m.call("Run", &[], &mut h), Ok(5));
+        assert_eq!(m.globals["done"], 5);
+        m.define_groups([("Tribune III (Caesarian)".to_string(), 13)]);
+        assert_eq!(m.script.consts["TRIBUNE_III_CAESARIAN"], 13);
     }
 
     /// Parses every script in the game; runs only with `GBOH_DATA` set to

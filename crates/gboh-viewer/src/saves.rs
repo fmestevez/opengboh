@@ -19,7 +19,7 @@
 //! `u` undo, `f 0|1` finish (with momentum), `s` the computer's leader
 //! played.
 
-use crate::play::Order;
+use crate::play::{GroupOrder, Order};
 use gboh_game::hex::Hex;
 use std::path::{Path, PathBuf};
 
@@ -33,6 +33,8 @@ pub struct Save {
     pub scenario: String,
     pub computer: [bool; 2],
     pub levels: [u16; 2],
+    /// Hannibal's: the battle began with a deployment phase.
+    pub deploy: bool,
     pub orders: Vec<Order>,
     /// The campaign the battle is part of, if one (its own text, see
     /// `gboh_game::campaign::Campaign::to_text`).
@@ -46,6 +48,8 @@ pub fn order_line(o: &Order) -> String {
     match *o {
         Order::Click { hex, right } => format!("c {} {} {}", hex.x, hex.y, side(!right)),
         Order::ArmVolley => "a".into(),
+        Order::ArmBackward => "k".into(),
+        Order::EndDeployment => "d".into(),
         Order::GroupMove => "g".into(),
         Order::Rally => "y".into(),
         Order::Recover => "v".into(),
@@ -54,6 +58,7 @@ pub fn order_line(o: &Order) -> String {
         Order::Undo => "u".into(),
         Order::Finish { momentum } => format!("f {}", flag(momentum)),
         Order::StepComputer => "s".into(),
+        Order::Group(g) => format!("G {}", ["retreat", "attack", "restore", "extend"][g as usize]),
     }
 }
 
@@ -64,6 +69,8 @@ pub fn parse_order(line: &str) -> Result<Order, ()> {
     Ok(match w.as_slice() {
         ["c", x, y, s] => Order::Click { hex: Hex::new(n(x)?, n(y)?), right: *s == "r" },
         ["a"] => Order::ArmVolley,
+        ["k"] => Order::ArmBackward,
+        ["d"] => Order::EndDeployment,
         ["g"] => Order::GroupMove,
         ["y"] => Order::Rally,
         ["v"] => Order::Recover,
@@ -72,6 +79,13 @@ pub fn parse_order(line: &str) -> Result<Order, ()> {
         ["u"] => Order::Undo,
         ["f", m] => Order::Finish { momentum: *m == "1" },
         ["s"] => Order::StepComputer,
+        ["G", g] => Order::Group(match *g {
+            "retreat" => GroupOrder::Retreat,
+            "attack" => GroupOrder::Attack,
+            "restore" => GroupOrder::RestoreCohesion,
+            "extend" => GroupOrder::LineExtension,
+            _ => return Err(()),
+        }),
         _ => return Err(()),
     })
 }
@@ -88,6 +102,9 @@ impl Save {
             self.levels[0],
             self.levels[1]
         );
+        if self.deploy {
+            s.push_str("deploy 1\n");
+        }
         for line in self.campaign.iter().flat_map(|c| c.lines()) {
             s.push_str(&format!("campaign {line}\n"));
         }
@@ -119,8 +136,13 @@ impl Save {
         let levels = pair(field("levels")?)?;
         let mut orders = Vec::new();
         let mut campaign: Option<String> = None;
+        let mut deploy = false;
         for (k, line) in lines.enumerate() {
             if line.trim().is_empty() {
+                continue;
+            }
+            if line.trim() == "deploy 1" {
+                deploy = true;
                 continue;
             }
             if let Some(c) = line.strip_prefix("campaign ") {
@@ -131,7 +153,7 @@ impl Save {
             }
             orders.push(parse_order(line).map_err(|_| format!("bad order {line:?} (line {})", k + 6))?);
         }
-        Ok(Self { description, scenario, computer: [c[0] != 0, c[1] != 0], levels, orders, campaign })
+        Ok(Self { description, scenario, computer: [c[0] != 0, c[1] != 0], levels, deploy, orders, campaign })
     }
 }
 
@@ -195,6 +217,7 @@ mod tests {
             scenario: "HYDASPES.SCN".into(),
             computer: [false, true],
             levels: [80, 70],
+            deploy: false,
             orders: vec![
                 Order::Click { hex: Hex::new(13, 21), right: false },
                 Order::Click { hex: Hex::new(4, 5), right: true },

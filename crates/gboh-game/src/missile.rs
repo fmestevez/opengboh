@@ -26,7 +26,8 @@ impl Weapon {
             1 => Weapon::Bow,
             2 => Weapon::Sling,
             3 if mounted => Weapon::MountedJavelin,
-            3 => Weapon::Javelin,
+            // (Caesar's thrown axes, 5: 🟡 as javelins)
+            3 | 5 => Weapon::Javelin,
             4 => Weapon::Bolt,
             _ => return None,
         })

@@ -3,9 +3,11 @@
 An open-source reimplementation, written in Rust, of the Erudite Software engine
 behind the *Great Battles of History* (GBoH) series of computer games:
 
-* *The Great Battles of Alexander* (1997): current focus
-* *The Great Battles of Hannibal* (1997): planned
-* *The Great Battles of Caesar* (1998): planned
+* *The Great Battles of Alexander* (1997): playable, campaign included
+* *The Great Battles of Hannibal* (1997): playable, its own rules (a few
+  marked as approximations) and its campaign
+* *The Great Battles of Caesar* (1998): its battles load and play, with
+  its units, terrain and AI, under Hannibal's rules for now; no campaign yet
 
 **This repository contains no game data.** You need your own copy of a
 supported game (e.g. from GOG); the tools here read the original files
@@ -43,12 +45,12 @@ the folder where you installed the game and copies its executable and
 `DATA` folder into the rewrite's own directory (beside the saves; **Re-import**
 copies it again). The data never goes anywhere else, and the rewrite
 carries none of its own. Once a game is imported, **Continue** opens its
-start screen. Its top left has three buttons of the rewrite's own: the
+start screen. It has three buttons of the rewrite's own: the
 **Content Manager**, **Settings** (the theme: which imported game's intro,
 start screen and art the menus use; and that game's preferences) and **All
-Battles**, every imported game's battles and campaigns in one list. Only
-Alexander's battles can be played so far; the other two can be imported and
-chosen as the theme.
+Battles**, every imported game's battles and campaigns in one list.
+All three games' battles can be played (Caesar's by Hannibal's rules for
+now, without its campaign).
 
 The developer form below opens a `DATA` folder directly.
 

@@ -9,7 +9,6 @@ use gboh_formats::eif::Eif;
 use gboh_formats::map::Map;
 use gboh_formats::pal::Palette;
 use gboh_formats::scn::{Unit, battle_index};
-use gboh_formats::units::ART_TITLES;
 use std::collections::HashMap;
 
 /// Block strip offset the original picks per battle (`FUN_00506e5e`).
@@ -107,12 +106,15 @@ fn eif(load: &mut Loader, name: &str) -> Result<Eif, Error> {
     Eif::parse(&data).map_err(|e| Error::Format(name.into(), e))
 }
 
-/// The game palette as used on the battlefield: `GAME.PAL` with water
-/// animation frame 0 applied.
+/// The game palette as used on the battlefield: `GAME.PAL` (or the
+/// game's own name for it) with water animation frame 0 applied.
 pub fn palette(load: &mut Loader) -> Result<Palette, Error> {
-    let data = load("GAME.PAL").ok_or_else(|| Error::Missing("GAME.PAL".into()))?;
+    let (game, data) = gboh_formats::game::Game::ALL
+        .into_iter()
+        .find_map(|g| Some((g, load(g.palette_file())?)))
+        .ok_or_else(|| Error::Missing("GAME.PAL".into()))?;
     let mut pal = Palette::parse(&data).map_err(|e| Error::Format("GAME.PAL".into(), e))?;
-    crate::animate_water(&mut pal, 0);
+    crate::animate_water(&mut pal, 0, game);
     Ok(pal)
 }
 
@@ -146,6 +148,10 @@ pub struct Scene {
     pub grid_on: bool,
     /// The flags' pennants' animation cel.
     pub flag_frame: usize,
+    /// Hannibal's sparse trees: only each wooded hex's centre tree shows
+    /// (its terrain only).
+    pub sparse: bool,
+    hannibal: bool,
     seed: u32,
     shadow: [u8; 256],
 }
@@ -184,17 +190,34 @@ impl Scene {
     ) -> Result<Self, Error> {
         let layout = if reversed { Layout::reversed(map, zoom) } else { Layout::new(map, zoom) };
         let blocks = eif(load, zoom.blocks_file())?;
-        let artwork = eif(load, zoom.artwork_file())?;
-        let cliffs = if map.unk_b == 2 { eif(load, zoom.green_artwork_file())? } else { artwork.clone() };
-        let mut art =
-            TerrainArt::load(&blocks, &artwork, &cliffs).ok_or_else(|| Error::Strips(zoom.blocks_file().into()))?;
         let overlay = eif(load, zoom.objects_file())?;
-        art.river_rocks = strip(&overlay, "River Impass").unwrap_or_default();
         let back = eif(load, "LANDBACK.EIF")?;
-        art.background = strip(&back, "Blocks").and_then(|s| s.into_iter().next());
-        let terrain = terrain::render_view(map, &art, layout, strip_offset(map_file, map), seed);
-        let background = art.background.clone().map(|b| (b, layout.block_origin(0, 0)));
-        let placed = objects::scatter(map, &mut BorlandRand::new(seed));
+        let back_tile = strip(&back, "Blocks").and_then(|s| s.into_iter().next());
+        let background = back_tile.clone().map(|b| (b, layout.block_origin(0, 0)));
+        // Hannibal's terrain: streams of edges and corners in the overlay
+        // file, no artwork file
+        let hannibal = overlay.strips.iter().any(|s| s.name == "Minor River Edges" || s.name == "Minor Rivers");
+        let (terrain, placed) = if hannibal {
+            let caesar = overlay.strips.iter().any(|s| s.name == "Minor Rivers");
+            let battle = if caesar { crate::hanland::Battle::of_caesar(map_file) } else { crate::hanland::Battle::of(map_file) };
+            let snow = if battle.snow { Some(eif(load, zoom.snow_blocks_file())?) } else { None };
+            let mut art = crate::hanland::HanArt::load(&blocks, snow.as_ref(), &overlay).ok_or_else(|| Error::Strips(zoom.blocks_file().into()))?;
+            art.background = back_tile;
+            let objects = ObjectSprites::load(&overlay);
+            let trees = objects.count(if battle.snow { objects::ObjectArt::SnowTrees } else { objects::ObjectArt::Trees });
+            (
+                crate::hanland::render_view(map, &art, layout, battle.strip_offset, seed),
+                crate::hanland::scatter(map, &battle, reversed, trees, caesar, &mut BorlandRand::new(seed)),
+            )
+        } else {
+            let artwork = eif(load, zoom.artwork_file())?;
+            let cliffs = if map.unk_b == 2 { eif(load, zoom.green_artwork_file())? } else { artwork.clone() };
+            let mut art =
+                TerrainArt::load(&blocks, &artwork, &cliffs).ok_or_else(|| Error::Strips(zoom.blocks_file().into()))?;
+            art.river_rocks = strip(&overlay, "River Impass").unwrap_or_default();
+            art.background = back_tile;
+            (terrain::render_view(map, &art, layout, strip_offset(map_file, map), seed), objects::scatter(map, &mut BorlandRand::new(seed)))
+        };
         let suffix = match zoom {
             Zoom::In => "",
             Zoom::Normal => " (Half size)",
@@ -215,7 +238,7 @@ impl Scene {
         let mut unit_art = HashMap::new();
         for &ty in types {
             unit_art.entry(ty).or_insert_with(|| {
-                let title = format!("{}{suffix}", ART_TITLES[ty]);
+                let title = format!("{}{suffix}", gboh_formats::units::title(ty)?);
                 load_title(&title).and_then(|d| Eif::parse(&d).ok()).and_then(|e| UnitSprites::load(&e))
             });
         }
@@ -265,6 +288,8 @@ impl Scene {
             grid,
             grid_on: false,
             flag_frame: 0,
+            sparse: false,
+            hannibal,
             seed,
             shadow: pal.remap[0],
         })
@@ -335,10 +360,17 @@ impl Scene {
                 }
             }
         }
-        let mut items = objects::drawables(map, layout, &self.objects, &self.placed);
+        let sparse = self.sparse && self.hannibal;
+        let shown: Vec<objects::Placement> = self
+            .placed
+            .iter()
+            .filter(|p| !sparse || !matches!(p.art, objects::ObjectArt::Trees | objects::ObjectArt::SnowTrees) || p.offset == (0, 0))
+            .copied()
+            .collect();
+        let mut items = objects::drawables(map, layout, &self.objects, &shown);
         for c in corpses {
             if c.kind >= units::MISSILE {
-                let missile = crate::missiles::Missile::ALL[(c.kind - units::MISSILE).min(3)];
+                let missile = crate::missiles::Missile::ALL[(c.kind - units::MISSILE).min(crate::missiles::Missile::ALL.len() - 1)];
                 if let Some(d) = self.missile_debris.as_ref().and_then(|art| {
                     art.drawable(missile, c.cel, objects::anchor_at(map, layout, c.hex, c.offset))
                 }) {

@@ -21,6 +21,7 @@ impl BorlandRand {
         self.0
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> u32 {
         self.0 = self.0.wrapping_mul(22695477).wrapping_add(1);
         (self.0 >> 16) & 0x7fff

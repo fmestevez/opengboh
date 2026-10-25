@@ -1702,3 +1702,215 @@ music). The original names them in tables at `0x61ad34`–`0x61b068`:
 
 The viewer plays selection, movement, volley (shot and hit), shock (with
 elephants), battle start and the end.
+
+## Hannibal and Caesar 🟡 (from Hannibal's executable; Caesar's files only where noted)
+
+The three games share the engine. What differs in their files:
+
+- **Palette** `HANNIBAL.PAL` / `CAESAR.PAL` (same format as `GAME.PAL`). The
+  executable is `HANNIBAL.EXE` / `CAESAR.EXE` (Caesar's folder also holds a
+  scenario editor). Fonts: no `MS8TEXT.EIF`; the small font is `MSSANS2.EIF`
+  ("MS Sans Serif 2", 94 glyphs from `!`). `WALKANIM.EIF` is Alexander's,
+  byte for byte. The `.ANI` files are Windows animated cursors.
+- **Intro**: `INTRO.AVI` beside `DATA` (Indeo 3.2, 512 × 384, 15 frames a
+  second), no Director projector; Hannibal has no history video (its button
+  sits off the dialog, at x = −100).
+- **Scenarios** (`gboh_formats::scn`, layout `Hannibal`, which Caesar's
+  share): a side's rout level is a u16; every unit's common part ends with a
+  u16 **arrival turn** (non-zero: the unit enters at its hex on that turn and
+  doesn't count toward the rout totals before); leaders add a u8 (elite
+  initiative) and an i16 (link group, −1 none) to the four ratings; kind 21
+  (Hannibal's legions) and 25 (Caesar's) are missile records with an i16
+  legion type (1 hastati, 2 principes, 3 cohort); kind 22 (Roman cavalry)
+  reads as heavy cavalry (a cataphract byte); Caesar adds 23 (missile) and
+  24 (combat). The layout isn't marked in the file; the parser takes the
+  one that reads it through. Nation bytes 6 Roman, 7 Carthaginian, 8
+  Seleucid follow Alexander's six. One of Hannibal's files (an early draft
+  the game hides) has leaders without the elite byte.
+- **Unit types** (`gboh_formats::units::HANNIBAL_TYPES`): the 54 sprite sets
+  Hannibal registers, in its order (type ids from `HANNIBAL` = 45 on), each
+  with its class; a unit's type follows from kind, nation, missile byte,
+  cataphract byte, legion type and parts of its name (for instance
+  Carthaginian medium infantry named for Celts are drawn as one of three
+  Celtic sets).
+- **Missiles**: Hannibal adds "Mounted Javelins" (light cavalry, elephants),
+  "Light Javelins" (light infantry) and "Pilum Javelins" (legions) to
+  Alexander's four.
+- **Water**: the same four frames of colours, on palette indices 41..=45.
+- **Music**: Hannibal plays its CD (GOG: `MUSIC/TrackNN.ogg` beside `DATA`):
+  the start screen track 2, battles tracks 3, 4, 5 in turn, a defeat 6, a
+  victory 7; without it the WAVs (`START`, `TRACK1`..`3`, `VICTORY`,
+  `DEFEAT`).
+
+### Hannibal's terrain (`gboh_render::hanland`)
+
+No "Landscape Artwork" files: the block files have the cliffs, the overlay
+files the streams.
+
+- **Blocks** as Alexander's (masks, counts, cels), chosen with the 64-bit
+  `random()`; the strip offset is 3 at Bagradas and Zama, 2 at Ilipa. Trebbia
+  is in snow: `SLAND*.EIF` ("Snow Landscape Blocks": `River` at elevation 0,
+  `All Levels` above). Before the blocks, every tile above water draws one
+  number for its (hidden) battle scar.
+- **Edges** as Alexander's, but an off-map neighbour counts as elevation 9.
+- **Cliffs**: where the lower-right (lower-left) neighbour is two or more
+  levels down, a half-block `SE` (`SW`) `Cliffs 1-3` (hex at elevation 3) or
+  `Cliffs 3-5` cel, cel = tile index mod 4, at (w/2 or 0, 3 − zoom + 3h/4)
+  from the tile's top-left (zoom 0, 1, 2), under the block; a same-row
+  neighbour one level lower carries on the face one level down. A missing
+  lower neighbour (the map's sides) is replaced by the hex two rows down.
+- **Streams** (side code 6): each side with a stream draws `Minor River
+  Edges` cel 0..6 (N, NE, SE, S, SW, NW); a side without one draws `Minor
+  River Corners` where its neighbours' streams meet it. A neighbour exactly
+  one level higher moves a piece up a level or swaps it for one of edges cels
+  6..16 (at Trebbia too, from the plain set). Cliffs hide the pieces on their
+  sides. Offsets per zoom are in the code.
+- **Objects**: trees 5 or 6 on a 2 × 2 grid of the hex (from (−65, −32)) and
+  one in the centre (snow trees at Trebbia); a stone hex has a single stone at
+  (−49, −22). Baecula has towers on six hexes and seven camp wall pieces
+  (each with a reversed-view set).
+
+### Hannibal's scenario screen
+
+A map (the add-on's "Scenario Map" where Dertosa's scenario is installed)
+with the battles' names painted on it; a click on a name chooses that
+battle, which is framed, and the box below shows its overview picture (the
+battle's strip in `OVERVIEW.EIF`, its half-size cel) and its description.
+The rout dialog adds two checkboxes (turn limits, default deployments). The
+difficulty favours the player's army (the home one unless the computer
+plays it), in Alexander as well.
+
+### Hannibal's rules (`gboh_game::game::Rules::Hannibal`)
+
+Most of the rules code is Alexander's (the shock, missile, movement,
+terrain and rout tables are the same). What Hannibal's executable does
+differently, as ported:
+
+- **Classes**: 1 legion (hastati, principes, cohorts: one pilum, never
+  resupplied, not armoured against missiles) and 9 Roman cavalry (heavy
+  cavalry wherever a rule names horse). The shock tables already have their
+  rows.
+- **Superiority** is consulted always and last, so attacker and defender can
+  both be superior. Elephants: others' attacking Roman elephants are
+  superior; elephants other than the Carthaginians' get +1 column against
+  other troops; they shake Carthaginian elephants' pre-shock checks. Celts
+  attacking (by name) shake the defenders' checks as chariots do.
+- **Pursuit**: a defender that breaks (not an elephant) is pursued by the
+  first attacking horse unit that held, on `rand() % 10` (+2 against foot) of
+  4 (heavy cavalry), 6 (Roman cavalry, lancers) or 8 (light cavalry); caught
+  foot may be eliminated; enemy leaders beside the pursuer step away. Failing
+  the roll, it advances into the hex instead. One advance a shock.
+- **Orderly withdrawal**: horse withdraw only before foot.
+- **Group orders** (move, attack, retreat, restore cohesion): roll `random()
+  % 100` against `(initiative − 2) × 20 + 30` (one hex: + 50), easier after
+  failures; **Roman leaders never fail**; refused only with an enemy beside a
+  unit; success takes the whole activation.
+- **Manipular line extension**: a Roman leader's legion maniples sidestep to
+  widen the line (🟡 directions not recovered), the whole activation.
+- **Elite initiative**: any leader with the scenario's elite flag, three
+  times a battle at most; on the first turn always (his chain of superiors
+  followed up), later 40 %. In the draw a leader's superior goes first if he
+  hasn't yet.
+- **Victory**: one rout rule; Hannibal's death loses his army the battle;
+  turn limits only when the set-up's option is on.
+- Restore cohesion in an enemy's zone: −60 (Alexander −40). Reaction fire
+  from a tower (hex code 14) all round. Rampaging elephants trample routed
+  units out. Resupply skips legions and isn't an order. Arrivals by turn.
+- Battles: wind at Cannae (70 % a turn; facing into it, a hex less);
+  Trasimene's Romans idle on the first turn; Metaurus' Ligurians and Gauls
+  need a Roman within 7 hexes and a TQ check the first time.
+- **Backward movement**: a unit steps back through its rear, two movement
+  points at most, its facing kept.
+- **Deployment phase** (when the set-up's default deployments are off and
+  the armies are more than a hex apart): the line halfway between the
+  armies across their retreat edges' axis is fixed; the player puts his
+  units on his side of it, on passable empty hexes, then Finish begins the
+  battle. A save records that the battle began with one.
+- **Options** (Hannibal's Preferences): the Triarii tactical doctrine
+  (Roman Triarii take no orders while a legion unit stands within 6 hexes,
+  unless an enemy other than elephants is within 3), sparse trees (only each
+  wooded hex's centre tree shows).
+- Not yet: the free units' own chit (they act at the end of the turn
+  instead), a player's own elite initiative choice, the group command
+  confirmation.
+
+### Hannibal's campaign (`gboh_game::campaign::Kind::Hannibal`)
+
+Alexander's campaign game on other tables (`HannibalCampaignGame`):
+
+- Ten provinces in a ring (0 Carthage … 9 Sicily) with Cisalpine Gaul also
+  next to Roma; one table for the routes and what a conquest reveals; the
+  army starts in Gaul; Carthage, Numidia, Lusitania and Hispania held
+  wholly; the fleet off Gaul, Magna Graecia and Sicily. Staying put isn't a
+  march; Roma is never conquered nor subjugated.
+- Battles are queued when the map closes with Battle: Numidia's Bagradas,
+  Cisalpine Gaul's Trebbia then Trasimene, Magna Graecia's Cannae. Battle is
+  offered only after the flag is moved to an unconquered province with
+  battles. Three queues: Cannae won brings Baecula and Metaurus the round
+  after next, then Ilipa; Metaurus lost (the only loss that doesn't end the
+  campaign) brings the Great Plains and Zama.
+- Won with Zama, or Cisalpine Gaul, Samnium, Magna Graecia and Sicily wholly
+  subjugated (checked every round).
+- The opening: no changes in round 1; coasts Gaul, Magna Graecia, Sicily;
+  the province of a battle just lost slips for sure; reinforcements in
+  Carthage of `max(0, 12s − 4n)` infantry and `max(0, 3s − n)` cavalry, `n`
+  the unsubjugated among Numidia, Lusitania, Hispania (not the army's),
+  `s` 2 with Magna Graecia wholly held.
+- The screen: `CAMPAIGN.EIF` only (its own background); the map's window at
+  (35, 8), the map 11 pixels down in it; every province shaded by its
+  subjugation (hidden ones too: Area Blackout cels only tell where the
+  mouse is; the shading cels are RLE effect runs); no names strip (the names
+  painted on the map; for the log the executable's, from `0x655500`), no
+  numerals, no battle labels; 2 × 2 dissolve cells. Results: the Victory or
+  Defeat background with the Carthaginian's picture at (174, 89), rounds,
+  provinces conquered and wholly subjugated, and a rating named by how the
+  campaign ended. No video.
+
+### Caesar 🟡 (from Caesar's executable)
+
+Caesar's engine is Hannibal's one version on. Where it differs:
+
+- **Scenarios**: Hannibal's layout. Told apart by their nations (9
+  Caesarian, 10 Pompeian, 11 barbarians: Gauls, Germans, Helvetii, Nervii,
+  Cimbri; 0 is Mithridates' Pontic army, 6 Roman) or by kinds 23 (barbarian
+  foot, a missile record), 24 (barbarian horse, a combat record) and 25
+  (cohorts, a missile record whose i16 is 1 veteran, 2 recruit, 3
+  conscript). The header's nation pairs also choose the art: a unit whose
+  nation is a pair's first takes the second's art (Sulla's and Marius'
+  armies are drawn as Romans, the Romans as Pompeians). The missile byte
+  adds 5, a thrown axe.
+- **Unit types** (`gboh_formats::units::CAESAR_TYPES`, ids from `CAESAR`
+  on): Caesar's 59 sprite sets in its order, each with its class (three
+  new: barbarian infantry and cavalry, which fight only hand to hand, and
+  artillery: scorpions and ballistas) and the missile its men throw. A
+  unit's set follows from kind, nation, missile byte, cohort type and parts
+  of its name; leaders' names are matched whole (`J. Caesar`, `Pompey`,
+  `Beorix` have their own figures). Where the game picks one of three sets
+  (A, B, C) at random, opengboh picks by the name.
+- **Missiles**: "Axes" joins the table at index 3, so Hannibal's later
+  entries move one up.
+- **Terrain** (`gboh_render::hanland`, the overlay file has `Minor Rivers`):
+  as Hannibal's, except that
+  - a stream is drawn as one piece per hex corner whose two sides both have
+    it (three variants each), and an end cap where it stops (which a
+    neighbour's corner piece clears);
+  - hex code 12 is a road: each road hex joins up to three pieces toward
+    its road neighbours (or the map's edge); on elevation 0 the piece is a
+    bridge, and a `Road Fix` cel covers a step up to an upper neighbour;
+  - hex code 3 is marsh (a tile overlay); side code 10 is a ditch, or a
+    berm on hexes with code 4 and two gaps in Caesar's line at
+    Dyrrhachium (one piece per corner, as streams);
+  - side codes 9 and 11 are walls, objects drawn on each hex's south,
+    south-west and north-west sides; towers stand on hexes the game lists
+    for Dyrrhachium, Pharsalus, Thapsus, Munda and Bibracte;
+  - no snow; Ruspina's strips start four on; the tiles are drawn a layer at
+    a time (cliffs, blocks, overlays, ditches), each overlay placed by its
+    cel's hotspot.
+- **AI scripts**: procedures may take `var` parameters, passed by
+  reference. Leader constants (`TRIBUNE_VI`, `J_CAESAR`) are not in
+  `CONSTANT.AI`: each command group is named after its leader (words in
+  capitals joined by `_`) with its group id as the value. Hannibal's
+  scripts address their groups the same way (its `CONSTANT.AI` numbers
+  match no scenario's groups). A plan's `Orders for` names a leader by the
+  letters and digits of his name (`TribuneIIICaesarian`).
+- **Rules**: fought by Hannibal's for now.

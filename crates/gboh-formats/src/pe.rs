@@ -191,6 +191,19 @@ fn parse_cursor(d: &[u8]) -> Result<Cursor> {
 /// The NUL-terminated string at virtual address `va` of executable `d`
 /// (in its image as loaded at its preferred base), if it is in a section.
 pub fn string_at(d: &[u8], va: u32) -> Option<String> {
+    let off = file_offset(d, va)?;
+    let bytes = d.get(off..)?;
+    let end = bytes.iter().position(|&b| b == 0)?;
+    Some(bytes[..end].iter().map(|&b| b as char).collect())
+}
+
+/// The 32-bit value at virtual address `va` of the executable `d`.
+pub fn u32_at_va(d: &[u8], va: u32) -> Option<u32> {
+    u32_at(d, file_offset(d, va)?).ok()
+}
+
+/// Where virtual address `va` lies in the executable's file.
+fn file_offset(d: &[u8], va: u32) -> Option<usize> {
     let pe = u32_at(d, 0x3c).ok()? as usize;
     let sections = u16_at(d, pe + 6).ok()? as usize;
     let optional = u16_at(d, pe + 20).ok()? as usize;
@@ -201,9 +214,7 @@ pub fn string_at(d: &[u8], va: u32) -> Option<String> {
         let (vsize, sva, rsize, raw) = (u32_at(d, o + 8).ok()?, u32_at(d, o + 12).ok()?, u32_at(d, o + 16).ok()?, u32_at(d, o + 20).ok()?);
         (sva <= rva && rva < sva + vsize.max(rsize)).then(|| (raw + rva - sva) as usize)
     })?;
-    let bytes = d.get(off..)?;
-    let end = bytes.iter().position(|&b| b == 0)?;
-    Some(bytes[..end].iter().map(|&b| b as char).collect())
+    Some(off)
 }
 
 /// A menu item (`RT_MENU`): a command (`id`), a popup with `items`, or a

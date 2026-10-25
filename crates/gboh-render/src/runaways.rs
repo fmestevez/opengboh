@@ -43,11 +43,14 @@ impl Runaway {
     /// the original's two `rand() % 100` rolls (the second only for
     /// chariots).
     pub fn left_by(type_id: usize, roll: u32, second: u32) -> Option<Self> {
+        // (Hannibal's cataphracts leave plain horses: its game never makes
+        // a cataphracted horse; its chariots are Persian)
+        let persian = type_id == 22 || type_id >= gboh_formats::units::HANNIBAL;
         match type_id {
             41 | 44 if roll < 15 => Some(Runaway::CataphractHorse),
-            22 | 23 if roll < 25 => Some(if second >= 25 {
+            t if gboh_formats::units::chariot(t) && roll < 25 => Some(if second >= 25 {
                 Runaway::RunningChariot
-            } else if type_id == 22 {
+            } else if persian {
                 Runaway::DraggingPersian
             } else {
                 Runaway::DraggingIndian

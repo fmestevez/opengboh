@@ -32,7 +32,6 @@ use anyhow::{Context, Result, bail};
 use gboh_formats::map::Map;
 use gboh_formats::pal::Palette;
 use gboh_formats::scn::Scenario;
-use gboh_formats::units::ART_TITLES;
 use gboh_render::battlefield::{self, Scene};
 use gboh_render::units::UnitView;
 use gboh_render::terrain::Zoom;
@@ -522,6 +521,8 @@ struct Viewer {
     video: Option<video::Video>,
     /// The intro or the historical video, while it plays.
     slides: Option<slides::Slides>,
+    /// Whether the video playing is the intro (over the whole window).
+    intro: bool,
     cursors: std::collections::HashMap<&'static str, winit::window::CustomCursor>,
     cursor_shown: Option<&'static str>,
     edge: Option<(f32, f32)>,
@@ -531,6 +532,8 @@ struct Viewer {
     /// selector), its buttons, a line of news, an import under way, the
     /// settings, and the title whose data is in use.
     shell: Option<shell::Screen>,
+    /// The next battle begins with Hannibal's deployment phase.
+    deploy_next: bool,
     shell_buttons: Vec<shell::Button>,
     shell_pressed: Option<(i32, i32)>,
     /// For testing: clicks (or drags) to make, in the window's physical
@@ -896,6 +899,9 @@ impl Viewer {
                 setup::Outcome::Play { .. } | setup::Outcome::Campaign | setup::Outcome::Multiplayer if !self.game.is_none_or(|g| g.playable()) => {
                     self.notice(&["The rewrite does not play this game's battles yet."]);
                 }
+                setup::Outcome::Campaign if gboh_formats::game::Game::detect(&self.data_dir) == Some(gboh_formats::game::Game::Caesar) => {
+                    self.notice(&["The rewrite does not play this game's campaign yet."]);
+                }
                 setup::Outcome::Play { scenario, computer, levels } => {
                     if let Some(n) = &mut self.net {
                         // a network game: both armies played by hand, once
@@ -907,10 +913,15 @@ impl Viewer {
                         } else {
                             self.message(&[109]);
                         }
-                    } else if let Err(e) = self.start_battle(&scenario, computer, levels) {
-                        eprintln!("error: {e:#}");
+                    } else {
+                        // Hannibal's set-up: the player deploys his army
+                        self.deploy_next = self.setup.as_ref().is_some_and(|s| !s.default_deployment);
+                        if let Err(e) = self.start_battle(&scenario, computer, levels) {
+                            eprintln!("error: {e:#}");
+                        }
                     }
                 }
+                setup::Outcome::Message(ids) if ids == [83] => self.manual_note(),
                 setup::Outcome::Message(ids) => self.message(&ids),
                 setup::Outcome::Tutorial => self.tutorial(),
                 setup::Outcome::History => self.run_program("HISTORY.EXE"),
@@ -1071,7 +1082,8 @@ impl Viewer {
                 Some(101) => self.game_overview = true,
                 Some(102) => self.ending = false,
                 Some(1) => {
-                    let won = self.play.as_ref().and_then(|p| p.winner.map(|a| p.game.armies[a].0 == MACEDONIAN));
+                    let player = self.campaign.as_ref().map_or(MACEDONIAN, |c| c.player_nation());
+                    let won = self.play.as_ref().and_then(|p| p.winner.map(|a| p.game.armies[a].0 == player));
                     self.back_to_start();
                     if let (Some(c), Some(won)) = (&mut self.campaign, won) {
                         let next = c.after_battle(won);
@@ -1165,6 +1177,24 @@ impl Viewer {
         if self.shell.is_some() {
             if let Some(g) = &mut self.gpu {
                 g.set_overlay(None);
+            }
+            return;
+        }
+        // the intro: its frame in the middle of the window, as large as
+        // whole pixels allow, on black
+        if let (true, Some(v)) = (self.intro, &self.video) {
+            let mut c = Canvas::new(w, h, v.black());
+            if let Some(f) = &v.shown {
+                let k = (w / f.width).min(h / f.height).max(1);
+                let big = gboh_render::Sprite {
+                    width: f.width * k,
+                    height: f.height * k,
+                    pixels: (0..f.height * k).flat_map(|y| (0..f.width * k).map(move |x| (x, y))).map(|(x, y)| f.pixels[(y / k) * f.width + x / k]).collect(),
+                };
+                c.blit(&big, (w as i32 - big.width as i32) / 2, (h as i32 - big.height as i32) / 2);
+            }
+            if let Some(g) = &mut self.gpu {
+                g.set_overlay(Some(&c));
             }
             return;
         }
@@ -1366,6 +1396,7 @@ impl Viewer {
         self.scenes = scenes;
         for s in self.scenes.iter_mut() {
             s.grid_on = grid;
+            s.sparse = self.prefs.sparse_trees;
         }
         // the background's tiling starts elsewhere on the turned field
         let tiles = self.tiles();
@@ -1379,7 +1410,7 @@ impl Viewer {
     /// A toolbar button pressed.
     fn tool(&mut self, tool: hud::Tool) {
         use hud::Tool::*;
-        let orders = matches!(tool, FinishLeader | RotateLeft | RotateRight | AboutFace | MissileVolley | RestoreCohesion | Rally | Undo);
+        let orders = matches!(tool, FinishLeader | RotateLeft | RotateRight | AboutFace | MissileVolley | RestoreCohesion | Rally | Undo | BackwardMovement);
         if orders && !self.my_turn() {
             return;
         }
@@ -1462,6 +1493,19 @@ impl Viewer {
                 self.set_level(2);
                 false
             }
+            CloseGame => {
+                self.command(211);
+                return;
+            }
+            GroupMove => {
+                self.command(212);
+                return;
+            }
+            LineExtension => {
+                self.command(247);
+                return;
+            }
+            BackwardMovement => p.arm_backward(),
             _ => false,
         };
         if changed {
@@ -1488,6 +1532,9 @@ impl Viewer {
                 MissileVolley => p.can_fire(),
                 AboutFace => p.can_about_face(),
                 Undo => p.can_undo(),
+                GroupMove => p.game.group_move_refused().is_none(),
+                LineExtension => p.game.can_extend_line(),
+                BackwardMovement => p.can_back(),
                 _ => true,
             }
         };
@@ -1499,6 +1546,9 @@ impl Viewer {
             226 | 227 => !p.over,
             209 | 224 => !p.over && p.leader().is_some(),
             212 => p.game.group_move_refused().is_none(),
+            247 => p.game.can_extend_line(),
+            248 | 259 | 260 => p.game.rules == gboh_game::game::Rules::Hannibal && p.game.points.as_ref().is_some_and(|c| c.used == 0),
+            246 => p.can_back(),
             222 | 213 | 214 | 220 | 221 => selected,
             225 => tool(hud::Tool::UnitDetails),
             219 => tool(hud::Tool::MissileVolley),
@@ -1543,6 +1593,27 @@ impl Viewer {
             209 => self.tool(Tool::CenterOnLeader),
             212 => {
                 if self.my_turn() && self.play.as_mut().is_some_and(|p| p.group_move()) {
+                    self.changed();
+                }
+            }
+            // Hannibal's: line extension, group retreat, attack, restore
+            // cohesion
+            246 if self.play.as_ref().is_some_and(|p| p.game.rules == gboh_game::game::Rules::Hannibal) => {
+                if self.my_turn()
+                    && let Some(p) = &mut self.play
+                {
+                    p.arm_backward();
+                }
+            }
+            247 | 248 | 259 | 260 if self.play.as_ref().is_some_and(|p| p.game.rules == gboh_game::game::Rules::Hannibal) => {
+                use play::GroupOrder::*;
+                let order = match id {
+                    247 => LineExtension,
+                    248 => Retreat,
+                    259 => Attack,
+                    _ => RestoreCohesion,
+                };
+                if self.my_turn() && self.play.as_mut().is_some_and(|p| p.group_order(order)) {
                     self.changed();
                 }
             }
@@ -1591,7 +1662,8 @@ impl Viewer {
     /// The help file, read on first use.
     fn help(&mut self) -> Option<&gboh_formats::hlp::Help> {
         if self.help.is_none() {
-            let path = find_ci(&self.data_dir, "ALEX.HLP")?;
+            let game = gboh_formats::game::Game::detect(&self.data_dir).unwrap_or_default();
+            let path = find_ci(&self.data_dir, game.help_file())?;
             self.help = std::fs::read(path).ok().and_then(|d| gboh_formats::hlp::Help::parse(&d).ok());
         }
         self.help.as_ref()
@@ -1788,6 +1860,17 @@ impl Viewer {
         self.redraw();
     }
 
+    /// Point the player to the game's manual (what the GOG build's help
+    /// and details do): Alexander's string 83; the other games have no such
+    /// string (Hannibal's 83 is a nation's name), so in the rewrite's words.
+    fn manual_note(&mut self) {
+        if gboh_formats::game::Game::detect(&self.data_dir).unwrap_or_default() == gboh_formats::game::Game::Alexander {
+            self.message(&[83]);
+        } else {
+            self.notice(&["See the game's manual for details."]);
+        }
+    }
+
     /// Tell the player something in the rewrite's own words (the
     /// original's `MESSAGEBOX`, up to three lines).
     fn notice(&mut self, lines: &[&str]) {
@@ -1804,7 +1887,7 @@ impl Viewer {
         let topic = self.help().and_then(|h| h.topics.iter().position(|t| t.title.contains("Tutorial")));
         match topic {
             Some(k) => self.open_topic(k),
-            None => self.message(&[83]),
+            None => self.manual_note(),
         }
         self.update_hud();
         self.redraw();
@@ -1815,7 +1898,7 @@ impl Viewer {
     /// Windows, elsewhere through the command `GBOH_WINE` names, if set;
     /// else the pointer to the manual. The game does not wait for it.
     fn run_program(&mut self, name: &str) {
-        let Some(path) = find_ci(&self.data_dir, name) else { return self.message(&[83]) };
+        let Some(path) = find_ci(&self.data_dir, name) else { return self.manual_note() };
         // the rewrite plays the movie inside itself
         if let Some(s) = slides::Slides::open(&path, &self.data_dir) {
             self.sound.set_music(sound::Music::Silent);
@@ -1836,8 +1919,43 @@ impl Viewer {
             false
         };
         if !started {
-            self.message(&[83]);
+            self.manual_note();
         }
+    }
+
+    /// The intro: Alexander's Director projector, or Hannibal's and
+    /// Caesar's `INTRO.AVI` beside `DATA`, over the whole window.
+    fn play_intro(&mut self) {
+        if find_ci(&self.data_dir, "INTRO.EXE").is_some() {
+            self.run_program("INTRO.EXE");
+            self.plain = None;
+            return;
+        }
+        let avi = self.data_dir.parent().and_then(|p| find_ci(p, "INTRO.AVI"));
+        if let Some(mut v) = avi.and_then(|p| video::Video::open_true_colour(&p, &self.base_palette)) {
+            self.sound.set_music(sound::Music::Silent);
+            if let (Some(g), Some(p)) = (&self.gpu, &v.palette) {
+                g.set_palette(p);
+            }
+            if let Some(wav) = v.sound.take() {
+                self.sound.play_data(wav);
+            }
+            self.video = Some(v);
+            self.intro = true;
+            self.update_hud();
+            self.redraw();
+        }
+    }
+
+    /// The intro over (or cut short): the start screen and its music.
+    fn end_intro(&mut self) {
+        self.intro = false;
+        self.video = None;
+        self.upload_palette();
+        self.sound.stop_data();
+        self.sound.set_music(sound::Music::Start);
+        self.update_hud();
+        self.redraw();
     }
 
     /// More...: the scenario files in `DATA` besides the battles' (the
@@ -1976,6 +2094,11 @@ impl Viewer {
                 self.settings.save();
                 self.show_shell();
             }
+            (id, Some(shell::Screen::Selector { entries, .. })) if (shell::SCROLL_AT..shell::ENTRY).contains(&id) => {
+                let scroll = ((id - shell::SCROLL_AT) as usize).min(entries.len().saturating_sub(1));
+                self.shell = Some(shell::Screen::Selector { entries, scroll });
+                self.show_shell();
+            }
             (shell::SCROLL_UP | shell::SCROLL_DOWN, Some(shell::Screen::Selector { entries, scroll })) => {
                 let scroll = if id == shell::SCROLL_UP { scroll.saturating_sub(5) } else { (scroll + 5).min(entries.len().saturating_sub(1)) };
                 self.shell = Some(shell::Screen::Selector { entries, scroll });
@@ -2047,7 +2170,7 @@ impl Viewer {
             self.data_dir = dir.clone();
             self.hud = hud::Hud::new(&dir);
             self.menu_bar = menu::MenuBar::load(&dir, "CHILDMENU");
-            if let Some(pal) = find_ci(&dir, "GAME.PAL").and_then(|p| std::fs::read(p).ok()).and_then(|d| Palette::parse(&d).ok()) {
+            if let Some(pal) = palette_path(&dir).and_then(|p| std::fs::read(p).ok()).and_then(|d| Palette::parse(&d).ok()) {
                 self.base_palette = pal;
             }
             self.sound = sound::Sound::new(&dir);
@@ -2121,7 +2244,8 @@ impl Viewer {
     /// battles queued).
     fn start_campaign(&mut self) {
         let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_secs() as u32);
-        let mut c = gboh_game::campaign::Campaign::new(seed);
+        let hannibal = gboh_formats::game::Game::detect(&self.data_dir) == Some(gboh_formats::game::Game::Hannibal);
+        let mut c = if hannibal { gboh_game::campaign::Campaign::new_hannibal(seed) } else { gboh_game::campaign::Campaign::new(seed) };
         let next = c.after_battle(true);
         self.campaign = Some(c);
         self.campaign_next(next);
@@ -2146,9 +2270,10 @@ impl Viewer {
                 let events = c.opening();
                 let first = c.round == 1;
                 let over = c.round > gboh_game::campaign::ROUNDS;
-                let mut log: Vec<String> = c.log.iter().map(|e| campaign::describe(e, &names)).collect();
+                let kind = c.kind;
+                let mut log: Vec<String> = c.log.iter().map(|e| campaign::describe(e, &names, kind)).collect();
                 if log.is_empty() {
-                    log = events.iter().map(|e| campaign::describe(e, &names)).collect();
+                    log = events.iter().map(|e| campaign::describe(e, &names, kind)).collect();
                 }
                 // the first round opens with Battle (Macedon's battles are
                 // queued), the others with Subjugate until the army moves
@@ -2166,9 +2291,11 @@ impl Viewer {
                 // what to do next, in the rewrite's words (the original
                 // left it to its help)
                 if !over {
-                    log.push(if first { "Press Battle to fight for Macedon.".into() } else { "Drag the army's flag to march on a province, or press Subjugate to stay.".into() });
+                    log.push(if first && kind == gboh_game::campaign::Kind::Alexander { "Press Battle to fight for Macedon.".into() } else { "Drag the army's flag to march on a province, or press Subjugate to stay.".into() });
                 }
                 let scroll = changes.front().map_or(0, |&(p, _)| self.campaign_art().centre_on(p));
+                // (Hannibal's map always opens on Subjugate)
+                let first = first && kind == gboh_game::campaign::Kind::Alexander;
                 self.campaign_map = Some(campaign::MapState { battle: first, subjugate: !first, log, changes, scroll, ..Default::default() });
                 if over {
                     let next = self.campaign.as_mut().map(|c| c.end_round());
@@ -2182,7 +2309,9 @@ impl Viewer {
                 self.campaign_results = self.campaign.take().map(|c| c.results());
                 // victory: first the video (`VideoDlg`), the music paused
                 if let Some(r) = self.campaign_results {
-                    let video = if r.victory { find_ci(&self.data_dir, "320ALEX.AVI").and_then(|p| video::Video::open(&p, &self.base_palette)) } else { None };
+                    // (Hannibal's has no video)
+                    let alexander = self.campaign_art.as_ref().is_some_and(|a| a.kind() == gboh_game::campaign::Kind::Alexander);
+                    let video = if r.victory && alexander { find_ci(&self.data_dir, "320ALEX.AVI").and_then(|p| video::Video::open(&p, &self.base_palette)) } else { None };
                     match video {
                         Some(mut v) => {
                             self.sound.set_music(sound::Music::Silent);
@@ -2205,11 +2334,14 @@ impl Viewer {
     /// the Macedonians, the computer the enemy, at the scenario's rout
     /// levels.
     fn campaign_battle(&mut self, b: usize) -> Result<()> {
-        let file = setup::SCENARIOS[b];
+        let (file, player) = match &self.campaign {
+            Some(c) if c.kind == gboh_game::campaign::Kind::Hannibal => (gboh_game::campaign::HANNIBAL_BATTLES[b], c.player_nation()),
+            _ => (setup::SCENARIOS[b], MACEDONIAN),
+        };
         let data = find_ci(&self.data_dir, file).and_then(|p| std::fs::read(p).ok()).context("scenario not found")?;
         let scn = Scenario::parse(&data)?;
-        let computer = [scn.home.nation != MACEDONIAN, scn.visitor.nation != MACEDONIAN];
-        let levels = [scn.home.rout_level as u16, scn.visitor.rout_level as u16];
+        let computer = [scn.home.nation != player, scn.visitor.nation != player];
+        let levels = [scn.home.rout_level, scn.visitor.rout_level];
         let campaign = self.campaign.take();
         let result = self.start_battle(file, computer, levels);
         self.campaign = campaign;
@@ -2220,8 +2352,18 @@ impl Viewer {
     fn campaign_button(&mut self, at: Option<u16>) {
         let Some(m) = &self.campaign_map else { return };
         match at {
-            Some(10) if m.battle => self.campaign_end_round(),
-            Some(11) if m.subjugate => self.campaign_end_round(),
+            Some(10) if m.battle => {
+                if let Some(c) = &mut self.campaign {
+                    c.subjugate = false;
+                }
+                self.campaign_end_round()
+            }
+            Some(11) if m.subjugate => {
+                if let Some(c) = &mut self.campaign {
+                    c.subjugate = true;
+                }
+                self.campaign_end_round()
+            }
             Some(2) => {
                 self.campaign = None;
                 self.campaign_map = None;
@@ -2272,8 +2414,8 @@ impl Viewer {
                 (campaign::Dragging::Flag, Some(p)) => {
                     if c.march(p) {
                         // battles to fight: Battle; none: Subjugate
-                        m.battle = !c.pending.is_empty();
-                        m.subjugate = c.pending.is_empty();
+                        m.battle = c.battle_offered();
+                        m.subjugate = !m.battle;
                         let name = art.province_names.get(p).cloned().unwrap_or_default();
                         m.log.push(if m.battle { format!("Press Battle to fight for {name}.") } else { format!("Press Subjugate to hold {name} this round.") });
                     }
@@ -2534,13 +2676,25 @@ impl Viewer {
 
     /// Put the preferences in force: the sounds' volumes and the music.
     fn apply_prefs(&mut self) {
+        // Hannibal's options: the Triarii doctrine and sparse trees
+        if let Some(p) = &mut self.play {
+            p.game.triarii_doctrine = self.prefs.triarii;
+        }
+        if self.scenes.iter().any(|s| s.sparse != self.prefs.sparse_trees) {
+            for s in self.scenes.iter_mut() {
+                s.sparse = self.prefs.sparse_trees;
+            }
+            self.stale = [true; 3];
+            self.refresh();
+        }
         let volume = |on: bool, v: u16| if on { v as f32 / hud::SLIDER_MAX as f32 } else { 0.0 };
         self.sound.set_volumes(volume(self.prefs.sounds, self.prefs.volume), volume(self.prefs.ambient_sounds, self.prefs.volume), volume(self.prefs.music, self.prefs.music_volume));
     }
 
     /// The Preferences dialog.
     fn open_preferences(&mut self) {
-        self.plain = Some((self.prefs.dialog(), Asked::Preferences));
+        let game = gboh_formats::game::Game::detect(&self.data_dir).unwrap_or_default();
+        self.plain = Some((self.prefs.dialog(game), Asked::Preferences));
     }
 
     /// A click on the Preferences dialog: a check box, a slider, OK (keep
@@ -2560,6 +2714,13 @@ impl Viewer {
                 }
                 Some(2) => self.plain = None,
                 Some(9) => self.open_help(),
+                // Hannibal's trees: one of the two
+                Some(id @ (prefs::SPARSE | prefs::DENSE)) => {
+                    if let Some((d, _)) = &mut self.plain {
+                        d.checked.retain(|&c| c != prefs::SPARSE && c != prefs::DENSE);
+                        d.checked.push(id);
+                    }
+                }
                 Some(id) if prefs::Prefs::is_box(id) => {
                     if let Some((d, _)) = &mut self.plain {
                         if let Some(k) = d.checked.iter().position(|&c| c == id) {
@@ -2576,7 +2737,6 @@ impl Viewer {
         self.redraw();
     }
 
-    /// Show the setup screen as it now is.
     /// The game as it stands, to save under `description`.
     fn current_save(&self, description: String) -> Option<saves::Save> {
         let p = self.play.as_ref()?;
@@ -2585,6 +2745,7 @@ impl Viewer {
             scenario: self.battle.0.clone(),
             computer: self.battle.1,
             levels: [p.game.armies[0].1, p.game.armies[1].1],
+            deploy: p.deployed,
             orders: p.orders.clone(),
             campaign: self.campaign.as_ref().map(|c| c.to_text()),
         })
@@ -2717,6 +2878,7 @@ impl Viewer {
         let reversed = self.scenes.get(self.level).is_some_and(|s| s.layout.reversed);
         self.campaign = save.campaign.as_deref().and_then(gboh_game::campaign::Campaign::parse);
         self.net = None;
+        self.deploy_next = save.deploy;
         self.start_battle(&save.scenario, save.computer, save.levels)?;
         if let Some(p) = &mut self.play {
             p.replay(&save.orders);
@@ -2799,6 +2961,14 @@ impl Viewer {
         }
         let Some(p) = &mut self.play else { return };
         if p.over {
+            return;
+        }
+        // Finish ends the deployment phase
+        if p.deploying {
+            p.finish_deployment();
+            self.changed();
+            self.update_hud();
+            self.redraw();
             return;
         }
         if p.game.can_attempt_momentum() {
@@ -2889,7 +3059,11 @@ impl Viewer {
         let setup = self.setup.as_ref()?;
         let screen = setup.canvas();
         let size = self.gpu.as_ref().map_or(PhysicalSize::new(screen.width as u32, screen.height as u32), |g| g.window.inner_size());
-        let fit = (size.width as f32 / screen.width as f32).min(size.height as f32 / screen.height as f32).max(0.25);
+        // every screen at the scale that fits the start screen (the
+        // original's 640 × 480): the smaller dialogs keep their size
+        // against it, in the middle of the marble
+        let (fw, fh) = (screen.width.max(640) as f32, screen.height.max(480) as f32);
+        let fit = (size.width as f32 / fw).min(size.height as f32 / fh).max(0.25);
         self.scale = fit;
         let (w, h) = ((size.width as f32 / fit).ceil() as usize, (size.height as f32 / fit).ceil() as usize);
         let mut canvas = setup.backdrop(w.max(screen.width), h.max(screen.height));
@@ -2913,10 +3087,13 @@ impl Viewer {
     /// Leave the setup screens for `scenario`, the computer playing the
     /// sides marked (home, visitor), with the armies' rout levels.
     fn start_battle(&mut self, scenario: &str, computer: [bool; 2], levels: [u16; 2]) -> Result<()> {
-        let mut b = load_battle(&self.data_dir, scenario, computer)?;
+        let deploy = std::mem::take(&mut self.deploy_next);
+        let mut b = load_battle(&self.data_dir, scenario, computer, deploy)?;
         if let Some(p) = &mut b.play {
             p.game.armies[0].1 = levels[0];
             p.game.armies[1].1 = levels[1];
+            // Hannibal's set-up option
+            p.game.turn_limits = self.setup.as_ref().is_some_and(|s| s.turn_limits);
         }
         self.setup = None;
         self.battle = (scenario.to_string(), computer);
@@ -2933,6 +3110,12 @@ impl Viewer {
         self.scenes = b.scenes;
         self.canvases = b.canvases;
         self.play = b.play;
+        for s in self.scenes.iter_mut() {
+            s.sparse = self.prefs.sparse_trees;
+        }
+        if let Some(p) = &mut self.play {
+            p.game.triarii_doctrine = self.prefs.triarii;
+        }
         self.level = 1;
         self.scale = self.display_scale;
         self.centre = [self.canvases[1].width as f32 / 2.0, self.canvases[1].height as f32 / 2.0];
@@ -2963,7 +3146,8 @@ impl Viewer {
         }
         if let Some(g) = &self.gpu {
             let mut pal = self.base_palette.clone();
-            gboh_render::animate_water(&mut pal, self.water_frame);
+            let game = gboh_formats::game::Game::detect(&self.data_dir).unwrap_or_default();
+            gboh_render::animate_water(&mut pal, self.water_frame, game);
             g.set_palette(&pal);
         }
     }
@@ -3000,7 +3184,7 @@ impl ApplicationHandler for Viewer {
         if self.shell.is_some() {
             self.show_shell();
         }
-        if self.game.is_some() && self.setup.is_some() {
+        if self.setup.is_some() {
             self.title = self.hud_title();
         }
         // the game's own cursors (`alex.exe`'s cursor resources)
@@ -3019,8 +3203,7 @@ impl ApplicationHandler for Viewer {
             // the intro (a Director projector the original's launcher ran
             // first), where it can run and the preferences want it
             if self.prefs.intro_video {
-                self.run_program("INTRO.EXE");
-                self.plain = None;
+                self.play_intro();
             }
         }
         if let Some(p) = &mut self.play {
@@ -3063,6 +3246,8 @@ impl ApplicationHandler for Viewer {
                 }
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed && self.slides.is_some() => self.end_slides(),
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed && self.intro => self.end_intro(),
+            WindowEvent::MouseInput { state: ElementState::Pressed, .. } if self.intro => self.end_intro(),
             WindowEvent::MouseInput { state: ElementState::Pressed, .. } if self.slides.is_some() => self.end_slides(),
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed && self.plain_key(&event.logical_key, event.text.as_deref()) => {}
@@ -3207,6 +3392,19 @@ impl ApplicationHandler for Viewer {
                 self.edge = None;
                 self.update_cursor();
             }
+            // the battles' list scrolls a row a notch
+            WindowEvent::MouseWheel { delta, .. } if matches!(self.shell, Some(shell::Screen::Selector { .. })) => {
+                let lines = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => -(y.round()) as i32,
+                    MouseScrollDelta::PixelDelta(p) => -(p.y / 22.0) as i32,
+                };
+                let (_, h) = self.window_px();
+                if let Some(shell::Screen::Selector { entries, scroll }) = &mut self.shell {
+                    let last = entries.len().saturating_sub(shell::selector_rows(h as i32));
+                    *scroll = (*scroll as i32 + lines).clamp(0, last as i32) as usize;
+                }
+                self.show_shell();
+            }
             WindowEvent::MouseWheel { delta, .. } if self.reader.is_some() => {
                 let lines = match delta {
                     MouseScrollDelta::LineDelta(_, y) => -(y * 3.0) as i32,
@@ -3316,6 +3514,10 @@ impl ApplicationHandler for Viewer {
         }
         // the video plays on
         if let Some(v) = &mut self.video {
+            if v.done && self.intro {
+                self.end_intro();
+                return;
+            }
             if v.advance() {
                 self.update_hud();
                 self.redraw();
@@ -3437,6 +3639,11 @@ impl ApplicationHandler for Viewer {
     }
 }
 
+/// The game's palette file (`GAME.PAL`, or the game's own name for it).
+fn palette_path(dir: &Path) -> Option<PathBuf> {
+    gboh_formats::pal::FILES.iter().find_map(|n| find_ci(dir, n))
+}
+
 fn find_ci(dir: &Path, name: &str) -> Option<PathBuf> {
     std::fs::read_dir(dir)
         .ok()?
@@ -3491,7 +3698,7 @@ fn main() -> Result<()> {
         (None, Some(t)) => library::data_dir(t).unwrap_or_default(),
         (None, None) => PathBuf::new(),
     };
-    let base_palette = match find_ci(&data_dir, "GAME.PAL").and_then(|p| std::fs::read(p).ok()) {
+    let base_palette = match palette_path(&data_dir).and_then(|p| std::fs::read(p).ok()) {
         Some(data) => Palette::parse(&data)?,
         None if launcher => shell::palette(),
         None => bail!("GAME.PAL not found in {}", data_dir.display()),
@@ -3508,7 +3715,7 @@ fn main() -> Result<()> {
                 Some("demo") => [true, true],
                 _ => [false, false],
             };
-            (None, Some(load_battle(&data_dir, file, computer)?), (file.clone(), computer))
+            (None, Some(load_battle(&data_dir, file, computer, false)?), (file.clone(), computer))
         }
     };
     let (title, map_file, scenes, canvases, play) = match battle {
@@ -3551,10 +3758,12 @@ fn main() -> Result<()> {
         net: None,
         video: None,
         slides: None,
+        intro: false,
         cursors: Default::default(),
         cursor_shown: None,
         edge: None,
         next_flag: Instant::now(),
+        deploy_next: false,
         shell: (launcher && theme.is_none()).then_some(shell::Screen::Content),
         shell_buttons: Vec::new(),
         shell_pressed: None,
@@ -3665,7 +3874,7 @@ struct Battle {
 
 /// Load `file` (a scenario, or a bare map) from `data_dir`, the computer
 /// playing the sides marked (home, visitor) with their first plans.
-fn load_battle(data_dir: &Path, file: &str, computer: [bool; 2]) -> Result<Battle> {
+fn load_battle(data_dir: &Path, file: &str, computer: [bool; 2], deploy: bool) -> Result<Battle> {
     let load = |name: &str| find_ci(data_dir, name).and_then(|p| std::fs::read(p).ok());
     // a scenario brings its map and units
     let scenario = if file.to_ascii_lowercase().ends_with(".scn") {
@@ -3693,7 +3902,7 @@ fn load_battle(data_dir: &Path, file: &str, computer: [bool; 2]) -> Result<Battl
             ai.push((nation, gboh_game::ai::Machine::new(script)));
         }
     }
-    let play = scenario.as_ref().map(|s| play::Play::new(gboh_game::game::Game::new(s, map.clone(), 1), ai));
+    let play = scenario.as_ref().map(|s| play::Play::start(gboh_game::game::Game::new(s, map.clone(), 1), ai, deploy));
     let title = if map.name.is_empty() { map_file.to_string() } else { map.name.clone() };
     Ok(Battle { title, map_file: map_file.to_string(), scenes, canvases, play })
 }
@@ -3704,8 +3913,9 @@ fn build_scenes(data_dir: &Path, map_file: &str, map: &Map, reversed: bool) -> R
     let mut load = |name: &str| find_ci(data_dir, name).and_then(|p| std::fs::read(p).ok());
     let titles = eif_title_index(data_dir);
     let mut load_title = |title: &str| titles.get(title).and_then(|n| std::fs::read(data_dir.join(n)).ok());
-    let palette = Palette::parse(&load("GAME.PAL").context("GAME.PAL not found")?)?;
-    let types: Vec<usize> = (0..ART_TITLES.len()).collect();
+    let palette = Palette::parse(&std::fs::read(palette_path(data_dir).context("GAME.PAL not found")?)?)?;
+    let game = gboh_formats::game::Game::detect(data_dir).unwrap_or_default();
+    let types: Vec<usize> = gboh_formats::units::types_of(game).collect();
     Ok(ZOOMS
         .iter()
         .map(|&z| Scene::build_view(map_file, map, z, reversed, &palette, 1, &types, &mut load, &mut load_title))
@@ -3722,7 +3932,7 @@ mod tests {
     fn the_setup_battles_load() {
         let Ok(dir) = std::env::var("GBOH_DATA") else { return };
         for file in setup::SCENARIOS {
-            let b = load_battle(Path::new(&dir), file, [false, true]).unwrap_or_else(|e| panic!("{file}: {e:#}"));
+            let b = load_battle(Path::new(&dir), file, [false, true], false).unwrap_or_else(|e| panic!("{file}: {e:#}"));
             assert!(b.play.is_some(), "{file}");
             assert_eq!(b.canvases.len(), 3);
         }

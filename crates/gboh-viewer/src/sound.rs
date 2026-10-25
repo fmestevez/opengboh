@@ -26,9 +26,9 @@ pub enum Event {
 fn movement(class: MoveClass) -> &'static [&'static str] {
     use MoveClass::*;
     match class {
-        Phalanx | HeavyInfantry => &["hilup1", "hilup2", "hilup3", "hilup4"],
+        Phalanx | HeavyInfantry | Legion => &["hilup1", "hilup2", "hilup3", "hilup4"],
         MediumInfantry => &["milup1", "milup2"],
-        HeavyCavalry | Lancer => &["hcav1", "hcav2", "hcav3"],
+        HeavyCavalry | RomanCavalry | Lancer => &["hcav1", "hcav2", "hcav3"],
         LightCavalry => &["cavlup1", "cavlup2", "cavlup3", "cavlup4"],
         Elephant => &["eleflup1", "eleflup2", "eleflup3"],
         Chariot => &["charlup1", "charlup2", "charlup3"],
@@ -65,13 +65,16 @@ pub struct Sound {
     output: Option<(rodio::OutputStream, rodio::OutputStreamHandle)>,
     dir: PathBuf,
     files: HashMap<String, PathBuf>,
+    /// Hannibal's CD tracks (`MUSIC` beside `DATA`), if there.
+    cd: Option<PathBuf>,
     cache: HashMap<String, Vec<u8>>,
     seed: u32,
     /// Volumes (0 to 1) of the effects, the ambient sounds and the music.
     volumes: [f32; 3],
     music: Option<rodio::Sink>,
     playing: Music,
-    /// The battle music's next piece (0 `main`, 1 `alex4`).
+    /// The battle music's next piece (Alexander's `main`, `alex4`;
+    /// Hannibal's `track1`..`track3`).
     next_piece: usize,
     /// When the next river sound is due, if the battlefield has water.
     next_ambient: Option<std::time::Instant>,
@@ -95,7 +98,11 @@ impl Sound {
         // GBOH_MUTE silences everything
         let output = if std::env::var_os("GBOH_MUTE").is_some() { None } else { rodio::OutputStream::try_default().ok() };
         let music = output.as_ref().and_then(|(_, h)| rodio::Sink::try_new(h).ok());
-        Self { output, dir: data_dir.into(), files, cache: HashMap::new(), seed: 1, volumes: [0.5; 3], music, playing: Music::Silent, next_piece: 0, next_ambient: None, data: None, channels: HashMap::new() }
+        let cd = gboh_formats::game::Game::detect(data_dir)
+            .is_some_and(|g| g != gboh_formats::game::Game::Alexander)
+            .then(|| data_dir.parent().and_then(|p| crate::find_ci(p, "MUSIC")))
+            .flatten();
+        Self { output, dir: data_dir.into(), files, cd, cache: HashMap::new(), seed: 1, volumes: [0.5; 3], music, playing: Music::Silent, next_piece: 0, next_ambient: None, data: None, channels: HashMap::new() }
     }
 
     /// Set the volumes (0 to 1) of the effects, the ambient sounds and the
@@ -189,8 +196,26 @@ impl Sound {
         self.queue_music(first);
     }
 
+    /// Hannibal's music from its CD (`HanSoundManager`, `FUN_0058486c`):
+    /// the start screen track 2, the battle 3 to 5 in turn, a defeat 6, a
+    /// victory 7; GOG's copy has them as `MUSIC/TrackNN.ogg` beside `DATA`.
+    fn cd_track(&self, name: &str) -> Option<PathBuf> {
+        let music = self.cd.as_ref()?;
+        let n = match name {
+            "start" => 2,
+            "track1" => 3,
+            "track2" => 4,
+            "track3" => 5,
+            "defeat" => 6,
+            "victory" => 7,
+            _ => return None,
+        };
+        crate::find_ci(music, &format!("Track{n:02}.ogg"))
+    }
+
     fn queue_music(&mut self, name: &str) {
-        let Some(source) = self.decoded(name) else { return };
+        let cd = self.cd_track(name).and_then(|p| std::fs::read(p).ok()).and_then(|d| rodio::Decoder::new(Cursor::new(d)).ok());
+        let Some(source) = cd.or_else(|| self.decoded(name)) else { return };
         if let Some(m) = &self.music {
             m.append(rodio::Source::convert_samples::<f32>(source));
             m.set_volume(self.volumes[2]);
@@ -214,7 +239,9 @@ impl Sound {
         let idle = self.music.as_ref().is_some_and(|m| m.empty());
         if idle && matches!(self.playing, Music::Start | Music::Battle) {
             self.playing = Music::Battle;
-            let piece = ["main", "alex4"][self.next_piece % 2];
+            // Alexander's two pieces, or Hannibal's three
+            let pieces: &[&str] = if self.files.keys().any(|k| k.starts_with("track1")) { &["track1", "track2", "track3"] } else { &["main", "alex4"] };
+            let piece = pieces[self.next_piece % pieces.len()];
             self.next_piece += 1;
             self.queue_music(piece);
         }
@@ -287,6 +314,18 @@ impl Sound {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Hannibal's music comes from its CD tracks where they are; runs only
+    /// with `GBOH_HANNIBAL`.
+    #[test]
+    fn hannibal_music_from_the_cd() {
+        let Ok(dir) = std::env::var("GBOH_HANNIBAL") else { return };
+        let s = Sound::new(Path::new(&dir));
+        for name in ["start", "track1", "victory"] {
+            let path = s.cd_track(name).expect(name);
+            assert!(rodio::Decoder::new(Cursor::new(std::fs::read(path).unwrap())).is_ok(), "{name}");
+        }
+    }
 
     /// Every sound named here exists in the game's DATA directory; runs
     /// only with `GBOH_DATA` set.

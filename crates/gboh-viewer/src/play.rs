@@ -48,6 +48,9 @@ pub enum Anim {
 pub enum Order {
     Click { hex: Hex, right: bool },
     ArmVolley,
+    ArmBackward,
+    /// The deployment phase over.
+    EndDeployment,
     GroupMove,
     Rally,
     Recover,
@@ -57,6 +60,17 @@ pub enum Order {
     Finish { momentum: bool },
     /// The viewer played one of the computer's leaders (demo pacing).
     StepComputer,
+    /// Hannibal's group orders and manipular line extension.
+    Group(GroupOrder),
+}
+
+/// Hannibal's leader orders for a whole group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupOrder {
+    Retreat,
+    Attack,
+    RestoreCohesion,
+    LineExtension,
 }
 
 /// Something the player is told in a dialog.
@@ -150,8 +164,21 @@ impl Anim {
 }
 
 /// The art a weapon throws.
-pub fn missile_of(weapon: gboh_game::missile::Weapon) -> Missile {
+pub fn missile_of(weapon: gboh_game::missile::Weapon, shooter_type: usize) -> Missile {
     use gboh_game::missile::Weapon::*;
+    // Caesar's: each type's own entry in its missile art table
+    if let Some(m) = gboh_formats::units::caesar_missile_art(shooter_type).and_then(Missile::caesar) {
+        return m;
+    }
+    // Hannibal's javelins differ by who throws them (its missile art table)
+    if let (Javelin | MountedJavelin, Some(class)) = (weapon, gboh_formats::units::hannibal_class(shooter_type)) {
+        use gboh_formats::units::Class as C;
+        return match class {
+            C::Legion => Missile::Pilum,
+            C::LightCavalry | C::Elephant => Missile::MountedJavelin,
+            _ => Missile::LightJavelin,
+        };
+    }
     match weapon {
         Bow | MountedBow => Missile::Arrow,
         Javelin | MountedJavelin => Missile::Javelin,
@@ -189,6 +216,13 @@ pub struct Play {
     /// The missile volley button was pressed: the next click on an enemy
     /// fires at it.
     pub aiming: bool,
+    /// Hannibal's deployment phase: on, and whether the battle began with
+    /// one (for saving).
+    pub deploying: bool,
+    pub deployed: bool,
+    /// Hannibal's backward movement armed for the selected unit: its next
+    /// move is backwards.
+    pub backing: bool,
     /// Sounds to play for what just happened.
     pub events: Vec<crate::sound::Event>,
     /// Moves and volleys to animate.
@@ -230,12 +264,26 @@ pub struct Play {
 }
 
 impl Play {
-    /// `ai`: the sides the computer plays (nation byte) with their plans.
-    pub fn new(mut game: Game, ai: Vec<(u8, gboh_game::ai::Machine)>) -> Self {
-        let leader = game.begin_turn();
+    #[cfg(test)]
+    pub fn new(game: Game, ai: Vec<(u8, gboh_game::ai::Machine)>) -> Self {
+        Self::start(game, ai, false)
+    }
+
+    /// A battle to play; `ai`: the sides the computer plays (nation byte)
+    /// with their plans; `deploy`: Hannibal's deployment phase first (the
+    /// player places his units behind the line between the armies, then
+    /// finishes), where the armies are apart.
+    pub fn start(mut game: Game, ai: Vec<(u8, gboh_game::ai::Machine)>, deploy: bool) -> Self {
+        let deploying = deploy && game.deployment_line().is_some();
+        game.deployment = if deploying { game.deployment_line() } else { None };
+        let leader = if deploying { None } else { game.begin_turn() };
         let layout = gboh_render::terrain::Layout::new(&game.map, gboh_render::terrain::Zoom::In);
         let demo = ai.len() > 1;
-        let mut p = Self { game, combats: Vec::new(), turn_ended: false, commentary: Vec::new(), aiming: false, ai, demo, events: vec![crate::sound::Event::Start], anims: Vec::new(), corpses: Vec::new(), shown: Default::default(), latest: Default::default(), lingering: Default::default(), layout, seed: 12345, selected: None, leader, status: String::new(), over: false, winner: None, notices: Vec::new(), told_no_orders: None, orders: Vec::new(), undo: Vec::new() };
+        let mut p = Self { game, combats: Vec::new(), turn_ended: false, commentary: Vec::new(), aiming: false, backing: false, deploying, deployed: deploying, ai, demo, events: vec![crate::sound::Event::Start], anims: Vec::new(), corpses: Vec::new(), shown: Default::default(), latest: Default::default(), lingering: Default::default(), layout, seed: 12345, selected: None, leader, status: String::new(), over: false, winner: None, notices: Vec::new(), told_no_orders: None, orders: Vec::new(), undo: Vec::new() };
+        if deploying {
+            p.say("deploy your units, then finish");
+            return p;
+        }
         p.say("battle begins");
         p.comment(String::from("--- Turn #1 ---"));
         p.announce_leader();
@@ -243,6 +291,51 @@ impl Play {
             p.computer_turns();
         }
         p
+    }
+
+    /// End the deployment phase: the battle begins.
+    pub fn finish_deployment(&mut self) {
+        self.orders.push(Order::EndDeployment);
+        if !self.deploying {
+            return;
+        }
+        self.deploying = false;
+        self.game.deployment = None;
+        self.selected = None;
+        self.leader = self.game.begin_turn();
+        self.say("battle begins");
+        self.comment(String::from("--- Turn #1 ---"));
+        self.announce_leader();
+        if !self.demo {
+            self.computer_turns();
+        }
+    }
+
+    /// Whether `unit` is one the player places in the deployment phase (his
+    /// army's).
+    fn deployable(&self, unit: usize) -> bool {
+        let u = &self.game.battle.units[unit];
+        !self.ai.iter().any(|(n, _)| *n == u.side) && u.on_field()
+    }
+
+    /// A click in the deployment phase: one of the player's units, then a
+    /// hex to put it on.
+    fn deploy_click(&mut self, hex: Hex) -> bool {
+        let b = &self.game.battle;
+        let target = (0..b.units.len()).find(|&u| b.units[u].on_field() && b.hexes(u).contains(&hex));
+        if let Some(t) = target.filter(|&t| self.deployable(t)) {
+            self.selected = Some(t);
+            self.events.push(crate::sound::Event::Select);
+            self.say("selected");
+            return true;
+        }
+        match self.selected {
+            Some(s) if target.is_none() && self.game.deploy(s, hex) => {
+                self.say("deployed");
+                true
+            }
+            _ => false,
+        }
     }
 
     /// While the active leader is the computer's, let its script give his
@@ -294,6 +387,13 @@ impl Play {
                 self.click(hex, right);
             }
             Order::ArmVolley => self.arm_volley(),
+            Order::ArmBackward => {
+                self.arm_backward();
+            }
+            Order::EndDeployment => self.finish_deployment(),
+            Order::Group(g) => {
+                self.group_order(g);
+            }
             Order::GroupMove => {
                 self.group_move();
             }
@@ -475,7 +575,7 @@ impl Play {
                     let line = format!("{} shoots at {}.", self.name(shooter), self.name(target));
                     self.comment(line);
                     let sound = crate::sound::Event::Volley(weapon, hit);
-                    let missile = missile_of(weapon);
+                    let missile = missile_of(weapon, self.game.battle.units[shooter].type_id);
                     let at = self.game.battle.units[target].hex;
                     let map = &self.game.map;
                     // a spent missile in the hex (none on water)
@@ -828,10 +928,16 @@ impl Play {
     /// Hexes to light up: the selected unit's reachable ones, or where the
     /// selected leader can move.
     pub fn lit(&self) -> Vec<Hex> {
+        if self.deploying {
+            let Some(u) = self.selected else { return Vec::new() };
+            let map = &self.game.map;
+            return (0..map.width as i32).flat_map(|x| (0..map.height as i32).map(move |y| Hex::new(x, y))).filter(|&h| self.game.can_deploy(u, h)).collect();
+        }
         match self.selected {
             Some(u) if Some(u) == self.leader && self.game.group_move.is_some() => self.game.group_move_options(),
             Some(u) if Some(u) == self.leader => self.game.leader_options(),
             Some(u) if self.game.battle.units[u].state == UnitState::Routed => Vec::new(),
+            Some(u) if self.backing => self.game.backward_options(u),
             Some(u) => highlighted(&self.game.battle, &self.game.map, u, self.game.battle.units[u].mp),
             None => Vec::new(),
         }
@@ -867,6 +973,21 @@ impl Play {
     }
 
     /// The missile volley button: arm a volley for the next click.
+    /// Arm Hannibal's backward movement for the selected unit (again:
+    /// disarm).
+    pub fn arm_backward(&mut self) -> bool {
+        self.orders.push(Order::ArmBackward);
+        let can = self.selected.is_some_and(|u| !self.game.backward_options(u).is_empty());
+        self.backing = can && !self.backing;
+        self.say(if self.backing { "backward movement" } else { "no backward movement" });
+        true
+    }
+
+    /// Whether the selected unit can move backward.
+    pub fn can_back(&self) -> bool {
+        self.selected.is_some_and(|u| !self.game.backward_options(u).is_empty())
+    }
+
     pub fn arm_volley(&mut self) {
         self.orders.push(Order::ArmVolley);
         if self.can_fire() {
@@ -880,6 +1001,9 @@ impl Play {
         self.orders.push(Order::Click { hex, right });
         if self.over {
             return false;
+        }
+        if self.deploying {
+            return self.deploy_click(hex);
         }
         let target = self.unit_at(hex);
         let orderable = self.game.orderable();
@@ -948,7 +1072,9 @@ impl Play {
                     self.say("no command points");
                     return false;
                 }
-                match self.game.order_move(s, hex) {
+                let backing = std::mem::take(&mut self.backing);
+                let result = if backing { self.game.order_backward(s, hex) } else { self.game.order_move(s, hex) };
+                match result {
                     Ok(fire) => {
                         // a move that drew fire cannot be taken back
                         if fire.is_empty() {
@@ -969,6 +1095,21 @@ impl Play {
 
     /// Try a group move with the active leader (all his orders); if it is
     /// granted, he is selected with his group's destinations lit.
+    /// One of Hannibal's group orders (or a line extension) for the active
+    /// leader; returns whether anything changed.
+    pub fn group_order(&mut self, order: GroupOrder) -> bool {
+        self.orders.push(Order::Group(order));
+        self.undo.clear();
+        let done = match order {
+            GroupOrder::Retreat => self.game.group_retreat(),
+            GroupOrder::Attack => self.game.group_attack(),
+            GroupOrder::RestoreCohesion => self.game.group_restore(),
+            GroupOrder::LineExtension => self.game.extend_line() > 0,
+        };
+        self.say(&format!("{order:?}: {}", if done { "done" } else { "failed" }));
+        true
+    }
+
     pub fn group_move(&mut self) -> bool {
         self.orders.push(Order::GroupMove);
         if let Some(why) = self.game.group_move_refused() {
@@ -1399,6 +1540,40 @@ mod tests {
     /// Replaying the recorded orders from the scenario gives the same
     /// battle: units, the active leader, the turn and the bodies on the
     /// ground (the computer playing the Indians in between).
+    /// Hannibal's deployment phase: the player's units go behind the line
+    /// between the armies, nowhere else; Finish starts the battle. Runs only
+    /// with `GBOH_HANNIBAL`.
+    #[test]
+    fn deploys_before_the_battle() {
+        let Ok(dir) = std::env::var("GBOH_HANNIBAL") else { return };
+        let dir = std::path::Path::new(&dir);
+        let read = |n: &str| std::fs::read(crate::find_ci(dir, n).unwrap()).unwrap();
+        let scn = gboh_formats::scn::Scenario::parse(&read("CANNAE.SCN")).unwrap();
+        let map = gboh_formats::map::Map::parse(&read(&scn.map_file)).unwrap();
+        let mut p = Play::start(Game::new(&scn, map, 1), Vec::new(), true);
+        assert!(p.deploying && p.leader.is_none());
+        let (rows, line) = p.game.deployment.unwrap();
+        let u = (0..p.game.battle.units.len()).find(|&u| p.game.battle.units[u].leader.is_none() && !p.game.battle.units[u].two_hex()).unwrap();
+        let at = p.game.battle.units[u].hex;
+        assert!(p.click(at, false));
+        assert_eq!(p.selected, Some(u));
+        let lit = p.lit();
+        assert!(!lit.is_empty());
+        let edge = p.game.battle.units[u].retreat;
+        // all on the unit's side of the line
+        assert!(lit.iter().all(|h| match edge {
+            1 => h.y < line,
+            3 => h.x > line,
+            5 => h.y > line,
+            _ => h.x < line,
+        }), "rows {rows} line {line} edge {edge}");
+        let to = *lit.iter().find(|h| **h != at).unwrap();
+        assert!(p.click(to, false));
+        assert_eq!(p.game.battle.units[u].hex, to);
+        p.finish_deployment();
+        assert!(!p.deploying && p.leader.is_some());
+    }
+
     #[test]
     fn replays_orders() {
         let Ok(dir) = std::env::var("GBOH_DATA") else { return };
@@ -1508,7 +1683,7 @@ mod tests {
             let titles = gboh_render::battlefield::eif_titles(heads.iter().map(|(n, h)| (n.as_str(), h.as_slice())));
             let mut load_title = |t: &str| titles.get(t).and_then(|n| std::fs::read(dir.join(n)).ok());
             let pal = gboh_render::battlefield::palette(&mut load).unwrap();
-            let types: Vec<usize> = (0..gboh_formats::units::ART_TITLES.len()).collect();
+            let types: Vec<usize> = (0..gboh_formats::units::HANNIBAL).collect();
             let map = p.game.map.clone();
             let scene = Scene::build(&scn.map_file, &map, gboh_render::terrain::Zoom::In, &pal, 1, &types, &mut load, &mut load_title).unwrap();
             let c = scene.compose_with(&p.views(), &[], &p.corpses);
@@ -1564,7 +1739,7 @@ mod tests {
         let mut load_title = |t: &str| titles.get(t).and_then(|n| std::fs::read(dir.join(n)).ok());
         let pal = gboh_render::battlefield::palette(&mut load).unwrap();
         let p = Play::new(Game::new(&scn, map.clone(), 1), Vec::new());
-        let types: Vec<usize> = (0..gboh_formats::units::ART_TITLES.len()).collect();
+        let types: Vec<usize> = (0..gboh_formats::units::HANNIBAL).collect();
         for z in [gboh_render::terrain::Zoom::In, gboh_render::terrain::Zoom::Normal, gboh_render::terrain::Zoom::Out] {
             let scene = Scene::build(&scn.map_file, &map, z, &pal, 1, &types, &mut load, &mut load_title).unwrap();
             let t = std::time::Instant::now();
@@ -1592,7 +1767,7 @@ mod tests {
         let titles = gboh_render::battlefield::eif_titles(heads.iter().map(|(n, h)| (n.as_str(), h.as_slice())));
         let mut load = |n: &str| read(n);
         let pal = gboh_render::battlefield::palette(&mut load).unwrap();
-        let types: Vec<usize> = (0..gboh_formats::units::ART_TITLES.len()).collect();
+        let types: Vec<usize> = (0..gboh_formats::units::HANNIBAL).collect();
         for scn_file in ["HYDASPES.SCN", "GAUGAMEL.SCN", "PELIUM.SCN"] {
             let scn = Scenario::parse(&read(scn_file).unwrap()).unwrap();
             let map = Map::parse(&read(&scn.map_file).unwrap()).unwrap();

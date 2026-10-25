@@ -6,6 +6,7 @@
 pub mod crt;
 pub mod director;
 pub mod eif;
+pub mod game;
 pub mod hlp;
 pub mod map;
 pub mod pal;

@@ -238,7 +238,7 @@ mod tests {
         let mut c = Canvas::new(500, 260, 0);
         bar.draw(&mut c, Some((0, Some(save))), |id| id != 227, |id| id == 229);
         if let Ok(out) = std::env::var("GBOH_SHOTS") {
-            let pal = crate::find_ci(Path::new(&dir), "GAME.PAL").unwrap();
+            let pal = crate::palette_path(Path::new(&dir)).unwrap();
             let pal = gboh_formats::pal::Palette::parse(&std::fs::read(pal).unwrap()).unwrap();
             crate::ui::write_ppm(&c, &pal, &Path::new(&out).join("menu.ppm")).unwrap();
         }

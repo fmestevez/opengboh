@@ -44,6 +44,18 @@ impl Formation {
     /// The formation the original builds for unit type `ty` (see
     /// [`gboh_formats::units::unit_type`]).
     pub fn of_type(ty: usize) -> Self {
+        if let Some(class) = gboh_formats::units::hannibal_class(ty) {
+            use gboh_formats::units::Class as C;
+            return match class {
+                C::Leader => Formation::Single,
+                C::Phalanx => Formation::Phalanx,
+                C::LightCavalry | C::Lancer | C::HeavyCavalry | C::BarbarianCavalry => Formation::Cavalry,
+                C::Elephant => Formation::Elephants,
+                C::Chariot => Formation::Chariots,
+                C::Artillery => Formation::Oxybeles,
+                _ => Formation::Infantry,
+            };
+        }
         match ty {
             17 | 18 | 43 => Formation::Phalanx,
             2 | 3 | 10 | 11 | 13 | 14 | 15 | 20 | 21 | 29 | 30 | 31 | 32 | 33 | 36 | 37 | 42 => Formation::Infantry,

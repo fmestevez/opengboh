@@ -26,15 +26,16 @@ use crate::orders;
 
 /// Script nation numbers for the scenario's nation bytes (the original's
 /// remap on load): 0 Greek → 4, 1 Persian → 2, 2 Macedonian → 1, 3 Indian →
-/// 3, 4 Danubian → 5, 5 Scythian → 6.
+/// 3, 4 Danubian → 5, 5 Scythian → 6; the later games' nations one up
+/// (Hannibal's 6 Roman → 7, 7 Carthaginian → 8; Caesar's 9 Caesarian → 10,
+/// 10 Pompeian → 11, 11 barbarians → 12).
 pub fn script_nation(file: u8) -> i32 {
     match file {
         0 => 4,
         1 => 2,
         2 => 1,
         3 => 3,
-        4 => 5,
-        5 => 6,
+        b @ 4..=11 => b as i32 + 1,
         _ => 0,
     }
 }
@@ -427,6 +428,32 @@ impl Host for AiHost<'_> {
                 1
             }
             "breakpoint" | "dumplist" => 0,
+            // Hannibal's: groups by their number (a leader's and his
+            // units'), and the group orders
+            "getgroup" => {
+                let gid = arg(0);
+                let b = &self.game.battle;
+                let units: Vec<i32> = (0..b.units.len()).filter(|&u| b.units[u].on_field() && b.units[u].leader.is_none() && b.units[u].group as i32 == gid).map(|u| u as i32).collect();
+                self.list(arg(1)).map(|l| *l = (units, 0)).is_some() as i32
+            }
+            "getgroupleader" => {
+                let b = &self.game.battle;
+                b.leaders().find(|&l| b.units[l].group as i32 == arg(0)).map_or(-1, |l| l as i32)
+            }
+            "groupmove" => {
+                let Some(target) = hex_of(arg(0)) else { return Some(0) };
+                match self.game.try_group_move() {
+                    Some(crate::game::GroupMove::Full | crate::game::GroupMove::OneHex) => {
+                        let to = self.game.group_move_options().into_iter().min_by_key(|h| (h.distance(target), h.x, h.y));
+                        to.is_some_and(|h| self.game.do_group_move(h)) as i32
+                    }
+                    _ => 0,
+                }
+            }
+            "dogroupberserk" => self.game.group_attack() as i32,
+            "dogroupretreat" => self.game.group_retreat() as i32,
+            "grouprestorecohesion" => self.game.group_restore() as i32,
+            "inmomentumphase" => self.game.activation.in_momentum() as i32,
             "grouplistreset" => {
                 self.group = Self::group_of(self.game);
                 self.group_pos = 0;

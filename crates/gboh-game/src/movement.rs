@@ -12,6 +12,8 @@ use std::collections::{BinaryHeap, HashMap};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MoveClass {
     Phalanx = 0,
+    /// Hannibal's Roman legionaries (hastati, principes, cohorts).
+    Legion = 1,
     HeavyInfantry = 2,
     MediumInfantry = 3,
     /// Macedonian and Greek light infantry.
@@ -20,6 +22,8 @@ pub enum MoveClass {
     /// Javelinists, archers and slingers.
     Skirmisher = 7,
     HeavyCavalry = 8,
+    /// Hannibal's Roman cavalry: heavy cavalry, told apart by some rules.
+    RomanCavalry = 9,
     Lancer = 11,
     LightCavalry = 12,
     Elephant = 13,
@@ -32,6 +36,29 @@ impl MoveClass {
     /// rules not ported yet.
     pub fn of_type(ty: usize) -> Option<Self> {
         use MoveClass::*;
+        if let Some(class) = gboh_formats::units::hannibal_class(ty) {
+            use gboh_formats::units::Class as C;
+            return Some(match class {
+                C::Leader => return None,
+                C::Phalanx => Phalanx,
+                C::HeavyInfantry => HeavyInfantry,
+                C::Legion => Legion,
+                C::MediumInfantry => MediumInfantry,
+                C::LightInfantryShock => LightInfantryMG,
+                C::LightInfantry => LightInfantry,
+                C::Skirmisher => Skirmisher,
+                C::LightCavalry => LightCavalry,
+                C::Lancer => Lancer,
+                C::HeavyCavalry if gboh_formats::units::title(ty).is_some_and(|t| t.contains("Roman Cavalry")) => RomanCavalry,
+                C::HeavyCavalry => HeavyCavalry,
+                C::Elephant => Elephant,
+                C::Chariot => Chariot,
+                // 🟡 Caesar's new classes as the nearest of Alexander's
+                C::BarbarianInfantry => MediumInfantry,
+                C::BarbarianCavalry => HeavyCavalry,
+                C::Artillery => Oxybeles,
+            });
+        }
         Some(match ty {
             17 => Phalanx,
             1 | 3 | 18 | 31 => HeavyInfantry,
@@ -49,8 +76,8 @@ impl MoveClass {
         })
     }
 
-    fn horse(self) -> bool {
-        matches!(self, MoveClass::HeavyCavalry | MoveClass::Lancer | MoveClass::LightCavalry)
+    pub fn horse(self) -> bool {
+        matches!(self, MoveClass::HeavyCavalry | MoveClass::RomanCavalry | MoveClass::Lancer | MoveClass::LightCavalry)
     }
 
     /// The steepest climb (in levels, elevation 0 counted as 1) the class
@@ -150,6 +177,12 @@ pub fn leader_moves(battle: &Battle, map: &Map, leader: usize, points: i32) -> V
     out.sort_by_key(|h| (h.x, h.y));
     out.push(l.hex);
     out
+}
+
+/// Whether no unit may stand on `h` (map hex codes 13, impassable river
+/// rocks, and 15, 🟡 the original's "impassable" attribute).
+pub fn impassable(map: &Map, h: Hex) -> bool {
+    map.hex_features(h.x as usize, h.y as usize).iter().any(|&c| c == 13 || c == 15)
 }
 
 pub fn step_cost(map: &Map, class: MoveClass, from: Hex, dir: usize) -> Option<i32> {
@@ -408,6 +441,11 @@ mod tests {
             tq: 6,
             hits: 0,
             state: crate::battle::UnitState::Fighting,
+            arrival: 0,
+            elite: false,
+            superior: None,
+            link: -1,
+            legion: None,
             missile: None,
             fired: false,
             wounded: false,

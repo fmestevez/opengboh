@@ -33,7 +33,16 @@ pub struct Shock {
     pub no_superiority: bool,
     /// Further column shift.
     pub column_shift: i32,
+    /// Hannibal's rules, and the sides' nations (scenario bytes: 6 Roman,
+    /// 7 Carthaginian), which some of its elephant rules go by.
+    pub hannibal: bool,
+    pub attacker_nation: u8,
+    pub defender_nation: u8,
 }
+
+/// Hannibal's Roman and Carthaginian nations.
+const ROMAN: u8 = 6;
+const CARTHAGINIAN: u8 = 7;
 
 /// The result of a shock: cohesion hits for the attackers (shared among
 /// them) and for the defender.
@@ -62,8 +71,14 @@ impl Shock {
         if self.no_superiority {
             att = false;
         }
+        // Hannibal's: Roman elephants attacked by others' elephants
+        if self.hannibal && self.attacker == Elephant && self.defender == Elephant && self.attacker_nation != ROMAN && self.defender_nation == ROMAN {
+            att = true;
+        }
         let mut def = false;
-        if !att {
+        // Alexander consults the table only for an attacker not already
+        // superior; Hannibal always, last, so that both sides can be
+        if !att || self.hannibal {
             match SUPERIORITY[d][a] {
                 1 => att = true,
                 2 => {
@@ -113,6 +128,11 @@ impl Shock {
         }
         if self.defender_cataphract {
             col -= 2;
+        }
+        // Hannibal's: elephants other than the Carthaginians' against other
+        // troops
+        if self.hannibal && self.attacker == MoveClass::Elephant && self.attacker_nation != CARTHAGINIAN && self.defender != MoveClass::Elephant {
+            col += 1;
         }
         (col + self.column_shift).clamp(0, 12) as usize
     }
@@ -392,6 +412,8 @@ pub fn rout_points(type_id: usize, tq: u16, initiative: u16) -> u16 {
     match type_id {
         0 => initiative * 10,
         4..=7 | 35 => initiative * 5,
+        // 🟡 Hannibal's leaders as Alexander's other leaders
+        t if gboh_formats::units::hannibal_class(t) == Some(gboh_formats::units::Class::Leader) => initiative * 5,
         _ => match MoveClass::of_type(type_id) {
             Some(MoveClass::Phalanx) => tq * 2,
             Some(MoveClass::Skirmisher) => 1,
@@ -436,7 +458,28 @@ mod tests {
             defender_missile: false,
             no_superiority: false,
             column_shift: 0,
+            hannibal: false,
+            attacker_nation: 0,
+            defender_nation: 0,
         }
+    }
+
+    /// In Hannibal's rules the table applies after the angle, so on a flank
+    /// a defender the table favours is superior too.
+    #[test]
+    fn hannibal_superiority_stacks() {
+        let pair = (0..16)
+            .flat_map(|d| (0..16).map(move |a| (a, d)))
+            .find(|&(a, d)| SUPERIORITY[d][a] == 2 && a == HeavyInfantry as usize && d == Phalanx as usize)
+            .or_else(|| {
+                (0..16).flat_map(|d| (0..16).map(move |a| (a, d))).find(|&(a, d)| SUPERIORITY[d][a] == 2 && [0, 2, 3, 6].contains(&a) && [0, 2, 3].contains(&d))
+            });
+        let (a, d) = pair.expect("a pair the table favours the defender in");
+        let class = |n: usize| [Phalanx, Legion, HeavyInfantry, MediumInfantry, LightInfantryMG, LightInfantryMG, LightInfantry].into_iter().find(|c| *c as usize == n).unwrap();
+        let mut s = shock(class(a), class(d), 1, 6, 6);
+        assert_eq!(s.superiority(), (true, false));
+        s.hannibal = true;
+        assert_eq!(s.superiority(), (true, true));
     }
 
     #[test]

@@ -53,6 +53,56 @@ const NAME_IDS: [u16; 11] = [93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 80];
 const DESCRIPTION_IDS: [&[u16]; 11] =
     [&[127, 128], &[129, 130], &[131, 132], &[133, 134], &[135], &[136, 137], &[138], &[139], &[140, 141], &[142], &[81, 82]];
 
+/// A game's battles for the scenario screen: files, where each one's name
+/// is on the map (pixels), and the string ids of its name and description.
+struct BattleTable {
+    files: &'static [&'static str],
+    places: &'static [(i32, i32, i32, i32)],
+    names: &'static [u16],
+    descriptions: &'static [&'static [u16]],
+}
+
+const ALEXANDER_BATTLES: BattleTable = BattleTable { files: &SCENARIOS, places: &PLACES, names: &NAME_IDS, descriptions: &DESCRIPTION_IDS };
+
+/// Hannibal's (the original's table, less its unused Beneventum and
+/// custom slots; Dertosa only where its scenario is installed).
+const HANNIBAL_BATTLES: BattleTable = BattleTable {
+    files: &[
+        "METAURUS.SCN",
+        "BAGRADAS.SCN",
+        "CANNAE.SCN",
+        "CYNO.SCN",
+        "ZAMA.SCN",
+        "TREBBIA.SCN",
+        "BAECULA.SCN",
+        "ILIPA.SCN",
+        "GPLAINS.SCN",
+        "MAGNESIA.SCN",
+        "TRASIMEN.SCN",
+        "DERTOSA.SCN",
+    ],
+    places: &[
+        (266, 73, 79, 11),
+        (93, 188, 77, 11),
+        (307, 123, 60, 11),
+        (270, 148, 119, 11),
+        (219, 193, 44, 11),
+        (176, 63, 67, 11),
+        (24, 123, 72, 11),
+        (37, 147, 47, 11),
+        (215, 181, 108, 11),
+        (376, 164, 78, 11),
+        (158, 98, 125, 11),
+        (84, 102, 67, 11),
+    ],
+    names: &[93, 94, 95, 96, 97, 98, 99, 100, 103, 113, 114, 176],
+    descriptions: &[&[127], &[129], &[131], &[133], &[135], &[137], &[139], &[141], &[161], &[163], &[165], &[177]],
+};
+
+/// Hannibal's scenario screen: the box under the map where the chosen
+/// battle's overview picture and description go (pixels).
+const INFO_BOX: (i32, i32, i32, i32) = (33, 246, 393, 114);
+
 /// Dialog units to pixels.
 fn px((x, y): (i16, i16)) -> (i32, i32) {
     (x as i32 * 7 / 4, y as i32 * 13 / 8)
@@ -71,17 +121,27 @@ pub enum Screen {
 }
 
 /// The armies' rout levels for a difficulty, from the scenario's (home,
-/// visitor): easy gives the home army a quarter more and the visitor a
+/// visitor): easy gives the player's army a quarter more and the other a
 /// quarter less, hard the other way round (measured in the original:
-/// Issus' 135 and 135 become 168 and 101).
-pub fn rout_levels(base: [u16; 2], difficulty: usize) -> [u16; 2] {
+/// Issus' 135 and 135 become 168 and 101). The player's army is the home
+/// one unless the computer plays it.
+pub fn rout_levels(base: [u16; 2], difficulty: usize, computer: [bool; 2]) -> [u16; 2] {
     let more = |l: u16| (l as u32 * 5 / 4) as u16;
     let less = |l: u16| (l as u32 * 3 / 4) as u16;
+    let player = if computer[0] && !computer[1] { 1 } else { 0 };
+    let mut levels = base;
     match difficulty {
-        0 => [more(base[0]), less(base[1])],
-        2 => [less(base[0]), more(base[1])],
-        _ => base,
+        0 => {
+            levels[player] = more(base[player]);
+            levels[1 - player] = less(base[1 - player]);
+        }
+        2 => {
+            levels[player] = less(base[player]);
+            levels[1 - player] = more(base[1 - player]);
+        }
+        _ => {}
     }
+    levels
 }
 
 /// What a click did.
@@ -115,8 +175,20 @@ pub enum Outcome {
 /// big push button each).
 const EXTRA: [&str; 3] = ["Content Manager", "Settings", "All Battles"];
 
-fn extra_rect(k: usize) -> (i16, i16, i16, i16) {
-    (4, 4 + 16 * k as i16, 90, 14)
+fn extra_rect(start: &Option<Dialog>, k: usize) -> (i16, i16, i16, i16) {
+    // (a control placed off the dialog is hidden: Hannibal's history video)
+    let rects: Vec<_> = start.iter().flat_map(|d| &d.controls).map(|c| c.rect).filter(|r| r.0 >= 0).collect();
+    let left = rects.iter().map(|r| r.0).min().unwrap_or(0);
+    let right = rects.iter().map(|r| r.0 + r.2).max().unwrap_or(0);
+    let bottom = rects.iter().map(|r| r.1 + r.3).max().unwrap_or(0);
+    // the game's buttons in one column (Hannibal's): ours go under them, as
+    // wide; in rows (Alexander's): in the top left corner
+    let column = !rects.is_empty() && right - left < 140;
+    if column {
+        (left, bottom + 10 + 16 * k as i16, right - left, 14)
+    } else {
+        (4, 4 + 16 * k as i16, 90, 14)
+    }
 }
 
 pub struct Setup {
@@ -126,13 +198,28 @@ pub struct Setup {
     font: crate::ui::Font,
     /// The brightest yellow of the palette, for the chosen battle.
     yellow: u8,
+    /// The frames' colour.
+    dark: u8,
     button: Vec<Sprite>,
     big_button: Vec<Sprite>,
     radio: Vec<Sprite>,
+    checkbox: Vec<Sprite>,
+    /// Hannibal's rout dialog options: the battles' turn limits, and the
+    /// armies placed as the scenario has them (else the player deploys
+    /// his).
+    pub turn_limits: bool,
+    pub default_deployment: bool,
     start_art: Option<Sprite>,
     map_art: Option<Sprite>,
     marble: Option<Sprite>,
     labels: Vec<Sprite>,
+    /// The game, its battles' places on the map, their overview pictures
+    /// (Hannibal's), the small font and white (for the chosen battle).
+    game: gboh_formats::game::Game,
+    places: Vec<(i32, i32, i32, i32)>,
+    overviews: Vec<Option<Sprite>>,
+    small: crate::ui::Font,
+    white: u8,
     names: Vec<String>,
     descriptions: Vec<Vec<String>>,
     /// The two sides' names (home, visitor) of each battle, and their rout
@@ -159,7 +246,7 @@ impl Setup {
         let buttons = eif(data_dir, "DLGBTN.EIF");
         let campaign = eif(data_dir, "CAMPAIGN.EIF");
         let back = eif(data_dir, "BACKGND.EIF");
-        let yellow = crate::find_ci(data_dir, "GAME.PAL")
+        let yellow = crate::palette_path(data_dir)
             .and_then(|p| std::fs::read(p).ok())
             .and_then(|d| gboh_formats::pal::Palette::parse(&d).ok())
             .map_or(251, |pal| {
@@ -168,23 +255,52 @@ impl Setup {
                     (255 - r as i32).pow(2) + (230 - g as i32).pow(2) + (b as i32).pow(2)
                 }).unwrap_or(251) as u8
             });
-        let exe = data_dir.parent().and_then(|p| crate::find_ci(p, "ALEX.EXE")).and_then(|p| std::fs::read(p).ok());
+        let white = crate::palette_path(data_dir)
+            .and_then(|p| std::fs::read(p).ok())
+            .and_then(|d| gboh_formats::pal::Palette::parse(&d).ok())
+            .map_or(255, |pal| (1..=255usize).max_by_key(|&i| pal.colors[i].iter().map(|&c| c as u32).sum::<u32>()).unwrap_or(255) as u8);
+        let dark = crate::palette_path(data_dir)
+            .and_then(|p| std::fs::read(p).ok())
+            .and_then(|d| gboh_formats::pal::Palette::parse(&d).ok())
+            .map_or(0xf8, |pal| (1..=255usize).min_by_key(|&i| pal.colors[i].iter().map(|&c| c as u32).sum::<u32>()).unwrap_or(0xf8) as u8);
+        let exe = crate::ui::exe_path(data_dir).and_then(|p| std::fs::read(p).ok());
         let res = exe.and_then(|d| Resources::parse(&d).ok());
         let string = |id: u16| res.as_ref().and_then(|r| r.string(id));
-        let names = SCENARIOS
-            .iter()
-            .zip(NAME_IDS)
-            .map(|(file, id)| string(id).unwrap_or_else(|| file.trim_end_matches(".SCN").to_string()))
+        let game = gboh_formats::game::Game::detect(data_dir).unwrap_or_default();
+        let table = if game == gboh_formats::game::Game::Hannibal { &HANNIBAL_BATTLES } else { &ALEXANDER_BATTLES };
+        // the battles whose scenarios are there (Hannibal's Dertosa came
+        // later)
+        let battles: Vec<usize> = (0..table.files.len())
+            .filter(|&k| game == gboh_formats::game::Game::Alexander || crate::find_ci(data_dir, table.files[k]).is_some())
             .collect();
-        let descriptions = DESCRIPTION_IDS.iter().map(|ids| ids.iter().filter_map(|&id| string(id)).collect()).collect();
+        let files: Vec<&str> = battles.iter().map(|&k| table.files[k]).collect();
+        let names: Vec<String> = battles
+            .iter()
+            .map(|&k| string(table.names[k]).unwrap_or_else(|| table.files[k].trim_end_matches(".SCN").to_string()))
+            .collect();
+        let descriptions = battles.iter().map(|&k| table.descriptions[k].iter().filter_map(|&id| string(id)).collect()).collect();
+        let overview = eif(data_dir, "OVERVIEW.EIF");
+        // (an overview strip is named after its battle; the cel is the
+        // half-size picture, the bare map that fits the box)
+        let overviews = names
+            .iter()
+            .map(|n| {
+                let strip = overview.as_ref()?.strips.iter().find(|s| s.name == *n)?;
+                let k = strip.cels.iter().position(|c| c.name.contains("Half")).unwrap_or(strip.cels.len().saturating_sub(1));
+                cels(&overview, n).into_iter().nth(k)
+            })
+            .collect();
+        let places = battles.iter().map(|&k| table.places[k]).collect();
         // nation bytes 0 Greek, 1 Persian, 2 Macedonian, 3 Indian, 4
         // Danubian, 5 Scythian; the string table has Greek, Macedonian,
         // Persian, Danubian, Indian, Scythian from string 31
+        // (Hannibal's Romans and Carthaginians at 79 and 80; its Seleucids
+        // have no name of their own: 🟡 Persian, as they're drawn)
         let nation = |n: u8| {
-            const ORDER: [u16; 6] = [0, 2, 1, 4, 3, 5];
-            ORDER.get(n as usize).and_then(|&k| string(31 + k)).unwrap_or_else(|| format!("Nation {n}"))
+            const ORDER: [u16; 9] = [31, 33, 32, 35, 34, 36, 79, 80, 32];
+            ORDER.get(n as usize).and_then(|&id| string(id)).unwrap_or_else(|| format!("Nation {n}"))
         };
-        let scenarios: Vec<_> = SCENARIOS
+        let scenarios: Vec<_> = files
             .iter()
             .map(|f| {
                 crate::find_ci(data_dir, f)
@@ -198,26 +314,41 @@ impl Setup {
             .collect();
         let rout = scenarios
             .iter()
-            .map(|scn| scn.as_ref().map_or([100, 100], |s| [s.home.rout_level as u16, s.visitor.rout_level as u16]))
+            .map(|scn| scn.as_ref().map_or([100, 100], |s| [s.home.rout_level, s.visitor.rout_level]))
             .collect();
         Self {
             screen: Screen::Start,
             pressed: None,
-            font: crate::ui::Font::load(data_dir),
+            // Hannibal's font and frames in its darkest colour (Alexander's
+            // glyphs are dark as they are)
+            font: if game == gboh_formats::game::Game::Alexander { crate::ui::Font::load(data_dir) } else { crate::ui::Font::load(data_dir).in_ink(dark) },
+            dark: if game == gboh_formats::game::Game::Alexander { 0xf8 } else { dark },
             yellow,
             button: cels(&buttons, "Pushbutton"),
             big_button: cels(&buttons, "Big Pushbutton"),
             radio: cels(&buttons, "Radio"),
+            checkbox: cels(&buttons, "CheckBox"),
+            turn_limits: false,
+            default_deployment: true,
             start_art: first(&dialog, "Start Game"),
-            map_art: first(&dialog, "Campaign Map"),
+            // Hannibal's with the add-on's map (Dertosa's scenario there)
+            map_art: (game == gboh_formats::game::Game::Hannibal && crate::find_ci(data_dir, "DERTOSA.SCN").is_some())
+                .then(|| first(&eif(data_dir, "GB-DLG.EIF"), "Scenario Map"))
+                .flatten()
+                .or_else(|| first(&dialog, "Campaign Map")),
             marble: first(&back, "Blocks"),
             labels: cels(&campaign, "Battles"),
+            game,
+            places,
+            overviews,
+            small: crate::ui::Font::small(data_dir),
+            white,
             names,
             descriptions,
             sides,
             rout,
-            files: SCENARIOS.iter().map(|f| f.to_string()).collect(),
-            nations: (0..6).map(nation).collect(),
+            files: files.iter().map(|f| f.to_string()).collect(),
+            nations: (0..9).map(nation).collect(),
             start: res.as_ref().and_then(|r| r.dialog("STARTGAME")),
             scenario: res.as_ref().and_then(|r| r.dialog("SCENARIO")),
             intro: res.as_ref().and_then(|r| r.dialog("INTRODLG")),
@@ -232,7 +363,12 @@ impl Setup {
             .into_iter()
             .flatten()
             .filter_map(|e| e.ok()?.file_name().into_string().ok())
-            .filter(|n| n.to_ascii_lowercase().ends_with(".scn") && !SCENARIOS.iter().any(|b| b.eq_ignore_ascii_case(n)))
+            .filter(|n| {
+                let builtin = SCENARIOS.iter().chain(HANNIBAL_BATTLES.files).any(|b| b.eq_ignore_ascii_case(n));
+                // (Hannibal hides its two early drafts)
+                let draft = n.eq_ignore_ascii_case("ILIPA2.SCN") || n.eq_ignore_ascii_case("CANNAE2.SCN");
+                n.to_ascii_lowercase().ends_with(".scn") && !builtin && !draft
+            })
             .collect();
         files.sort();
         files
@@ -246,10 +382,15 @@ impl Setup {
         };
         let nation = |n: u8| self.nations.get(n as usize).cloned().unwrap_or_default();
         self.sides.push([nation(scn.home.nation), nation(scn.visitor.nation)]);
-        self.rout.push([scn.home.rout_level as u16, scn.visitor.rout_level as u16]);
+        self.rout.push([scn.home.rout_level, scn.visitor.rout_level]);
         self.files.push(file.to_string());
         self.screen = Screen::Sides { battle: self.files.len() - 1, computer: [false, true] };
         true
+    }
+
+    /// Whether checkbox `id` of the rout dialog is ticked.
+    fn checked(&self, id: u16) -> bool {
+        if id == TURN_LIMITS { self.turn_limits } else { self.default_deployment }
     }
 
     fn text_width(&self, text: &str) -> i32 {
@@ -317,7 +458,39 @@ impl Setup {
                 // the rewrite's own: back to the content manager, its
                 // settings, and every imported title's battles
                 for (k, label) in EXTRA.iter().enumerate() {
-                    self.button(&mut canvas, extra_rect(k), label);
+                    self.button(&mut canvas, extra_rect(&self.start, k), label);
+                }
+                canvas
+            }
+            Screen::Scenario { selected } if self.game == gboh_formats::game::Game::Hannibal => {
+                let (w, h) = self.scenario.as_ref().map_or((460, 422), |d| px(d.size));
+                let mut canvas = Canvas::new(w as usize, h as usize, 0);
+                if let Some(a) = &self.map_art {
+                    canvas.blit(a, 0, 0);
+                }
+                if let Some(k) = selected {
+                    // the chosen battle framed (🟡 the original's mark not
+                    // traced), its picture and description in the box
+                    let (x, y, pw, ph) = self.places[k];
+                    frame_in(&mut canvas, (x - 1, y - 1, pw + 2, ph + 2), self.white);
+                    let (bx, by, bw, _) = INFO_BOX;
+                    let pic_w = self.overviews[k].as_ref().map_or(0, |p| {
+                        canvas.blit(p, bx, by);
+                        p.width as i32
+                    });
+                    let mut line_y = by + 2;
+                    for line in &self.descriptions[k] {
+                        for part in wrap(line, bw - pic_w - 4, |t| self.small.width(t)) {
+                            self.small.draw(&mut canvas, &part, bx + pic_w + 4, line_y);
+                            line_y += 12;
+                        }
+                    }
+                }
+                for c in self.scenario.iter().flat_map(|d| &d.controls) {
+                    // `More…` lies outside the dialog
+                    if (c.rect.0 as i32) < self.scenario.as_ref().map_or(263, |d| d.size.0 as i32) {
+                        self.button(&mut canvas, c.rect, &c.text);
+                    }
                 }
                 canvas
             }
@@ -380,7 +553,7 @@ impl Setup {
                 }
                 canvas
             }
-            Screen::Rout { battle, levels, difficulty, .. } => {
+            Screen::Rout { battle, levels, difficulty, computer } => {
                 let mut canvas = self.marble_canvas(&self.rout_dialog, (184, 168));
                 // the armies' names and spinners, laid out as in the
                 // original (drawn by its code, not the template)
@@ -388,15 +561,16 @@ impl Setup {
                     let name = &self.sides[battle][side];
                     self.text(&mut canvas, name, centre - self.text_width(name) / 2, 16);
                     let (x, y, w, h) = spinner(centre);
-                    frame(&mut canvas, (x, y, w, h));
+                    frame_in(&mut canvas, (x, y, w, h), self.dark);
                     let value = levels[side].to_string();
                     self.text(&mut canvas, &value, x + (w - 16 - self.text_width(&value)) / 2, y + (h - 11) / 2);
-                    frame(&mut canvas, (x + w - 16, y, 16, h / 2));
-                    frame(&mut canvas, (x + w - 16, y + h / 2, 16, h - h / 2));
+                    frame_in(&mut canvas, (x + w - 16, y, 16, h / 2), self.dark);
+                    frame_in(&mut canvas, (x + w - 16, y + h / 2, 16, h - h / 2), self.dark);
                     self.text(&mut canvas, "+", x + w - 11, y + 1);
                     self.text(&mut canvas, "-", x + w - 10, y + h / 2 + 1);
                 }
-                let label = format!("{} Difficulty Level", self.sides[battle][0]);
+                let player = if computer[0] && !computer[1] { 1 } else { 0 };
+                let label = format!("{} Difficulty Level", self.sides[battle][player]);
                 let width = canvas.width as i32;
                 self.text(&mut canvas, &label, (width - self.text_width(&label)) / 2, 100);
                 for c in self.rout_dialog.iter().flat_map(|d| &d.controls) {
@@ -410,6 +584,15 @@ impl Setup {
                             let caption: String = c.text.chars().filter(|&ch| ch != '&').collect();
                             self.text(&mut canvas, &caption, x + 16, y);
                         }
+                        // Hannibal's checkboxes and the static beside them
+                        _ if is_checkbox(c) => {
+                            if let Some(b) = self.checkbox.get(self.checked(c.id) as usize) {
+                                canvas.blit(b, x, y);
+                            }
+                            let caption: String = c.text.chars().filter(|&ch| ch != '&').collect();
+                            self.text(&mut canvas, &caption, x + 16, y);
+                        }
+                        _ if c.class == gboh_formats::pe::Name::Id(0x82) => self.text(&mut canvas, &c.text, x, y),
                         _ => self.button(&mut canvas, c.rect, &c.text),
                     }
                 }
@@ -422,15 +605,15 @@ impl Setup {
     pub fn click(&mut self, x: i32, y: i32) -> Outcome {
         match self.screen {
             Screen::Start if (0..EXTRA.len()).any(|k| {
-                let (rx, ry) = px((extra_rect(k).0, extra_rect(k).1));
-                let (rw, rh) = px((extra_rect(k).2, extra_rect(k).3));
+                let (rx, ry) = px((extra_rect(&self.start, k).0, extra_rect(&self.start, k).1));
+                let (rw, rh) = px((extra_rect(&self.start, k).2, extra_rect(&self.start, k).3));
                 x >= rx && x < rx + rw && y >= ry && y < ry + rh
             }) =>
             {
                 let k = (0..EXTRA.len())
                     .find(|&k| {
-                        let (rx, ry) = px((extra_rect(k).0, extra_rect(k).1));
-                        let (rw, rh) = px((extra_rect(k).2, extra_rect(k).3));
+                        let (rx, ry) = px((extra_rect(&self.start, k).0, extra_rect(&self.start, k).1));
+                        let (rw, rh) = px((extra_rect(&self.start, k).2, extra_rect(&self.start, k).3));
                         x >= rx && x < rx + rw && y >= ry && y < ry + rh
                     })
                     .unwrap_or(0);
@@ -450,7 +633,7 @@ impl Setup {
                 _ => Outcome::Nothing,
             },
             Screen::Scenario { selected } => {
-                if let Some(k) = PLACES.iter().position(|&(px, py, w, h)| x >= px && x < px + w && y >= py && y < py + h) {
+                if let Some(k) = self.places.iter().position(|&(px, py, w, h)| x >= px && x < px + w && y >= py && y < py + h) {
                     self.screen = Screen::Scenario { selected: Some(k) };
                     return Outcome::Redraw;
                 }
@@ -467,7 +650,7 @@ impl Setup {
                     // the original's Details and Units open its help, whose
                     // calls the GOG build has cut: a pointer to the manual
                     // (Paraitacene's Details: its description)
-                    Some(10) if selected == Some(10) => Outcome::Message(DESCRIPTION_IDS[10].to_vec()),
+                    Some(10) if selected == Some(10) && self.game == gboh_formats::game::Game::Alexander => Outcome::Message(DESCRIPTION_IDS[10].to_vec()),
                     Some(9 | 10) if selected.is_some() => Outcome::Message(vec![83]),
                     Some(11) => Outcome::Custom,
                     _ => Outcome::Nothing,
@@ -480,7 +663,7 @@ impl Setup {
                     Outcome::Redraw
                 }
                 Some(1) => {
-                    self.screen = Screen::Rout { battle, computer, levels: rout_levels(self.rout[battle], 1), difficulty: 1 };
+                    self.screen = Screen::Rout { battle, computer, levels: rout_levels(self.rout[battle], 1, computer), difficulty: 1 };
                     Outcome::Redraw
                 }
                 _ => Outcome::Nothing,
@@ -499,9 +682,17 @@ impl Setup {
                     Some(id @ 10..=13) => {
                         let difficulty = (id - 10) as usize;
                         if difficulty < 3 {
-                            levels = rout_levels(self.rout[battle], difficulty);
+                            levels = rout_levels(self.rout[battle], difficulty, computer);
                         }
                         self.screen = Screen::Rout { battle, computer, levels, difficulty };
+                        Outcome::Redraw
+                    }
+                    Some(id) if self.rout_dialog.iter().flat_map(|d| &d.controls).any(|c| c.id == id && is_checkbox(c)) => {
+                        if id == TURN_LIMITS {
+                            self.turn_limits = !self.turn_limits;
+                        } else {
+                            self.default_deployment = !self.default_deployment;
+                        }
                         Outcome::Redraw
                     }
                     Some(1) => Outcome::Play { scenario: self.files[battle].clone(), computer, levels },
@@ -520,11 +711,21 @@ fn spinner(centre: i32) -> (i32, i32, i32, i32) {
     (centre - 28, 49, 56, 35)
 }
 
-/// A one-pixel dark frame around `rect`.
-fn frame(canvas: &mut Canvas, (x, y, w, h): (i32, i32, i32, i32)) {
+/// Hannibal's rout dialog checkboxes: turn limits (and, the other one,
+/// default deployments).
+const TURN_LIMITS: u16 = 14;
+
+/// Whether a dialog control is a checkbox (a button styled `BS_CHECKBOX` or
+/// `BS_AUTOCHECKBOX`).
+fn is_checkbox(c: &gboh_formats::pe::Control) -> bool {
+    c.class == gboh_formats::pe::Name::Id(0x80) && matches!(c.style & 0xf, 2 | 3)
+}
+
+/// A one-pixel frame around `rect` in `colour`.
+fn frame_in(canvas: &mut Canvas, (x, y, w, h): (i32, i32, i32, i32), colour: u8) {
     let mut put = |px: i32, py: i32| {
         if px >= 0 && py >= 0 && (px as usize) < canvas.width && (py as usize) < canvas.height {
-            canvas.pixels[py as usize * canvas.width + px as usize] = 0xf8;
+            canvas.pixels[py as usize * canvas.width + px as usize] = colour;
         }
     };
     for i in x..x + w {
@@ -560,6 +761,28 @@ mod tests {
     use super::*;
 
     /// Goes through the screens; runs only with `GBOH_DATA` set.
+    /// Hannibal's scenario screen: its battles on the map, Cannae chosen
+    /// with its picture and description; runs only with `GBOH_HANNIBAL`.
+    #[test]
+    fn hannibal_scenario_screen() {
+        let Ok(dir) = std::env::var("GBOH_HANNIBAL") else { return };
+        let dir = Path::new(&dir);
+        let mut s = Setup::new(dir);
+        assert!(s.files.len() >= 11, "{:?}", s.files);
+        s.screen = Screen::Scenario { selected: None };
+        // a click on Cannae's name chooses it
+        assert_eq!(s.click(307 + 5, 123 + 5), Outcome::Redraw);
+        assert_eq!(s.screen, Screen::Scenario { selected: Some(2) });
+        let c = s.canvas();
+        assert!(s.overviews[2].is_some());
+        if let Ok(out) = std::env::var("GBOH_SHOTS") {
+            let pal = gboh_formats::pal::Palette::parse(&std::fs::read(crate::palette_path(dir).unwrap()).unwrap()).unwrap();
+            crate::ui::write_ppm(&c, &pal, &Path::new(&out).join("han_scenario.ppm")).unwrap();
+            s.screen = Screen::Rout { battle: 2, computer: [false, true], levels: s.rout[2], difficulty: 1 };
+            crate::ui::write_ppm(&s.canvas(), &pal, &Path::new(&out).join("han_rout.ppm")).unwrap();
+        }
+    }
+
     #[test]
     fn sets_up_a_battle() {
         let Ok(dir) = std::env::var("GBOH_DATA") else { return };

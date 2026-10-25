@@ -185,6 +185,8 @@ pub const CONTENT: u16 = 4;
 pub const ENTRY: u16 = 1000; // + entry index
 pub const SCROLL_UP: u16 = 5;
 pub const SCROLL_DOWN: u16 = 6;
+/// The scroll bar's track, a button per place the list can scroll to.
+pub const SCROLL_AT: u16 = 500; // + scroll position
 pub const PREFERENCES: u16 = 7;
 
 /// One line of the game selector: a campaign or a battle of a title.
@@ -194,7 +196,21 @@ pub struct Entry {
     /// The scenario file, or `None` for the title's campaign.
     pub scenario: Option<String>,
     pub name: String,
+    /// What tells it from another of the same name: its variant file's
+    /// description, "standard" for the original of a battle with variants,
+    /// else its file name.
+    pub detail: Option<String>,
 }
+
+/// The selector's list rows that fit a `h` tall window.
+pub fn selector_rows(h: i32) -> usize {
+    let panel_h = (h - 32).min(SELECTOR_HEIGHT);
+    ((panel_h - 84 - 76) / ROW).max(1) as usize
+}
+
+/// The selector's panel height (at most) and row pitch.
+const SELECTOR_HEIGHT: i32 = 560;
+const ROW: i32 = 22;
 
 /// Which of the rewrite's screens is up.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -229,7 +245,9 @@ pub fn draw(screen: &Screen, v: &View, w: usize, h: usize) -> (Canvas, Vec<Butto
     let panel_h = match screen {
         Screen::Content => 370,
         Screen::Settings => 300,
-        Screen::Selector { .. } => h - 32,
+        // the heading, a row per entry and the buttons
+        // a fixed height: the list scrolls
+        Screen::Selector { .. } => SELECTOR_HEIGHT,
     }
     .min(h - 32);
     let panel = ((w - panel_w) / 2, ((h - panel_h) / 2).max(16), panel_w, panel_h);
@@ -320,11 +338,31 @@ pub fn draw(screen: &Screen, v: &View, w: usize, h: usize) -> (Canvas, Vec<Butto
         Screen::Selector { entries, scroll } => {
             heading(&mut c, "Choose a battle or a campaign");
             let top = panel.1 + 84;
-            let row = 22;
+            let row = ROW;
             let rows = ((status_y - 40 - top) / row).max(1) as usize;
+            // the scroll bar: a track the list's height, a thumb as long as
+            // the share shown
+            let bar = 12;
+            let list_w = inner - bar - 6;
+            let last = entries.len().saturating_sub(rows);
+            let track = (left + inner - bar, top, bar, rows as i32 * row - 2);
+            fill(&mut c, track, FACE_DOWN);
+            bevel(&mut c, track, true);
+            if !entries.is_empty() {
+                let thumb_h = (track.3 * rows.min(entries.len()) as i32 / entries.len() as i32).max(10);
+                let thumb_y = track.1 + if last == 0 { 0 } else { (track.3 - thumb_h) * *scroll as i32 / last as i32 };
+                let thumb = (track.0 + 1, thumb_y, bar - 2, thumb_h);
+                fill(&mut c, thumb, FACE);
+                bevel(&mut c, thumb, false);
+                for k in 0..rows {
+                    let y = track.1 + track.3 * k as i32 / rows as i32;
+                    let to = if rows > 1 { last * k / (rows - 1) } else { 0 };
+                    buttons.push((SCROLL_AT + to as u16, (track.0, y, bar, (track.3 / rows as i32).max(1))));
+                }
+            }
             for (k, e) in entries.iter().enumerate().skip(*scroll).take(rows) {
                 let y = top + (k - scroll) as i32 * row;
-                let r = (left, y, inner, row - 2);
+                let r = (left, y, list_w, row - 2);
                 let playable = e.title.playable();
                 let down = playable && v.pressed.is_some_and(|(px, py)| px >= r.0 && px < r.0 + r.2 && py >= r.1 && py < r.1 + r.3);
                 if down {
@@ -338,19 +376,27 @@ pub fn draw(screen: &Screen, v: &View, w: usize, h: usize) -> (Canvas, Vec<Butto
                 };
                 text(&mut c, game, left + 6, y + 15, BODY, true, RED);
                 text(&mut c, &e.name, left + 96, y + 15, BODY, false, if playable { INK } else { DIM });
-                fill(&mut c, (left, y + row - 2, inner, 1), RULE);
+                if let Some(d) = &e.detail {
+                    // as much of it as fits
+                    let x = left + 96 + width(&e.name, BODY, false) + 10;
+                    let room = left + list_w - x - 4;
+                    let mut shown: String = d.clone();
+                    while !shown.is_empty() && width(&shown, BODY, false) > room {
+                        shown.pop();
+                    }
+                    if shown.len() < d.len() && shown.len() > 1 {
+                        shown.pop();
+                        shown.push_str("...");
+                    }
+                    text(&mut c, &shown, x, y + 15, BODY, false, DIM);
+                }
+                fill(&mut c, (left, y + row - 2, list_w, 1), RULE);
                 if playable {
                     buttons.push((ENTRY + k as u16, r));
                 }
             }
             let y = top + rows as i32 * row + 8;
-            let mut x = button(&mut c, &mut buttons, BACK, "Back", left, y, true);
-            if *scroll > 0 {
-                x = button(&mut c, &mut buttons, SCROLL_UP, "Up", x + 12, y, true);
-            }
-            if scroll + rows < entries.len() {
-                button(&mut c, &mut buttons, SCROLL_DOWN, "Down", x + 12, y, true);
-            }
+            button(&mut c, &mut buttons, BACK, "Back", left, y, true);
         }
     }
     let (line, bad) = &v.status;
@@ -369,14 +415,16 @@ pub fn entries(imported: &[Title]) -> Vec<Entry> {
     let mut out = Vec::new();
     for &t in imported {
         let Some(dir) = crate::library::data_dir(t) else { continue };
-        if t == Title::Alexander {
-            out.push(Entry { title: t, scenario: None, name: "Campaign".into() });
+        if t != Title::Caesar {
+            out.push(Entry { title: t, scenario: None, name: "Campaign".into(), detail: None });
         }
         let mut files: Vec<(String, String)> = std::fs::read_dir(&dir)
             .into_iter()
             .flatten()
             .filter_map(|e| e.ok()?.file_name().into_string().ok())
             .filter(|n| n.to_ascii_lowercase().ends_with(".scn"))
+            // (Hannibal's early drafts, which its game hides)
+            .filter(|n| !n.eq_ignore_ascii_case("ILIPA2.SCN") && !n.eq_ignore_ascii_case("CANNAE2.SCN"))
             .filter_map(|n| {
                 let scn = gboh_formats::scn::Scenario::parse(&std::fs::read(dir.join(&n)).ok()?).ok()?;
                 let name = if scn.title.trim().is_empty() { n.clone() } else { scn.title.trim().to_string() };
@@ -384,7 +432,41 @@ pub fn entries(imported: &[Title]) -> Vec<Entry> {
             })
             .collect();
         files.sort();
-        out.extend(files.into_iter().map(|(name, file)| Entry { title: t, scenario: Some(file), name }));
+        // the variants' descriptions (`*.var`: i32 battle, u16 n + the
+        // scenario's file name, 4 bytes, u16 n + the description)
+        let mut variants = std::collections::HashMap::new();
+        for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = e.path();
+            if !path.extension().is_some_and(|x| x.eq_ignore_ascii_case("var")) {
+                continue;
+            }
+            let Ok(d) = std::fs::read(&path) else { continue };
+            let str16 = |at: usize| -> Option<(String, usize)> {
+                let n = u16::from_le_bytes([*d.get(at)?, *d.get(at + 1)?]) as usize;
+                Some((d.get(at + 2..at + 2 + n)?.iter().map(|&b| b as char).collect(), at + 2 + n))
+            };
+            if let Some((file, at)) = str16(4)
+                && let Some((description, _)) = str16(at + 4)
+            {
+                variants.insert(file.to_ascii_lowercase(), description);
+            }
+        }
+        let repeated = |name: &str| files.iter().filter(|(n, _)| n == name).count() > 1;
+        let entries: Vec<Entry> = files
+            .iter()
+            .map(|(name, file)| {
+                let detail = variants.get(&file.to_ascii_lowercase()).cloned().or_else(|| {
+                    repeated(name).then(|| {
+                        // the original of a battle whose variants have a
+                        // description, else its file name
+                        let has_variant = files.iter().any(|(n, f)| n == name && variants.contains_key(&f.to_ascii_lowercase()));
+                        if has_variant { "standard".to_string() } else { file.clone() }
+                    })
+                });
+                Entry { title: t, scenario: Some(file.clone()), name: name.clone(), detail }
+            })
+            .collect();
+        out.extend(entries);
     }
     out
 }

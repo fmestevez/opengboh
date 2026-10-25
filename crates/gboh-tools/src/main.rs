@@ -24,7 +24,7 @@
 //!   map (or a scenario's map with its units) with the faithful renderer.
 
 use gboh_formats::{eif::Eif, map::Map, pal::Palette, scn::Scenario};
-use gboh_formats::units::{ART_TITLES, unit_type};
+use gboh_formats::units::{title, unit_type};
 use gboh_render::battlefield;
 use gboh_render::terrain::Zoom;
 use std::collections::BTreeMap;
@@ -89,6 +89,11 @@ fn main() -> Result<()> {
 }
 
 /// Case-insensitive lookup, since the shipped files mix `*.EIF` and `*.eif`.
+/// The game's palette file (`GAME.PAL`, or the game's own name for it).
+fn palette_path(dir: &Path) -> Result<PathBuf> {
+    gboh_formats::pal::FILES.iter().find_map(|n| find_ci(dir, n).ok()).context("GAME.PAL not found")
+}
+
 fn find_ci(dir: &Path, name: &str) -> Result<PathBuf> {
     for e in fs::read_dir(dir)? {
         let p = e?.path();
@@ -132,21 +137,34 @@ fn maps(data_dir: &Path) -> Result<()> {
 fn scenarios(data_dir: &Path) -> Result<()> {
     for path in files_with_ext(data_dir, "scn")? {
         let file = path.file_name().unwrap().to_string_lossy();
-        let scn = Scenario::parse(&fs::read(&path)?).with_context(|| file.to_string())?;
-        let map = Map::parse(&fs::read(find_ci(data_dir, &scn.map_file)?)?)?;
+        let scn = match Scenario::parse(&fs::read(&path)?) {
+            Ok(s) => s,
+            Err(e) => {
+                println!("{file:13} not read: {e}");
+                continue;
+            }
+        };
+        let map = match find_ci(data_dir, &scn.map_file).and_then(|p| Ok(Map::parse(&fs::read(p)?)?)) {
+            Ok(m) => m,
+            Err(e) => {
+                println!("{file:13} {:28} map={}: {e}", scn.title, scn.map_file);
+                continue;
+            }
+        };
         let off_map = scn.units.iter().filter(|u| map.hex_from_id(u.hex).is_none()).count();
         let mut kinds: BTreeMap<u8, usize> = BTreeMap::new();
         for u in &scn.units {
             *kinds.entry(u.kind).or_default() += 1;
         }
         println!(
-            "{file:13} {:28} map={:13} {}x{} leaders={:2} units={:3} off_map={off_map} ai={}+{} kinds={kinds:?}",
+            "{file:13} {:28} map={:13} {}x{} leaders={:2} units={:3} off_map={off_map} late={} ai={}+{} kinds={kinds:?}",
             scn.title,
             scn.map_file,
             map.width,
             map.height,
             scn.leaders.len(),
             scn.units.len(),
+            scn.units.iter().filter(|u| u.arrival > 0).count(),
             scn.home_ai.len(),
             scn.visitor_ai.len()
         );
@@ -159,7 +177,7 @@ fn units(data_dir: &Path, scn_file: &str) -> Result<()> {
     let map = Map::parse(&fs::read(find_ci(data_dir, &scn.map_file)?)?)?;
     for u in &scn.units {
         let hex = map.hex_from_id(u.hex);
-        let art = unit_type(u).map_or("?", |t| ART_TITLES[t]);
+        let art = unit_type(u).and_then(title).unwrap_or("?");
         println!(
             "kind={:2} nation={} a={} b={} hex={} {:?} facing={} {:24} {art:36} {:?}",
             u.kind, u.nation, u.unk_a, u.unk_b, u.hex, hex, u.facing, u.name, u.extra
@@ -352,7 +370,7 @@ fn ai(data_dir: &Path, scn_file: &str, n: u32, opts: &[String]) -> Result<()> {
             routed(game.armies[1].0)
         );
         if let Verdict::Won(a) = verdict {
-            let names = ["Greeks", "Persians", "Macedonians", "Indians", "Danubians", "Scythians"];
+            let names = ["Greeks", "Persians", "Macedonians", "Indians", "Danubians", "Scythians", "Romans", "Carthaginians", "Seleucids", "Caesarians", "Pompeians", "Barbarians"];
             println!("{} win", names.get(game.armies[a].0 as usize).unwrap_or(&"?"));
             break;
         }
@@ -376,7 +394,7 @@ fn sanitize(s: &str) -> String {
 }
 
 fn extract(data_dir: &Path, out_dir: &Path) -> Result<()> {
-    let pal = Palette::parse(&fs::read(find_ci(data_dir, "GAME.PAL")?)?)?;
+    let pal = Palette::parse(&fs::read(palette_path(data_dir)?)?)?;
     let mut rgba_pal = [[0u8; 4]; 256];
     for (i, c) in pal.colors.iter().enumerate() {
         rgba_pal[i] = [c[0], c[1], c[2], if i == 0 { 0 } else { 255 }];
@@ -470,7 +488,7 @@ fn render(data_dir: &Path, file: &str, out: &Path, zoom: &str, save: Option<&str
     let map = Map::parse(&load(&map_file).with_context(|| format!("{map_file} not found"))?)?;
     let flagged = scenario.as_ref().map_or_else(Vec::new, |s| gboh_game::command::opening_flags(s, &map, 1));
     let pal = if static_water {
-        Palette::parse(&load("GAME.PAL").context("GAME.PAL not found")?)?
+        Palette::parse(&gboh_formats::pal::FILES.iter().find_map(|n| load(n)).context("GAME.PAL not found")?)?
     } else {
         battlefield::palette(&mut load)?
     };
