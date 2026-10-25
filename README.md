@@ -6,8 +6,8 @@ behind the *Great Battles of History* (GBoH) series of computer games:
 * *The Great Battles of Alexander* (1997): playable, campaign included
 * *The Great Battles of Hannibal* (1997): playable, its own rules (a few
   marked as approximations) and its campaign
-* *The Great Battles of Caesar* (1998): its battles load and play, with
-  its units, terrain and AI, under Hannibal's rules for now; no campaign yet
+* *The Great Battles of Caesar* (1998): playable, its own rules (a few
+  marked as approximations) and its campaign
 
 **This repository contains no game data.** You need your own copy of a
 supported game (e.g. from GOG); the tools here read the original files
@@ -49,8 +49,7 @@ start screen. It has three buttons of the rewrite's own: the
 **Content Manager**, **Settings** (the theme: which imported game's intro,
 start screen and art the menus use; and that game's preferences) and **All
 Battles**, every imported game's battles and campaigns in one list.
-All three games' battles can be played (Caesar's by Hannibal's rules for
-now, without its campaign).
+All three games' battles and campaigns can be played.
 
 The developer form below opens a `DATA` folder directly.
 

@@ -62,6 +62,8 @@ pub enum Order {
     StepComputer,
     /// Hannibal's group orders and manipular line extension.
     Group(GroupOrder),
+    /// The answer to the elite initiative offered (Hannibal's).
+    Elite { accept: bool },
 }
 
 /// Hannibal's leader orders for a whole group.
@@ -84,6 +86,8 @@ pub enum Notice {
     Volley { target: usize, hits: i32, routed: bool },
     /// The active leader has no orders left.
     NoOrders,
+    /// The player's leader may take the elite initiative.
+    Elite { leader: usize },
 }
 
 /// Men of a unit falling: which were down before (bit per figure), the
@@ -184,6 +188,7 @@ pub fn missile_of(weapon: gboh_game::missile::Weapon, shooter_type: usize) -> Mi
         Javelin | MountedJavelin => Missile::Javelin,
         Sling => Missile::Stone,
         Bolt => Missile::Bolt,
+        Axe => Missile::Axe,
     }
 }
 
@@ -274,6 +279,8 @@ impl Play {
     /// player places his units behind the line between the armies, then
     /// finishes), where the armies are apart.
     pub fn start(mut game: Game, ai: Vec<(u8, gboh_game::ai::Machine)>, deploy: bool) -> Self {
+        // the players' elite leaders are asked
+        game.activation.asks = game.armies.iter().map(|a| a.0).filter(|n| !ai.iter().any(|(m, _)| m == n)).collect();
         let deploying = deploy && game.deployment_line().is_some();
         game.deployment = if deploying { game.deployment_line() } else { None };
         let leader = if deploying { None } else { game.begin_turn() };
@@ -391,6 +398,7 @@ impl Play {
                 self.arm_backward();
             }
             Order::EndDeployment => self.finish_deployment(),
+            Order::Elite { accept } => self.elite(accept),
             Order::Group(g) => {
                 self.group_order(g);
             }
@@ -459,6 +467,26 @@ impl Play {
         if let Some(l) = self.leader {
             let name = self.game.battle.units[l].name.clone();
             self.comment(format!("{name} is now active."));
+            if self.game.activation.offered && !self.notices.contains(&Notice::Elite { leader: l }) {
+                self.notices.push(Notice::Elite { leader: l });
+            }
+        }
+    }
+
+    /// Answer the elite initiative offered: taken, the leader goes; else
+    /// the turn's first leader is drawn as usual.
+    pub fn elite(&mut self, accept: bool) {
+        if !self.game.activation.offered {
+            return;
+        }
+        self.orders.push(Order::Elite { accept });
+        let before = self.leader;
+        self.leader = self.game.answer_elite(accept);
+        if self.leader != before {
+            self.announce_leader();
+            if !self.demo {
+                self.computer_turns();
+            }
         }
     }
 
@@ -1543,6 +1571,41 @@ mod tests {
     /// Hannibal's deployment phase: the player's units go behind the line
     /// between the armies, nowhere else; Finish starts the battle. Runs only
     /// with `GBOH_HANNIBAL`.
+    #[test]
+    fn players_are_offered_the_elite_initiative() {
+        let Ok(dir) = std::env::var("GBOH_HANNIBAL") else { return };
+        let dir = std::path::Path::new(&dir);
+        let read = |n: &str| std::fs::read(crate::find_ci(dir, n).unwrap()).unwrap();
+        let scn = gboh_formats::scn::Scenario::parse(&read("CANNAE.SCN")).unwrap();
+        let map = || gboh_formats::map::Map::parse(&read(&scn.map_file)).unwrap();
+        // both armies the player's: finish leaders until an offer comes
+        let mut p = Play::start(Game::new(&scn, map(), 1), Vec::new(), false);
+        let mut offered = false;
+        for _ in 0..400 {
+            if p.over {
+                break;
+            }
+            if p.game.activation.offered {
+                let l = p.leader.unwrap();
+                assert!(p.notices.contains(&Notice::Elite { leader: l }));
+                assert!(p.game.battle.units[l].elite);
+                p.elite(false);
+                assert!(!p.game.activation.offered);
+                offered = true;
+                break;
+            }
+            p.notices.clear();
+            p.finish(false);
+        }
+        assert!(offered);
+        // the save replays to the same leader
+        let mut q = Play::start(Game::new(&scn, map(), 1), Vec::new(), false);
+        for o in p.orders.clone() {
+            q.apply(o);
+        }
+        assert_eq!(q.leader, p.leader);
+    }
+
     #[test]
     fn deploys_before_the_battle() {
         let Ok(dir) = std::env::var("GBOH_HANNIBAL") else { return };

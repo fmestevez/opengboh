@@ -106,6 +106,28 @@ impl Places {
             cell: 2,
         }
     }
+
+    /// Caesar's (`CampaignDlg`, static init `0x596d00`): the window at
+    /// (35, 15); per province its outline and hit mask's origin and its
+    /// flags' place; the fleets' markers (Numidia's, Graecia's).
+    fn caesar() -> Self {
+        const AREA: [(i32, i32); 13] =
+            [(61, 82), (134, 21), (282, 21), (319, 73), (379, 160), (406, 21), (479, 90), (540, 97), (668, 173), (539, 253), (362, 235), (223, 173), (39, 187)];
+        const FLAG: [(i32, i32); 13] =
+            [(82, 124), (186, 59), (328, 24), (359, 103), (361, 169), (451, 35), (496, 127), (634, 161), (698, 253), (568, 296), (396, 302), (285, 252), (64, 266)];
+        Self {
+            view: (35, 15, 529, 357),
+            map_dy: 0,
+            area: AREA.to_vec(),
+            names: vec![None; 13],
+            icons: FLAG.to_vec(),
+            numerals: vec![None; 13],
+            flag: FLAG.to_vec(),
+            navy: vec![(0, (376, 190)), (1, (461, 142))],
+            labels: false,
+            cell: 2,
+        }
+    }
 }
 
 /// Unit icon values, largest first, and their cels (`One`, `Five`, `Ten`,
@@ -144,6 +166,10 @@ pub struct MapState {
     pub change_start: Option<std::time::Instant>,
     /// Where the left button is held down (window pixels), if it is.
     pub pressed: Option<(i32, i32)>,
+    /// Garrison icons the player split or merged (double-click): per
+    /// province and kind, how many of each value (50, 10, 5, 1); dropped
+    /// when that province's garrison changes, which regroups it.
+    pub split: std::collections::HashMap<(usize, usize), [u16; 4]>,
 }
 
 /// How long a change takes: a pause, the dissolve, a pause (the original
@@ -233,6 +259,9 @@ pub struct CampaignArt {
     numerals: Vec<Sprite>,
     labels: Vec<Sprite>,
     button: Vec<Sprite>,
+    /// Caesar's flags: the Pompeian armies' and Pompey's.
+    pompeian: Option<Sprite>,
+    pompey: Option<Sprite>,
     /// The provinces' names (the art's cel names), for the log.
     pub province_names: Vec<String>,
     dialog: Option<gboh_formats::pe::Dialog>,
@@ -245,8 +274,10 @@ impl CampaignArt {
         let art = eif(data_dir, "CAMPAIGN.EIF");
         let dialogs = eif(data_dir, "DIALOG.EIF");
         let strings = crate::ui::exe_resources(data_dir);
-        if gboh_formats::game::Game::detect(data_dir) == Some(gboh_formats::game::Game::Hannibal) {
-            return Self::hannibal(data_dir, art, strings);
+        match gboh_formats::game::Game::detect(data_dir) {
+            Some(gboh_formats::game::Game::Hannibal) => return Self::hannibal(data_dir, art, strings),
+            Some(gboh_formats::game::Game::Caesar) => return Self::caesar(data_dir, art, strings),
+            _ => {}
         }
         let province_names = art
             .as_ref()
@@ -275,6 +306,8 @@ impl CampaignArt {
             numerals: cels(&art, "Numerals"),
             labels: cels(&art, "Battles"),
             button: cels(&eif(data_dir, "DLGBTN.EIF"), "Pushbutton"),
+            pompeian: None,
+            pompey: None,
             province_names,
             dialog: strings.as_ref().and_then(|r| r.dialog("CAMPAIGNMAP")),
             strings,
@@ -328,6 +361,8 @@ impl CampaignArt {
             numerals: Vec::new(),
             labels: Vec::new(),
             button: cels(&eif(data_dir, "DLGBTN.EIF"), "Pushbutton"),
+            pompeian: None,
+            pompey: None,
             province_names,
             dialog: strings.as_ref().and_then(|r| r.dialog("CAMPAIGNMAP")),
             strings,
@@ -337,6 +372,31 @@ impl CampaignArt {
                 .and_then(|p| p.remap.first().copied())
                 .unwrap_or(std::array::from_fn(|i| i as u8)),
         }
+    }
+
+    /// Caesar's art (`CAMPAIGN.EIF`): Hannibal's layout less the shading,
+    /// units and names; three flags; the provinces' names from the
+    /// executable (one after another from `0x637379`).
+    fn caesar(data_dir: &Path, art: Option<gboh_formats::eif::Eif>, strings: Option<gboh_formats::pe::Resources>) -> Self {
+        let mut c = Self::hannibal(data_dir, art.clone(), strings);
+        let exe = crate::ui::exe_path(data_dir).and_then(|p| std::fs::read(p).ok()).unwrap_or_default();
+        let mut va = 0x637379;
+        c.province_names = (0..13)
+            .map(|_| {
+                let name = gboh_formats::pe::string_at(&exe, va).unwrap_or_default();
+                va += name.len() as u32 + 1;
+                name
+            })
+            .collect();
+        let flags = cels(&art, "Flags");
+        c.kind = campaign::Kind::Caesar;
+        c.places = Places::caesar();
+        c.shadows = Vec::new();
+        c.units = [Vec::new(), Vec::new()];
+        c.flag = flags.first().cloned();
+        c.pompeian = flags.get(1).cloned();
+        c.pompey = flags.get(2).cloned();
+        c
     }
 
     /// Whose campaign the art is for.
@@ -362,7 +422,7 @@ impl CampaignArt {
         let x = match self.places.names.get(p).copied().flatten() {
             Some((x, _)) => x,
             // (Hannibal's: the area's middle)
-            None => self.places.area.get(p).map_or(0, |a| a.0) + self.shadows.get(p).map_or(0, |s| s.width as i32 / 2),
+            None => self.places.area.get(p).map_or(0, |a| a.0) + self.shadows.get(p).or(self.outlines.get(p)).map_or(0, |s| s.width as i32 / 2),
         };
         (x - self.places.view.2 / 2).clamp(0, self.max_scroll())
     }
@@ -374,12 +434,13 @@ impl CampaignArt {
 
     /// Each garrison icon of `province` (kind, value, cel, dialog place),
     /// infantry row then cavalry 17 pixels down.
-    fn icons(&self, c: &Campaign, province: usize, scroll: i32) -> Vec<(usize, u16, usize, (i32, i32))> {
+    fn icons(&self, c: &Campaign, province: usize, scroll: i32, m_split: &std::collections::HashMap<(usize, usize), [u16; 4]>) -> Vec<(usize, u16, usize, (i32, i32))> {
         let mut out = Vec::new();
         for kind in [campaign::INFANTRY, campaign::CAVALRY] {
             let (mut x, y) = self.on_dialog(self.places.icons[province], scroll);
             let y = y + 17 * kind as i32;
-            for (k, n) in Campaign::icons(c.units[province][kind]).into_iter().enumerate() {
+            let counts = m_split.get(&(province, kind)).copied().unwrap_or_else(|| Campaign::icons(c.units[province][kind]));
+            for (k, n) in counts.into_iter().enumerate() {
                 let cel = VALUE_CEL[k];
                 let w = self.units[kind].get(cel).map_or(15, |s| s.width as i32);
                 for _ in 0..n {
@@ -433,13 +494,49 @@ impl CampaignArt {
             return Some(Dragging::Flag);
         }
         for p in 0..c.provinces() {
-            for (kind, value, cel, at) in self.icons(c, p, m.scroll) {
+            for (kind, value, cel, at) in self.icons(c, p, m.scroll, &m.split) {
                 if inside(self.units[kind].get(cel), at) {
                     return Some(Dragging::Unit { from: p, kind, value });
                 }
             }
         }
         Some(Dragging::Map { scroll: m.scroll, x })
+    }
+
+    /// A double-click at window pixel `(x, y)` on a garrison icon
+    /// (`FUN_005951c3`): five Ones merge into a Five; a larger icon splits
+    /// into the next smaller (a Five into five Ones, a Ten into two Fives, a
+    /// Fifty into five Tens) if there are none of those. Returns whether one
+    /// did.
+    pub fn split(&self, c: &Campaign, m: &mut MapState, width: usize, height: usize, x: i32, y: i32) -> bool {
+        let (ox, oy) = self.origin(width, height);
+        let (x, y) = (x - ox, y - oy);
+        for p in 0..c.provinces() {
+            for (kind, value, cel, at) in self.icons(c, p, m.scroll, &m.split) {
+                let hit = self.units[kind].get(cel).is_some_and(|s| x >= at.0 && y >= at.1 && x < at.0 + s.width as i32 && y < at.1 + s.height as i32);
+                if !hit {
+                    continue;
+                }
+                let mut counts = m.split.get(&(p, kind)).copied().unwrap_or_else(|| Campaign::icons(c.units[p][kind]));
+                let d = VALUES.iter().position(|&v| v == value).unwrap_or(3);
+                if d == 3 {
+                    if counts[3] < 5 {
+                        return false;
+                    }
+                    counts[3] -= 5;
+                    counts[2] += 1;
+                } else {
+                    if counts[d + 1] != 0 {
+                        return false;
+                    }
+                    counts[d] -= 1;
+                    counts[d + 1] += VALUES[d] / VALUES[d + 1];
+                }
+                m.split.insert((p, kind), counts);
+                return true;
+            }
+        }
+        false
     }
 
     /// Window pixels to dialog pixels.
@@ -540,7 +637,7 @@ impl CampaignArt {
                     }
                 }
             }
-            for (kind, _, cel, at) in self.icons(c, p, m.scroll) {
+            for (kind, _, cel, at) in self.icons(c, p, m.scroll, &m.split) {
                 if let Some(s) = self.units[kind].get(cel) {
                     let at = shift(at);
                     view.blit(s, at.0, at.1);
@@ -567,8 +664,19 @@ impl CampaignArt {
                 frame(&mut view, (lx, ly, w, h), 255);
             }
         }
+        // (Caesar's: the Pompeian fleets not yet sailed)
+        let caesar = self.kind == campaign::Kind::Caesar;
+        if caesar {
+            // the armies' flags beside Caesar's, Pompey's over his army's
+            let dx = self.flag.as_ref().map_or(31, |f| f.width as i32 * 5 / 4);
+            for (k, at) in c.armies.iter().enumerate() {
+                let (Some(p), Some(s)) = (at, if k == 4 { &self.pompey } else { &self.pompeian }) else { continue };
+                let at = shift(self.on_dialog(pl.flag[*p], m.scroll));
+                view.blit(s, at.0 + dx, at.1);
+            }
+        }
         for &(k, pos) in &pl.navy {
-            if c.navy[k]
+            if (if caesar { c.fleets[k] } else { c.navy[k] })
                 && let Some(s) = &self.navy
             {
                 let at = shift(self.on_dialog(pos, m.scroll));
@@ -589,7 +697,11 @@ impl CampaignArt {
             };
             if let Some(s) = s {
                 let (w, h) = (s.width as i32, s.height as i32);
-                let (top, bottom) = if hannibal { (8, 359) } else { (17, 368) };
+                let (top, bottom) = match self.kind {
+                    campaign::Kind::Hannibal => (8, 359),
+                    campaign::Kind::Caesar => (15, 366),
+                    campaign::Kind::Alexander => (17, 368),
+                };
                 d.blit(s, (x - w / 2).clamp(45, 554 - w), (y - h / 2).clamp(top, bottom - h));
             }
         }
@@ -630,10 +742,18 @@ impl CampaignArt {
         // Hannibal's (`EndOfCampaignDlg`): the Carthaginian's picture, and
         // four rows down the left: rounds, provinces conquered and wholly
         // subjugated, the rating
-        if self.kind == campaign::Kind::Hannibal {
+        if self.kind != campaign::Kind::Alexander {
             let picture = if r.victory { &self.victory_picture } else { &self.defeat_picture };
             if let Some(p) = picture {
                 canvas.blit(p, ox + 174, oy + 89);
+            }
+            // (Caesar's: rounds and the rating only, 🟡 placed as Hannibal's)
+            if self.kind == campaign::Kind::Caesar {
+                for (id, y, value) in [(44, 141, r.rounds.to_string()), (136, 205, r.rating_string.map(string).unwrap_or_default())] {
+                    self.font.draw(&mut canvas, &string(id), ox + 15, oy + y);
+                    self.font.draw(&mut canvas, &value, ox + 15, oy + y + 15);
+                }
+                return canvas;
             }
             let rows = [
                 (44, 141, r.rounds.to_string()),
@@ -688,6 +808,7 @@ pub fn describe(e: &campaign::Event, names: &[String], kind: campaign::Kind) -> 
     let (goal, power) = match kind {
         campaign::Kind::Alexander => ("conquer the world", "Macedon"),
         campaign::Kind::Hannibal => ("subdue Italy", "Carthage"),
+        campaign::Kind::Caesar => ("win the civil war", "Rome"),
     };
     let kind = |k: usize| if k == campaign::INFANTRY { "infantry" } else { "cavalry" };
     match e {
@@ -696,6 +817,11 @@ pub fn describe(e: &campaign::Event, names: &[String], kind: campaign::Kind) -> 
             format!("--- Round {r} --- {left} round{} left to {goal}.", if left == 1 { "" } else { "s" })
         }
         campaign::Event::Final => "--- The results of the last round ---".to_string(),
+        campaign::Event::TurnsLeft(_) => String::new(),
+        campaign::Event::Defeated { province } => format!("Caesar beats the Pompeian forces in {}.", name(*province)),
+        campaign::Event::Moved { province } => format!("Caesar marches into {}.", name(*province)),
+        // (the game's own words, read by the caller)
+        campaign::Event::Message(_) => String::new(),
         campaign::Event::Subjugation { province, level, rose: true } => {
             format!("{} is now {} subjugated.", name(*province), if *level == campaign::TOTAL { "wholly" } else { "partly" })
         }
@@ -730,11 +856,48 @@ mod tests {
         let (ox, oy) = art.origin(640, 480);
         let (fx, fy) = art.on_dialog(art.places.flag[4], m.scroll);
         assert_eq!(art.press(&c, &m, 640, 480, ox + fx + 5, oy + fy + 5), Some(Dragging::Flag));
+        // Carthage's 12 foot (a Ten, two Ones): the Ten splits into two
+        // Fives; a Five won't split while there are Ones
+        let mut m = m;
+        assert_eq!(c.units[0][campaign::INFANTRY], 12);
+        let at = |m: &MapState, value: u16| art.icons(&c, 0, m.scroll, &m.split).into_iter().find(|i| i.0 == campaign::INFANTRY && i.1 == value).map(|i| (ox + i.3.0 + 2, oy + i.3.1 + 2));
+        let (x, y) = at(&m, 10).unwrap();
+        assert!(art.split(&c, &mut m, 640, 480, x, y));
+        assert_eq!(m.split[&(0, campaign::INFANTRY)], [0, 0, 2, 2]);
+        let (x, y) = at(&m, 5).unwrap();
+        assert!(!art.split(&c, &mut m, 640, 480, x, y));
         let results = art.draw_results(&c.results(), 640, 480);
         if let Ok(out) = std::env::var("GBOH_SHOTS") {
             let pal = gboh_formats::pal::Palette::parse(&std::fs::read(crate::palette_path(dir).unwrap()).unwrap()).unwrap();
             crate::ui::write_ppm(&canvas, &pal, &Path::new(&out).join("han_campaign.ppm")).unwrap();
             crate::ui::write_ppm(&results, &pal, &Path::new(&out).join("han_campaign_results.ppm")).unwrap();
+        }
+    }
+
+    /// Caesar's map and results; runs only with `GBOH_CAESAR` (and writes
+    /// them to `GBOH_SHOTS`, if set).
+    #[test]
+    fn draws_caesar_campaign() {
+        let Ok(dir) = std::env::var("GBOH_CAESAR") else { return };
+        let dir = Path::new(&dir);
+        let art = CampaignArt::new(dir);
+        assert_eq!(art.kind(), campaign::Kind::Caesar);
+        assert_eq!(art.province_names.len(), 13);
+        assert_eq!(art.province_names[3], "Roma");
+        let mut c = Campaign::new_caesar(3);
+        c.after_battle(true);
+        let log: Vec<String> = c.log.iter().map(|e| describe(e, &art.province_names, c.kind)).filter(|l| !l.is_empty()).collect();
+        let m = MapState { scroll: art.centre_on(c.current), battle: true, log, ..Default::default() };
+        let canvas = art.draw_map(&c, &m, 640, 480);
+        // Caesar's flag in Samnium can be picked up, and dropped on Roma
+        let (ox, oy) = art.origin(640, 480);
+        let (fx, fy) = art.on_dialog(art.places.flag[2], m.scroll);
+        assert_eq!(art.press(&c, &m, 640, 480, ox + fx + 5, oy + fy + 5), Some(Dragging::Flag));
+        let results = art.draw_results(&c.results(), 640, 480);
+        if let Ok(out) = std::env::var("GBOH_SHOTS") {
+            let pal = gboh_formats::pal::Palette::parse(&std::fs::read(crate::palette_path(dir).unwrap()).unwrap()).unwrap();
+            crate::ui::write_ppm(&canvas, &pal, &Path::new(&out).join("cae_campaign.ppm")).unwrap();
+            crate::ui::write_ppm(&results, &pal, &Path::new(&out).join("cae_campaign_results.ppm")).unwrap();
         }
     }
 

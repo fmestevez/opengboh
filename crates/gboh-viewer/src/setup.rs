@@ -99,9 +99,44 @@ const HANNIBAL_BATTLES: BattleTable = BattleTable {
     descriptions: &[&[127], &[129], &[131], &[133], &[135], &[137], &[139], &[141], &[161], &[163], &[165], &[177]],
 };
 
+/// Caesar's (the original's table, less its custom slot; Rhine, the
+/// add-on's, only where its scenario is installed). Each description is
+/// two strings joined.
+const CAESAR_BATTLES: BattleTable = BattleTable {
+    files: &[
+        "DYRRHACH.SCN",
+        "PHARSAL.SCN",
+        "RUSPINA.SCN",
+        "THAPSUS.SCN",
+        "MUNDA.SCN",
+        "VERCELL.SCN",
+        "CHAERON.SCN",
+        "BIBRAC.SCN",
+        "SABIS.SCN",
+        "RHINE.SCN",
+    ],
+    places: &[
+        (290, 95, 86, 11),
+        (328, 127, 70, 11),
+        (194, 146, 51, 11),
+        (190, 166, 55, 11),
+        (62, 126, 44, 11),
+        (199, 44, 68, 11),
+        (307, 113, 73, 11),
+        (141, 61, 60, 11),
+        (175, 14, 36, 11),
+        (297, 15, 37, 11),
+    ],
+    names: &[93, 94, 95, 96, 97, 98, 99, 85, 86, 180],
+    descriptions: &[&[127, 100], &[129, 101], &[131, 103], &[133, 113], &[135, 114], &[137, 141], &[139, 146], &[83, 161], &[84, 163], &[181, 182]],
+};
+
 /// Hannibal's scenario screen: the box under the map where the chosen
 /// battle's overview picture and description go (pixels).
 const INFO_BOX: (i32, i32, i32, i32) = (33, 246, 393, 114);
+
+/// Caesar's.
+const CAESAR_INFO_BOX: (i32, i32, i32, i32) = (41, 200, 382, 145);
 
 /// Dialog units to pixels.
 fn px((x, y): (i16, i16)) -> (i32, i32) {
@@ -202,6 +237,10 @@ pub struct Setup {
     dark: u8,
     button: Vec<Sprite>,
     big_button: Vec<Sprite>,
+    /// Caesar's start screen's buttons (`Big Stone Pushbutton`: its `Up`
+    /// cel is a 1 × 1 placeholder, so its `Down` art serves up and down;
+    /// 🟡 the original's look not checked).
+    stone_button: Vec<Sprite>,
     radio: Vec<Sprite>,
     checkbox: Vec<Sprite>,
     /// Hannibal's rout dialog options: the battles' turn limits, and the
@@ -218,6 +257,9 @@ pub struct Setup {
     game: gboh_formats::game::Game,
     places: Vec<(i32, i32, i32, i32)>,
     overviews: Vec<Option<Sprite>>,
+    /// Where the chosen battle's picture and description go (Hannibal's and
+    /// Caesar's scenario screens).
+    info_box: (i32, i32, i32, i32),
     small: crate::ui::Font,
     white: u8,
     names: Vec<String>,
@@ -267,7 +309,12 @@ impl Setup {
         let res = exe.and_then(|d| Resources::parse(&d).ok());
         let string = |id: u16| res.as_ref().and_then(|r| r.string(id));
         let game = gboh_formats::game::Game::detect(data_dir).unwrap_or_default();
-        let table = if game == gboh_formats::game::Game::Hannibal { &HANNIBAL_BATTLES } else { &ALEXANDER_BATTLES };
+        use gboh_formats::game::Game;
+        let table = match game {
+            Game::Hannibal => &HANNIBAL_BATTLES,
+            Game::Caesar => &CAESAR_BATTLES,
+            Game::Alexander => &ALEXANDER_BATTLES,
+        };
         // the battles whose scenarios are there (Hannibal's Dertosa came
         // later)
         let battles: Vec<usize> = (0..table.files.len())
@@ -278,16 +325,26 @@ impl Setup {
             .iter()
             .map(|&k| string(table.names[k]).unwrap_or_else(|| table.files[k].trim_end_matches(".SCN").to_string()))
             .collect();
-        let descriptions = battles.iter().map(|&k| table.descriptions[k].iter().filter_map(|&id| string(id)).collect()).collect();
+        let descriptions = battles
+            .iter()
+            .map(|&k| {
+                let parts: Vec<String> = table.descriptions[k].iter().filter_map(|&id| string(id)).collect();
+                // (Caesar's two strings make one text)
+                if game == Game::Caesar { vec![parts.concat()] } else { parts }
+            })
+            .collect();
         let overview = eif(data_dir, "OVERVIEW.EIF");
+        // (Caesar's add-on battle's picture is in its own file)
+        let add_on = eif(data_dir, "GB-OVER.EIF");
         // (an overview strip is named after its battle; the cel is the
         // half-size picture, the bare map that fits the box)
         let overviews = names
             .iter()
             .map(|n| {
-                let strip = overview.as_ref()?.strips.iter().find(|s| s.name == *n)?;
+                let file = [&overview, &add_on].into_iter().find(|f| f.as_ref().is_some_and(|e| e.strips.iter().any(|s| s.name == *n)))?;
+                let strip = file.as_ref()?.strips.iter().find(|s| s.name == *n)?;
                 let k = strip.cels.iter().position(|c| c.name.contains("Half")).unwrap_or(strip.cels.len().saturating_sub(1));
-                cels(&overview, n).into_iter().nth(k)
+                cels(file, n).into_iter().nth(k)
             })
             .collect();
         let places = battles.iter().map(|&k| table.places[k]).collect();
@@ -296,9 +353,13 @@ impl Setup {
         // Persian, Danubian, Indian, Scythian from string 31
         // (Hannibal's Romans and Carthaginians at 79 and 80; its Seleucids
         // have no name of their own: 🟡 Persian, as they're drawn)
+        // (Caesar's by its own table: Mithridates' army in the Greek slot,
+        // Roman, Caesarian, Pompeian, Tribal)
         let nation = |n: u8| {
             const ORDER: [u16; 9] = [31, 33, 32, 35, 34, 36, 79, 80, 32];
-            ORDER.get(n as usize).and_then(|&id| string(id)).unwrap_or_else(|| format!("Nation {n}"))
+            const CAESAR: [(u8, u16); 5] = [(0, 31), (6, 79), (9, 176), (10, 177), (11, 178)];
+            let id = if game == Game::Caesar { CAESAR.iter().find(|c| c.0 == n).map(|c| c.1) } else { ORDER.get(n as usize).copied() };
+            id.and_then(string).unwrap_or_else(|| format!("Nation {n}"))
         };
         let scenarios: Vec<_> = files
             .iter()
@@ -326,16 +387,23 @@ impl Setup {
             yellow,
             button: cels(&buttons, "Pushbutton"),
             big_button: cels(&buttons, "Big Pushbutton"),
+            stone_button: if game == Game::Caesar { cels(&buttons, "Big Stone Pushbutton").into_iter().skip(1).take(1).collect() } else { Vec::new() },
             radio: cels(&buttons, "Radio"),
             checkbox: cels(&buttons, "CheckBox"),
             turn_limits: false,
             default_deployment: true,
             start_art: first(&dialog, "Start Game"),
             // Hannibal's with the add-on's map (Dertosa's scenario there)
-            map_art: (game == gboh_formats::game::Game::Hannibal && crate::find_ci(data_dir, "DERTOSA.SCN").is_some())
-                .then(|| first(&eif(data_dir, "GB-DLG.EIF"), "Scenario Map"))
-                .flatten()
-                .or_else(|| first(&dialog, "Campaign Map")),
+            // Hannibal's with the add-on's map (Dertosa's scenario there);
+            // Caesar's likewise (Rhine's), else its own scenario map
+            map_art: match game {
+                Game::Hannibal if crate::find_ci(data_dir, "DERTOSA.SCN").is_some() => first(&eif(data_dir, "GB-DLG.EIF"), "Scenario Map"),
+                Game::Caesar if crate::find_ci(data_dir, "RHINE.SCN").is_some() => first(&eif(data_dir, "GB-DLG.EIF"), "Scenario Map"),
+                Game::Caesar => first(&dialog, "Scenario Map"),
+                _ => None,
+            }
+            .or_else(|| first(&dialog, "Campaign Map")),
+            info_box: if game == Game::Caesar { CAESAR_INFO_BOX } else { INFO_BOX },
             marble: first(&back, "Blocks"),
             labels: cels(&campaign, "Battles"),
             game,
@@ -348,7 +416,7 @@ impl Setup {
             sides,
             rout,
             files: files.iter().map(|f| f.to_string()).collect(),
-            nations: (0..9).map(nation).collect(),
+            nations: (0..12).map(nation).collect(),
             start: res.as_ref().and_then(|r| r.dialog("STARTGAME")),
             scenario: res.as_ref().and_then(|r| r.dialog("SCENARIO")),
             intro: res.as_ref().and_then(|r| r.dialog("INTRODLG")),
@@ -364,11 +432,14 @@ impl Setup {
             .flatten()
             .filter_map(|e| e.ok()?.file_name().into_string().ok())
             .filter(|n| {
-                let builtin = SCENARIOS.iter().chain(HANNIBAL_BATTLES.files).any(|b| b.eq_ignore_ascii_case(n));
+                let builtin = SCENARIOS.iter().chain(HANNIBAL_BATTLES.files).chain(CAESAR_BATTLES.files).any(|b| b.eq_ignore_ascii_case(n));
                 // (Hannibal hides its two early drafts)
                 let draft = n.eq_ignore_ascii_case("ILIPA2.SCN") || n.eq_ignore_ascii_case("CANNAE2.SCN");
                 n.to_ascii_lowercase().ends_with(".scn") && !builtin && !draft
             })
+            // (only what reads as a scenario: Caesar's editor leaves its
+            // own `Last.scn`)
+            .filter(|n| std::fs::read(data_dir.join(n)).ok().is_some_and(|d| gboh_formats::scn::Scenario::parse(&d).is_ok()))
             .collect();
         files.sort();
         files
@@ -406,14 +477,29 @@ impl Setup {
     fn button(&self, canvas: &mut Canvas, rect: (i16, i16, i16, i16), caption: &str) {
         let (x, y) = px((rect.0, rect.1));
         let (w, h) = px((rect.2, rect.3));
-        let art = if w > 120 { &self.big_button } else { &self.button };
+        // (the stone for the game's own buttons, not ours: 115 units wide)
+        let art = if self.screen == Screen::Start && !self.stone_button.is_empty() && rect.2 > 100 {
+            &self.stone_button
+        } else if w > 120 {
+            &self.big_button
+        } else {
+            &self.button
+        };
         // pressed while the left button is held on it
         let down = self.pressed.is_some_and(|(px, py)| px >= x && px < x + w && py >= y && py < y + h) as i32;
         if let Some(b) = art.get(down as usize).or(art.first()) {
             canvas.blit(b, x + (w - b.width as i32) / 2, y + (h - b.height as i32) / 2);
         }
         let caption: String = caption.chars().filter(|&c| c != '&').collect();
-        self.text(canvas, &caption, x + (w - self.text_width(&caption)) / 2 + down, y + (h - 11) / 2 + down);
+        let (tx, ty) = (x + (w - self.text_width(&caption)) / 2 + down, y + (h - 11) / 2 + down);
+        if std::ptr::eq(art, &self.stone_button) {
+            // (on the stone's dark middle: light, shadowed; 🟡 the
+            // original's ink not checked)
+            self.font.draw_in(canvas, &caption, tx + 1, ty + 1, self.dark);
+            self.font.draw_in(canvas, &caption, tx, ty, self.white);
+        } else {
+            self.text(canvas, &caption, tx, ty);
+        }
     }
 
     /// The control of `dialog` under pixel `(x, y)`, by id.
@@ -462,7 +548,7 @@ impl Setup {
                 }
                 canvas
             }
-            Screen::Scenario { selected } if self.game == gboh_formats::game::Game::Hannibal => {
+            Screen::Scenario { selected } if self.game != gboh_formats::game::Game::Alexander => {
                 let (w, h) = self.scenario.as_ref().map_or((460, 422), |d| px(d.size));
                 let mut canvas = Canvas::new(w as usize, h as usize, 0);
                 if let Some(a) = &self.map_art {
@@ -473,7 +559,7 @@ impl Setup {
                     // traced), its picture and description in the box
                     let (x, y, pw, ph) = self.places[k];
                     frame_in(&mut canvas, (x - 1, y - 1, pw + 2, ph + 2), self.white);
-                    let (bx, by, bw, _) = INFO_BOX;
+                    let (bx, by, bw, _) = self.info_box;
                     let pic_w = self.overviews[k].as_ref().map_or(0, |p| {
                         canvas.blit(p, bx, by);
                         p.width as i32
@@ -780,6 +866,29 @@ mod tests {
             crate::ui::write_ppm(&c, &pal, &Path::new(&out).join("han_scenario.ppm")).unwrap();
             s.screen = Screen::Rout { battle: 2, computer: [false, true], levels: s.rout[2], difficulty: 1 };
             crate::ui::write_ppm(&s.canvas(), &pal, &Path::new(&out).join("han_rout.ppm")).unwrap();
+        }
+    }
+
+    /// Caesar's scenario screen: its ten battles (Rhine's with the
+    /// add-on), Pharsalus chosen by its name, its picture and its sides.
+    #[test]
+    fn caesar_scenario_screen() {
+        let Ok(dir) = std::env::var("GBOH_CAESAR") else { return };
+        let dir = Path::new(&dir);
+        let mut s = Setup::new(dir);
+        assert_eq!(s.files.len(), 10, "{:?}", s.files);
+        s.screen = Screen::Scenario { selected: None };
+        assert_eq!(s.click(328 + 5, 127 + 5), Outcome::Redraw);
+        assert_eq!(s.screen, Screen::Scenario { selected: Some(1) });
+        let c = s.canvas();
+        assert!(s.overviews.iter().all(|o| o.is_some()));
+        assert_eq!(s.descriptions[1].len(), 1);
+        assert!(s.sides.iter().all(|[a, b]| !a.starts_with("Nation") && !b.starts_with("Nation")));
+        if let Ok(out) = std::env::var("GBOH_SHOTS") {
+            let pal = gboh_formats::pal::Palette::parse(&std::fs::read(crate::palette_path(dir).unwrap()).unwrap()).unwrap();
+            crate::ui::write_ppm(&c, &pal, &Path::new(&out).join("cae_scenario.ppm")).unwrap();
+            s.screen = Screen::Start;
+            crate::ui::write_ppm(&s.canvas(), &pal, &Path::new(&out).join("cae_start.ppm")).unwrap();
         }
     }
 

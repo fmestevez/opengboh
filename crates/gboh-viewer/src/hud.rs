@@ -44,6 +44,8 @@ pub enum Tool {
     GroupMove,
     LineExtension,
     BackwardMovement,
+    /// Caesar's: the group attack (in the place of the line extension).
+    GroupAttack,
 }
 
 /// The buttons: which, their art (file and strip) and the x of their
@@ -161,6 +163,65 @@ const HANNIBAL_TIPS: [(Tool, u32, u32, u32); 24] = [
 const HANNIBAL_SHOW_OVERVIEW: (u32, u32) = (0x6309b5, 0x6309a3);
 const HANNIBAL_GRID_OFF: (u32, u32) = (0x630a3b, 0x630a25);
 
+/// Caesar's toolbar: Hannibal's, with the group attack for the line
+/// extension; its own strips (🟡 places as Hannibal's).
+const CAESAR_TOOLBAR: [(Tool, &str, &str, i32); 24] = [
+    (Tool::CloseGame, "BUTTONS1.EIF", "CloseBattle", 17),
+    (Tool::FinishLeader, "BUTTONS1.EIF", "FinishLeader", 45),
+    (Tool::CenterOnLeader, "BUTTONS1.EIF", "CenterOnLeader", 69),
+    (Tool::GroupMove, "BUTTONS1.EIF", "GroupMove", 93),
+    (Tool::GroupAttack, "BUTTONS1.EIF", "GroupAttack", 117),
+    (Tool::RotateLeft, "BUTTONS1.EIF", "RotateLeft", 145),
+    (Tool::RotateRight, "BUTTONS1.EIF", "RotateRight", 169),
+    (Tool::AboutFace, "BUTTONS1.EIF", "AboutFace", 193),
+    (Tool::BackwardMovement, "BUTTONS1.EIF", "BackwardMovement", 217),
+    (Tool::MissileVolley, "BUTTONS1.EIF", "MissileVolley", 241),
+    (Tool::RestoreCohesion, "BUTTONS2.EIF", "RestoreCohesion", 265),
+    (Tool::Rally, "BUTTONS2.EIF", "Rally", 289),
+    (Tool::UnitDetails, "BUTTONS2.EIF", "ViewDetails", 313),
+    (Tool::OpenMap, "BUTTONS2.EIF", "OpenMap", 341),
+    (Tool::Overview, "BUTTONS2.EIF", "HideOverview", 365),
+    (Tool::HexGrid, "BUTTONS2.EIF", "ShowHexGrid", 389),
+    (Tool::ReverseView, "BUTTONS3.EIF", "ReverseView", 413),
+    (Tool::ZoomIn, "BUTTONS3.EIF", "ZoomIn", 441),
+    (Tool::ZoomNormal, "BUTTONS3.EIF", "Normal", 465),
+    (Tool::ZoomOut, "BUTTONS3.EIF", "ZoomOut", 489),
+    (Tool::TileVertical, "BUTTONS3.EIF", "TileVertical", 517),
+    (Tool::TileHorizontal, "BUTTONS3.EIF", "TileHorizontal", 541),
+    (Tool::Cascade, "BUTTONS3.EIF", "Cascade", 565),
+    (Tool::Undo, "BUTTONS3.EIF", "Undo", 593),
+];
+
+/// Where Caesar's buttons' texts lie in `caesar.exe` (as [`TIPS`]).
+const CAESAR_TIPS: [(Tool, u32, u32, u32); 24] = [
+    (Tool::CloseGame, 0x62ff16, 0x62ff57, 0x62ff22),
+    (Tool::FinishLeader, 0x62ff80, 0x62ffb8, 0x62ff8d),
+    (Tool::CenterOnLeader, 0x62ffe5, 0x63001a, 0x62fff4),
+    (Tool::GroupMove, 0x63004d, 0x63008b, 0x630057),
+    (Tool::GroupAttack, 0x6300b2, 0x6300f5, 0x6300be),
+    (Tool::RotateLeft, 0x630120, 0x630156, 0x63012b),
+    (Tool::RotateRight, 0x630198, 0x6301c7, 0x6301a4),
+    (Tool::AboutFace, 0x6301fa, 0x630215, 0x630204),
+    (Tool::BackwardMovement, 0x63023c, 0x630275, 0x63024d),
+    (Tool::MissileVolley, 0x6302aa, 0x6302e2, 0x6302b8),
+    (Tool::RestoreCohesion, 0x630311, 0x63034c, 0x630321),
+    (Tool::Rally, 0x63037d, 0x63039b, 0x630383),
+    (Tool::UnitDetails, 0x6303c2, 0x6303ee, 0x6303ce),
+    (Tool::OpenMap, 0x630419, 0x630431, 0x630421),
+    (Tool::Overview, 0x630454, 0x630473, 0x630461),
+    (Tool::HexGrid, 0x6304d7, 0x6304f8, 0x6304e3),
+    (Tool::ReverseView, 0x630553, 0x63057a, 0x63055f),
+    (Tool::ZoomIn, 0x6305a5, 0x6305bc, 0x6305ac),
+    (Tool::ZoomNormal, 0x6305dd, 0x630603, 0x6305e4),
+    (Tool::ZoomOut, 0x630622, 0x63063b, 0x63062a),
+    (Tool::TileVertical, 0x63065e, 0x630687, 0x63066b),
+    (Tool::TileHorizontal, 0x6306b4, 0x6306e1, 0x6306c3),
+    (Tool::Cascade, 0x630712, 0x63072e, 0x63071a),
+    (Tool::Undo, 0x63074f, 0x63076e, 0x630754),
+];
+const CAESAR_SHOW_OVERVIEW: (u32, u32) = (0x6304bb, 0x6304a9);
+const CAESAR_GRID_OFF: (u32, u32) = (0x63053c, 0x630526);
+
 /// A toolbar: its buttons with their art and places, and where their texts
 /// lie in the executable (with the overview's and grid's other ones).
 #[derive(Clone, Copy)]
@@ -172,6 +233,7 @@ struct Toolbar {
 
 const ALEXANDER_TOOLBAR: Toolbar = Toolbar { buttons: &TOOLBAR, tips: &TIPS, other: [SHOW_OVERVIEW, GRID_OFF] };
 const HANNIBAL_TOOLBAR_SET: Toolbar = Toolbar { buttons: &HANNIBAL_TOOLBAR, tips: &HANNIBAL_TIPS, other: [HANNIBAL_SHOW_OVERVIEW, HANNIBAL_GRID_OFF] };
+const CAESAR_TOOLBAR_SET: Toolbar = Toolbar { buttons: &CAESAR_TOOLBAR, tips: &CAESAR_TIPS, other: [CAESAR_SHOW_OVERVIEW, CAESAR_GRID_OFF] };
 
 /// Heights of the toolbar and the status bar.
 pub const TOOLBAR_HEIGHT: i32 = 30;
@@ -423,8 +485,11 @@ const MAP_IN_SCROLL: (i32, i32) = (30, 26);
 impl Hud {
     pub fn new(data_dir: &Path) -> Self {
         let files: Vec<_> = ["BUTTONS1.EIF", "BUTTONS2.EIF", "BUTTONS3.EIF"].iter().map(|f| (*f, eif(data_dir, f))).collect();
-        // (Caesar's: Hannibal's for now 🟡)
-        let toolbar = if gboh_formats::game::Game::detect(data_dir).is_some_and(|g| g != gboh_formats::game::Game::Alexander) { HANNIBAL_TOOLBAR_SET } else { ALEXANDER_TOOLBAR };
+        let toolbar = match gboh_formats::game::Game::detect(data_dir) {
+            Some(gboh_formats::game::Game::Hannibal) => HANNIBAL_TOOLBAR_SET,
+            Some(gboh_formats::game::Game::Caesar) => CAESAR_TOOLBAR_SET,
+            _ => ALEXANDER_TOOLBAR,
+        };
         let buttons = toolbar
             .buttons
             .iter()
@@ -1444,6 +1509,18 @@ impl Hud {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Caesar's toolbar: every button's art and texts are there; runs only
+    /// with `GBOH_CAESAR` set.
+    #[test]
+    fn caesar_toolbar() {
+        let Ok(dir) = std::env::var("GBOH_CAESAR") else { return };
+        let hud = Hud::new(Path::new(&dir));
+        assert_eq!(hud.buttons.len(), 24);
+        assert!(hud.buttons.iter().all(|b| b.len() >= 2));
+        assert!(hud.tips.iter().all(|(_, short, long)| !short.is_empty() && !long.is_empty()), "{:?}", hud.tips);
+        assert!(hud.tips.iter().any(|(t, _, _)| *t == Tool::GroupAttack));
+    }
 
     /// Draws the bars with an overview map; runs only with `GBOH_DATA` set
     /// (and writes them to `GBOH_SHOTS`, if set).

@@ -59,6 +59,10 @@ pub struct Map {
     pub elevation: Vec<u8>,
     /// Feature grid, `grid_width() * grid_height()` cells.
     pub cells: Vec<Vec<u16>>,
+    /// Whether its terrain is read by Caesar's rules (its codes: 3 marsh,
+    /// 4 berm, 12 road; sides 9 and 11 walls, 10 ditches). Set by the game
+    /// for Caesar's battles; the file doesn't say.
+    pub caesar: bool,
 }
 
 impl Map {
@@ -83,7 +87,7 @@ impl Map {
         if r.remaining() != 0 {
             return Err(Error::Invalid { offset: r.pos, msg: "trailing bytes after feature grid".into() });
         }
-        Ok(Self { name, width, height, hex_id_origin, unk_b, elevation, cells })
+        Ok(Self { name, width, height, hex_id_origin, unk_b, elevation, cells, caesar: false })
     }
 
     pub fn grid_width(&self) -> usize {

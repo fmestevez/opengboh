@@ -14,6 +14,8 @@ pub enum Weapon {
     /// Javelins on light cavalry.
     MountedJavelin = 7,
     Bolt = 8,
+    /// Caesar's barbarians' thrown axes.
+    Axe = 9,
 }
 
 impl Weapon {
@@ -26,8 +28,8 @@ impl Weapon {
             1 => Weapon::Bow,
             2 => Weapon::Sling,
             3 if mounted => Weapon::MountedJavelin,
-            // (Caesar's thrown axes, 5: 🟡 as javelins)
-            3 | 5 => Weapon::Javelin,
+            3 => Weapon::Javelin,
+            5 => Weapon::Axe,
             4 => Weapon::Bolt,
             _ => return None,
         })
@@ -37,6 +39,7 @@ impl Weapon {
     pub fn supply(self) -> u16 {
         match self {
             Weapon::Javelin | Weapon::MountedJavelin => 3,
+            Weapon::Axe => 2,
             Weapon::Bolt => 99,
             _ => 10,
         }
@@ -46,6 +49,7 @@ impl Weapon {
     pub fn range(self) -> i32 {
         match self {
             Weapon::Bolt => 7,
+            Weapon::Axe => 1,
             w => (1..7).rev().find(|&r| HIT_ON[w as usize][r] > 0).unwrap_or(1) as i32,
         }
     }
@@ -70,6 +74,9 @@ const HIT_ON: [[u8; 7]; 9] = [
 fn hit_on(weapon: Weapon, range: i32) -> i32 {
     match (weapon, range) {
         (Weapon::Bolt, 7) => 85,
+        // (Caesar's axes: its table's new row)
+        (Weapon::Axe, 1) => 7,
+        (Weapon::Axe, _) => 0,
         (w, r) if (0..7).contains(&r) => HIT_ON[w as usize][r as usize] as i32,
         _ => 0,
     }
@@ -88,7 +95,14 @@ pub struct Volley {
     pub moved: bool,
     /// The target is cataphracted heavy cavalry.
     pub target_cataphract: bool,
+    /// Caesar's: a ballista's bolts, by its own range table; and a further
+    /// modifier (a shooter that has rallied +1, barbarian bows −1).
+    pub ballista: bool,
+    pub bonus: i32,
 }
+
+/// Caesar's ballistas' table by range (`0x63cf91`).
+const BALLISTA: [i32; 8] = [0, 9, 7, 6, 4, 3, 2, 1];
 
 /// The result of a volley.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,7 +116,7 @@ pub struct VolleyResult {
 impl Volley {
     /// Reaction fire at a unit entering the shooter's zone of control.
     pub fn reaction(weapon: Weapon, target: MoveClass, target_cataphract: bool) -> Self {
-        Volley { weapon, range: 1, target, from_front: false, moved: false, target_cataphract }
+        Volley { weapon, range: 1, target, from_front: false, moved: false, target_cataphract, ballista: false, bonus: 0 }
     }
 
     /// The modifier added to the die.
@@ -123,18 +137,19 @@ impl Volley {
         if self.target_cataphract {
             m += match w {
                 Weapon::Bow | Weapon::MountedBow => 2,
-                Weapon::Sling | Weapon::Javelin | Weapon::MountedJavelin => 1,
+                Weapon::Sling | Weapon::Javelin | Weapon::MountedJavelin | Weapon::Axe => 1,
                 Weapon::Bolt => 0,
             };
         }
-        m
+        m + self.bonus
     }
 
     /// Resolve with die `roll` (0..=9, `rand() % 10` in the original): one
     /// hit if `roll + modifier` is at most the table entry, two against
     /// elephants and chariots.
     pub fn resolve(&self, roll: u32) -> VolleyResult {
-        let hit = roll as i32 + self.modifier() <= hit_on(self.weapon, self.range);
+        let table = if self.ballista { BALLISTA.get(self.range as usize).copied().unwrap_or(0) } else { hit_on(self.weapon, self.range) };
+        let hit = roll as i32 + self.modifier() <= table;
         let hits = match (hit, self.target) {
             (false, _) => 0,
             (true, MoveClass::Elephant | MoveClass::Chariot) => 2,
@@ -169,7 +184,7 @@ mod tests {
 
     #[test]
     fn shields_and_armour() {
-        let v = Volley { weapon: Weapon::Bow, range: 1, target: Phalanx, from_front: true, moved: false, target_cataphract: false };
+        let v = Volley { weapon: Weapon::Bow, range: 1, target: Phalanx, from_front: true, moved: false, target_cataphract: false, ballista: false, bonus: 0 };
         assert_eq!(v.modifier(), 4);
         assert_eq!(v.resolve(1).hits, 1);
         assert_eq!(v.resolve(2).hits, 0);
@@ -179,7 +194,7 @@ mod tests {
 
     #[test]
     fn bolts_at_range_seven_always_hit() {
-        let v = Volley { weapon: Weapon::Bolt, range: 7, target: HeavyInfantry, from_front: false, moved: true, target_cataphract: false };
+        let v = Volley { weapon: Weapon::Bolt, range: 7, target: HeavyInfantry, from_front: false, moved: true, target_cataphract: false, ballista: false, bonus: 0 };
         assert_eq!(v.resolve(9).hits, 1);
     }
 }

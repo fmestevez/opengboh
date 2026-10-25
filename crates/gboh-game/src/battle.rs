@@ -78,6 +78,9 @@ pub struct Unit {
     /// move costs a cohesion hit (once).
     pub reordered: bool,
     pub reorder_hit: bool,
+    /// Caesar's: rallied once already (`+0xd2`): a point worse on its TQ
+    /// checks and later rallies, a point better at shooting.
+    pub rallied: bool,
     /// Done for the turn (after a shock order or a recovery): no leader
     /// may order it again.
     pub done: bool,
@@ -97,6 +100,9 @@ pub enum UnitState {
     /// Not yet on the field: it arrives at its hex on turn `arrival`
     /// (Hannibal's and Caesar's scenarios); not counted in the rout totals.
     Waiting,
+    /// Off the map after riding a routed unit off its edge: a leaderless
+    /// unit that comes back from that edge on a free units' turn.
+    Away,
 }
 
 impl Unit {
@@ -137,6 +143,10 @@ pub fn neighbour(hex: Hex, side: usize) -> Option<Hex> {
 #[derive(Debug, Clone)]
 pub struct Battle {
     pub units: Vec<Unit>,
+    /// Hannibal's Cannae: the wind blowing this turn (from direction 2): a
+    /// unit facing into it (6 or 7) moves a hex less and shoots a hex
+    /// shorter (`FUN_0057c790`, `FUN_00578260`; leaders not).
+    pub wind: bool,
 }
 
 impl Battle {
@@ -200,6 +210,7 @@ impl Battle {
                     wounded: false,
                     reordered: false,
                     reorder_hit: false,
+                    rallied: false,
                     done: false,
                 })
             })
@@ -212,13 +223,30 @@ impl Battle {
                 units[i].superior = (0..units.len()).find(|&k| k != i && units[k].leader.is_some() && units[k].side == side && units[k].group as i32 == link as i32);
             }
         }
-        Self { units }
+        Self { units, wind: false }
+    }
+
+    /// Whether `unit` faces into the wind.
+    pub fn into_wind(&self, unit: usize) -> bool {
+        let u = &self.units[unit];
+        self.wind && u.leader.is_none() && matches!(u.facing, 6 | 7)
+    }
+
+    /// The range `unit`'s missiles reach now (the wind's taken off).
+    pub fn missile_range(&self, unit: usize) -> i32 {
+        self.units[unit].missile.map_or(0, |(w, _)| w.range() - self.into_wind(unit) as i32)
     }
 
     /// Whether the battle is one of Hannibal's (its units are), whose
     /// rules differ in places.
     pub fn hannibal(&self) -> bool {
         self.units.first().is_some_and(|u| u.type_id >= gboh_formats::units::HANNIBAL)
+    }
+
+    /// Whether the battle is one of Caesar's (Hannibal's engine; its
+    /// nations' and battles' own rules not).
+    pub fn caesar(&self) -> bool {
+        self.units.first().is_some_and(|u| u.type_id >= gboh_formats::units::CAESAR)
     }
 
     /// Indices of the leaders still in the battle.

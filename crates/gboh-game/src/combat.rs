@@ -36,6 +36,8 @@ pub struct Shock {
     /// Hannibal's rules, and the sides' nations (scenario bytes: 6 Roman,
     /// 7 Carthaginian), which some of its elephant rules go by.
     pub hannibal: bool,
+    /// Caesar's rules (its cataphracts deny any defender superiority).
+    pub caesar: bool,
     pub attacker_nation: u8,
     pub defender_nation: u8,
 }
@@ -87,7 +89,7 @@ impl Shock {
                     // apply (classes 1, 4, 9 and 10 have table entries but no
                     // unit type uses them)
                     let d_inf = [1, 2].contains(&d);
-                    if d_inf && self.attacker_cataphract && self.attacker == HeavyCavalry {
+                    if (d_inf || self.caesar) && self.attacker_cataphract && self.attacker == HeavyCavalry {
                         def = false;
                     }
                     if self.defender_missile && d_inf && (self.attacker == HeavyCavalry || a == 10) {
@@ -459,6 +461,7 @@ mod tests {
             no_superiority: false,
             column_shift: 0,
             hannibal: false,
+            caesar: false,
             attacker_nation: 0,
             defender_nation: 0,
         }

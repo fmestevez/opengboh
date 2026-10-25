@@ -1636,7 +1636,11 @@ subjugated ones once; each garrison's total in `Numerals` and its icons
 army's flag; battle labels in revealed provinces (queued ones framed); the
 fleet; the log below. Dragging the flag to a province the army may enter
 queues its battles (Battle), else Subjugate takes the province; garrison
-icons drag between conquered provinces.
+icons drag between conquered provinces. A double-click on an icon merges
+five Ones into a Five, or splits a larger icon into the next smaller (a
+Five into five Ones, a Ten into two Fives, a Fifty into five Tens) when
+there are none of those; a province's icons regroup, largest first,
+whenever its garrison changes (Hannibal's `FUN_005951c3`).
 
 ## Network play
 
@@ -1797,26 +1801,41 @@ differently, as ported:
   attacking (by name) shake the defenders' checks as chariots do.
 - **Pursuit**: a defender that breaks (not an elephant) is pursued by the
   first attacking horse unit that held, on `rand() % 10` (+2 against foot) of
-  4 (heavy cavalry), 6 (Roman cavalry, lancers) or 8 (light cavalry); caught
-  foot may be eliminated; enemy leaders beside the pursuer step away. Failing
-  the roll, it advances into the hex instead. One advance a shock.
+  4 (heavy cavalry), 6 (Roman cavalry, lancers) or 8 (light cavalry). It
+  rides the original's hex line (a bearing in 15° steps picks a vertex
+  direction; each step takes the hex before it nearer the straight line) to
+  the routed unit, stopping before an occupied hex and after one in an
+  enemy's zone, its facing kept; it catches it on `rand() % 10` ≤ its TQ if
+  the unit is then in its front with no other foe there. The caught unit
+  checks at TQ 1 (fails on 2..9): foot are cut down; horse, chariots and
+  elephants flee again with the pursuer after them (riding off the map's
+  edge, it becomes a leaderless unit off that edge). Not caught, or after a chase, enemy leaders beside the pursuer step
+  away. Failing the roll, it advances into the hex the unit held, besides
+  the shock's one advance.
 - **Orderly withdrawal**: horse withdraw only before foot.
 - **Group orders** (move, attack, retreat, restore cohesion): roll `random()
   % 100` against `(initiative − 2) × 20 + 30` (one hex: + 50), easier after
   failures; **Roman leaders never fail**; refused only with an enemy beside a
   unit; success takes the whole activation.
-- **Manipular line extension**: a Roman leader's legion maniples sidestep to
-  widen the line (🟡 directions not recovered), the whole activation.
+- **Manipular line extension**: the whole activation, no roll. In the
+  group's order, a maniple whose right-front hex holds one of the same
+  nation, group and line steps into its left-front hex (by the leader's
+  facing) if empty: a rear maniple behind-left of a front one comes up on
+  its left, so the line extends to the left.
 - **Elite initiative**: any leader with the scenario's elite flag, three
   times a battle at most; on the first turn always (his chain of superiors
-  followed up), later 40 %. In the draw a leader's superior goes first if he
+  followed up), later 40 % for the computer's leaders, while a player's
+  is asked (Yes/No; a save records the answer). In the draw a leader's superior goes first if he
   hasn't yet.
 - **Victory**: one rout rule; Hannibal's death loses his army the battle;
   turn limits only when the set-up's option is on.
 - Restore cohesion in an enemy's zone: −60 (Alexander −40). Reaction fire
   from a tower (hex code 14) all round. Rampaging elephants trample routed
-  units out. Resupply skips legions and isn't an order. Arrivals by turn.
-- Battles: wind at Cannae (70 % a turn; facing into it, a hex less);
+  units out. Resupply skips legions and isn't an order. Units arrive at the
+  start of their turn (the counter from 0) if their hex is empty and no
+  enemy leader stands beside it; else they try again each turn.
+- Battles: wind at Cannae (70 % a turn; facing into it, 6 or 7, a hex off
+  the move's search and the missiles' range, leaders not);
   Trasimene's Romans idle on the first turn; Metaurus' Ligurians and Gauls
   need a Roman within 7 hexes and a TQ check the first time.
 - **Backward movement**: a unit steps back through its rear, two movement
@@ -1830,9 +1849,13 @@ differently, as ported:
   (Roman Triarii take no orders while a legion unit stands within 6 hexes,
   unless an enemy other than elephants is within 3), sparse trees (only each
   wooded hex's centre tree shows).
-- Not yet: the free units' own chit (they act at the end of the turn
-  instead), a player's own elite initiative choice, the group command
-  confirmation.
+- **Free units** (no leader, group 0xffff): the draw's first entry, of
+  initiative 3, in every battle, once a turn; drawn, each closes on its
+  nearest enemy and attacks. Those off the map (pursuers that rode off)
+  come back on 40 %: at a random hex of their edge that is empty with no
+  enemy leader beside it, facing about.
+- Group commands ask first (they use all the leader's orders), unless the
+  player ticked "don't show this again" (Preferences).
 
 ### Hannibal's campaign (`gboh_game::campaign::Kind::Hannibal`)
 
@@ -1906,11 +1929,63 @@ Caesar's engine is Hannibal's one version on. Where it differs:
   - no snow; Ruspina's strips start four on; the tiles are drawn a layer at
     a time (cliffs, blocks, overlays, ditches), each overlay placed by its
     cel's hotspot.
-- **AI scripts**: procedures may take `var` parameters, passed by
-  reference. Leader constants (`TRIBUNE_VI`, `J_CAESAR`) are not in
-  `CONSTANT.AI`: each command group is named after its leader (words in
-  capitals joined by `_`) with its group id as the value. Hannibal's
-  scripts address their groups the same way (its `CONSTANT.AI` numbers
-  match no scenario's groups). A plan's `Orders for` names a leader by the
-  letters and digits of his name (`TribuneIIICaesarian`).
-- **Rules**: fought by Hannibal's for now.
+- **AI scripts** (all three games' language): procedures may take `var`
+  parameters, passed by reference, and overload on how many they take
+  (`BASICMAN.AI` has two `FigurePriority`). Some of Caesar's plans use
+  leader constants (`TRIBUNE_VI`, `J_CAESAR`) that nothing defines, so the
+  original can't compile them; opengboh names each group after its leader
+  (words in capitals joined by `_`, its group id the value) where a script
+  has no constant of that name. (Hannibal's `CONSTANT.AI` lists its leaders
+  under numbers no scenario's groups have; those stand, as in its game.) A
+  plan's `Orders for` names a leader by the letters and digits of his name
+  (`TribuneIIICaesarian`). `FindHurtingUnit` takes the hits to exceed.
+- **Rules** (`gboh_game::game::Rules::Caesar`): Hannibal's engine without
+  its nations' and battles' rules (no wind, Triarii, unreliable troops,
+  Celts' or elephants' extras; superiority in Alexander's order; no
+  leader's death ends a battle). Then:
+  - classes: barbarian infantry (4) and cavalry (10, a horse to every rule);
+    cohorts move as legions but fight by type: veterans as legionaries,
+    recruits as heavy infantry, conscripts as light; scorpions and
+    ballistas as oxybeles;
+  - missiles: thrown axes (range 1, two volleys, hit on 7); ballistas by
+    their own range table (9, 7, 6, 4, 3, 2, 1); a cohort's single pilum;
+    barbarian bows −1; a cataphract denies any defender superiority;
+  - rallying marks a unit for good (but first and tenth cohorts): a point
+    worse on TQ checks and later rallies, a point better at shooting;
+  - terrain: road to road a flat point; ditches a point more (another onto
+    a berm), walls impassable, elevation 0 counted as 1; chariots and
+    elephants keep off the lowest ground and marsh, chariots off woods,
+    rough ground and across ditches and streams; horses never step next to
+    an enemy elephant; its own cohesion-hit rows; at Dyrrhachium a berm
+    shifts the shock column −2 (attacker on it) or −3 (defender);
+  - command: Romans, Caesarians and Pompeians never fail a group order and
+    extend the line (cohorts of the same type); staff leaders (no units of
+    their own) pay no more to order another's group;
+  - battles: Sabis' Caesarians sit out the first turn; turn limits
+    (Pharsalus 7, Thapsus 5, Munda 11, Vercellae, Chaeronea, Bibracte and
+    Sabis 5, Rhine 4) go to the home army; at Ruspina the Pompeians win once
+    no Caesarian unit fights on.
+- **Interface**: its battle table (ten battles, Rhine only where installed;
+  each description two strings joined), the scenario screen's info box at
+  (41, 200, 382, 145), its own side names, Group Attack in the toolbar's
+  place of the line extension, its start screen's `Big Stone Pushbutton`
+  (whose `Up` cel is an empty placeholder), CD tracks 2 start, 3 and 4 the
+  battle, 5 defeat, 6 victory.
+
+### Caesar's campaign (`gboh_game::campaign::Kind::Caesar`)
+
+The civil war on thirteen provinces (0 Hispania … 3 Roma … 12 Mauretania;
+names from the executable). Caesar starts in Samnium; Pompeian armies in
+Graecia, Numidia, Hispania and Egypt, Pompey in Roma. Each round Caesar's
+flag moves to a neighbour by land or sea, then Finish; entering an army's
+province fights its battle (Pharsalus, Thapsus, Munda, Ruspina). A victory
+destroys the armies there; in Roma it drives Pompey out (or rioting costs
+Caesar's troops a point of TQ in later battles), in Egypt hunger costs a
+point and Cleopatra may keep him a round; Pompey flees to one of his
+armies. The Pompeians march: an army at home sets out one round in four (in
+two with Pompey), Graecia's and Numidia's once by sea, else by land by set
+routes ending in Roma; Hispania's by Massilia; Egypt's stays. All four
+destroyed within ten rounds wins; a battle lost, or an army (or Pompey after
+round 1) in Roma, loses. The rating is named by the armies destroyed. The
+map has no shading or garrisons: the flags (Caesar's, the Pompeians',
+Pompey's) and the two fleets.

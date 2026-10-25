@@ -112,8 +112,10 @@ const RALLY: [[Option<i32>; 3]; 5] = [
 /// initiative + 1; the second, halved, and the TQ band pick the hits
 /// removed (or a failure). Returns the unit's hits after a success; `None`
 /// means it failed and the unit routs terminally.
-pub fn rally(tq: u16, hits: i32, initiative: u16, mut roll: impl FnMut() -> u32) -> Option<i32> {
-    if roll() as i32 > initiative as i32 + 1 {
+pub fn rally(tq: u16, hits: i32, initiative: u16, rallied: bool, mut roll: impl FnMut() -> u32) -> Option<i32> {
+    // (Caesar's: a unit rallied before rolls a point worse, and two worse
+    // on the hits it sheds)
+    if roll() as i32 + rallied as i32 > initiative as i32 + 1 {
         return None;
     }
     let band = match tq {
@@ -121,7 +123,8 @@ pub fn rally(tq: u16, hits: i32, initiative: u16, mut roll: impl FnMut() -> u32)
         4 | 5 => 1,
         _ => 2,
     };
-    let removed = RALLY[(roll() / 2).min(4) as usize][band]?;
+    let r = if rallied { (roll() + 2).min(9) } else { roll() };
+    let removed = RALLY[(r / 2).min(4) as usize][band]?;
     Some((hits - removed).max(0))
 }
 
@@ -159,6 +162,7 @@ mod tests {
             wounded: false,
             reordered: false,
             reorder_hit: false,
+            rallied: false,
             done: false,
         }
     }
@@ -172,12 +176,13 @@ mod tests {
             unk_b: 1,
             elevation: vec![1; 144],
             cells: vec![Vec::new(); (2 * 12 + 2) * (4 * 12 + 1)],
+            caesar: false,
         }
     }
 
     #[test]
     fn flees_west_in_a_straight_line() {
-        let b = Battle { units: vec![unit(2, Hex::new(6, 5), 7)] };
+        let b = Battle { units: vec![unit(2, Hex::new(6, 5), 7)], wind: false };
         let Flight::Moved(path) = flee(&b, &map(), 0, 4) else { panic!() };
         assert_eq!(path.len(), 4);
         assert_eq!(path[3].x, 2);
@@ -192,23 +197,23 @@ mod tests {
             move || v.pop().unwrap()
         };
         // initiative 7: the first roll must be at most 8
-        assert_eq!(rally(6, 6, 7, rolls(9, 0)), None);
-        assert_eq!(rally(6, 6, 7, rolls(8, 9)), Some(2));
+        assert_eq!(rally(6, 6, 7, false, rolls(9, 0)), None);
+        assert_eq!(rally(6, 6, 7, false, rolls(8, 9)), Some(2));
         // poor troops can fail on the second roll
-        assert_eq!(rally(3, 3, 7, rolls(0, 6)), None);
-        assert_eq!(rally(3, 3, 7, rolls(0, 0)), Some(2));
+        assert_eq!(rally(3, 3, 7, false, rolls(0, 6)), None);
+        assert_eq!(rally(3, 3, 7, false, rolls(0, 0)), Some(2));
     }
 
     #[test]
     fn leaves_the_map_at_the_edge() {
-        let b = Battle { units: vec![unit(2, Hex::new(1, 5), 7)] };
+        let b = Battle { units: vec![unit(2, Hex::new(1, 5), 7)], wind: false };
         assert!(matches!(flee(&b, &map(), 0, 4), Flight::Gone(_)));
     }
 
     #[test]
     fn avoids_enemy_zones() {
         // an enemy west of the path forces the unit round it
-        let mut b = Battle { units: vec![unit(2, Hex::new(6, 5), 7), unit(1, Hex::new(4, 4), 3)] };
+        let mut b = Battle { units: vec![unit(2, Hex::new(6, 5), 7), unit(1, Hex::new(4, 4), 3)], wind: false };
         b.units[1].hits = 0;
         let Flight::Moved(path) = flee(&b, &map(), 0, 1) else { panic!() };
         assert!(path[0].distance(Hex::new(4, 4)) > 1);

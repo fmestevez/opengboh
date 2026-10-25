@@ -18,6 +18,16 @@
 //! Gaul; battles queued when the map closes, chains of them scheduled
 //! rounds ahead after Cannae and Metaurus; won with Zama or by holding
 //! Italy (see [`Kind::Hannibal`]).
+//!
+//! Caesar's (`CaesarCampaignGame`) is another game: the civil war on
+//! thirteen provinces (0 Hispania, 1 Massilia, 2 Samnium, 3 Roma,
+//! 4 Sicilia, 5 Illyricum, 6 Graecia, 7 Asia Minor, 8 Levant, 9 Egypt,
+//! 10 Cyrenaica, 11 Numidia, 12 Mauretania). Caesar moves his army a
+//! province a round; four Pompeian armies wait in Graecia, Numidia,
+//! Hispania and Egypt, three of them marching on Roma by set routes, and
+//! Pompey goes with one. Entering an army's province fights its battle;
+//! destroying all four within ten rounds wins, a battle lost or Roma taken
+//! loses (see [`Kind::Caesar`]).
 
 use gboh_formats::crt::BorlandRand;
 use std::collections::VecDeque;
@@ -34,6 +44,44 @@ pub enum Kind {
     #[default]
     Alexander,
     Hannibal,
+    /// Caesar's civil war.
+    Caesar,
+}
+
+/// Caesar's provinces.
+pub const CAESAR_PROVINCES: usize = 13;
+/// Caesar's Roma and Egypt.
+const CAESAR_ROMA: usize = 3;
+const CAESAR_EGYPT: usize = 9;
+
+/// Caesar's battle table (its scenario slots: the campaign fights 1
+/// Pharsalus, 2 Ruspina, 3 Thapsus and 4 Munda).
+pub const CAESAR_BATTLES: [&str; 10] =
+    ["DYRRHACH.SCN", "PHARSAL.SCN", "RUSPINA.SCN", "THAPSUS.SCN", "MUNDA.SCN", "VERCELL.SCN", "CHAERON.SCN", "BIBRAC.SCN", "SABIS.SCN", "RHINE.SCN"];
+
+/// Each Pompeian army's battle (armies 1 to 4: Graecia's Pharsalus,
+/// Numidia's Thapsus, Hispania's Munda, Egypt's Ruspina).
+const CAESAR_ARMY_BATTLES: [usize; 4] = [1, 3, 4, 2];
+
+/// Where Caesar may move from a province (`FUN_00532a20`): its neighbours
+/// by land, then across the sea; the map lets him use either.
+pub fn caesar_neighbours(p: usize) -> (&'static [usize], &'static [usize]) {
+    match p {
+        0 => (&[12, 1], &[11, 2]),
+        1 => (&[0, 2], &[12, 3, 5]),
+        2 => (&[1, 3, 5], &[0, 4, 6]),
+        3 => (&[2, 6, 4], &[11, 1, 5]),
+        4 => (&[3, 11], &[2, 6, 10, 12]),
+        5 => (&[2, 6], &[1, 3, 7]),
+        6 => (&[5, 3, 7], &[2, 8]),
+        7 => (&[6, 8], &[5, 3, 9]),
+        8 => (&[7, 9], &[6, 10]),
+        9 => (&[8, 10], &[7, 11]),
+        10 => (&[9, 11], &[8, 4, 12]),
+        11 => (&[10, 4, 12], &[9, 3, 0]),
+        12 => (&[11, 0], &[10, 4, 1]),
+        _ => (&[], &[]),
+    }
 }
 
 /// Hannibal's battle table (its scenario slots: the campaign fights 0
@@ -166,6 +214,13 @@ pub enum Event {
     Round(i16),
     /// The last round's results.
     Final,
+    /// Caesar's: the round's turns left to win.
+    TurnsLeft(i16),
+    /// Caesar's: Pompeian armies destroyed in a province; Caesar's army
+    /// moved into one; one of the game's own messages (a string id).
+    Defeated { province: usize },
+    Moved { province: usize },
+    Message(u16),
     /// A province's subjugation rose (true) or fell to this level.
     Subjugation { province: usize, level: u8, rose: bool },
     /// Reinforcements of a kind assembled in Macedon (0: none available).
@@ -228,6 +283,14 @@ pub struct Campaign {
     pub last_battle: Option<usize>,
     pub log: Vec<Event>,
     pub rng: u32,
+    /// Caesar's: the Pompeian armies 1 to 4 and Pompey (their provinces;
+    /// `None` destroyed), the marching armies' routes ahead, the fleets
+    /// (Numidia's and Graecia's crossing still to make), and the troop
+    /// quality his men have lost to riots and hunger.
+    pub armies: [Option<usize>; 5],
+    pub routes: [VecDeque<usize>; 3],
+    pub fleets: [bool; 2],
+    pub penalty: u16,
 }
 
 impl Campaign {
@@ -260,7 +323,28 @@ impl Campaign {
             last_battle: None,
             log: Vec::new(),
             rng: seed,
+            armies: [None; 5],
+            routes: Default::default(),
+            fleets: [false; 2],
+            penalty: 0,
         }
+    }
+
+    /// A new campaign of Caesar's (`FUN_0053153c`): Caesar in Samnium,
+    /// the armies in Graecia, Numidia, Hispania and Egypt, Pompey in Roma,
+    /// both fleets ready.
+    pub fn new_caesar(seed: u32) -> Self {
+        let n = CAESAR_PROVINCES;
+        let mut c = Self::new(seed);
+        c.kind = Kind::Caesar;
+        (c.current, c.last) = (2, 2);
+        c.units = vec![[0; 2]; n];
+        c.subjugation = vec![FREE; n];
+        c.status = vec![OPEN; n];
+        c.navy = vec![false; n];
+        c.armies = [Some(6), Some(11), Some(0), Some(9), Some(CAESAR_ROMA)];
+        c.fleets = [true, true];
+        c
     }
 
     /// A new campaign of Hannibal's (`FUN_00531acc`): the army in Gaul;
@@ -296,6 +380,7 @@ impl Campaign {
         match self.kind {
             Kind::Alexander => 2,
             Kind::Hannibal => 7,
+            Kind::Caesar => 9,
         }
     }
 
@@ -306,6 +391,7 @@ impl Campaign {
             Kind::Alexander => !self.pending.is_empty(),
             // the province the flag was moved to, unconquered, with battles
             Kind::Hannibal => self.current != self.last && self.status[self.current] != CONQUERED && !hannibal_battles(self.current).is_empty(),
+            Kind::Caesar => self.armies[..4].contains(&Some(self.current)),
         }
     }
 
@@ -334,6 +420,12 @@ impl Campaign {
 
     /// Whether the army may march to `target` this round.
     pub fn can_march(&self, target: usize) -> bool {
+        if self.kind == Kind::Caesar {
+            // from where he stood when the round began, by land or sea (or
+            // back)
+            let (near, far) = caesar_neighbours(self.last);
+            return target == self.last || near.contains(&target) || far.contains(&target);
+        }
         if self.kind == Kind::Hannibal {
             // (staying put isn't a march)
             return target < self.provinces() && self.status[target] != HIDDEN && target != self.last && hannibal_neighbours(self.last).contains(&target);
@@ -347,8 +439,9 @@ impl Campaign {
         if !self.can_march(target) {
             return false;
         }
-        // (Hannibal's battles are queued only when the map closes)
-        if self.kind == Kind::Hannibal {
+        // (Hannibal's and Caesar's battles are queued only when the map
+        // closes)
+        if self.kind != Kind::Alexander {
             self.current = target;
         } else {
             self.enter(target);
@@ -387,6 +480,9 @@ impl Campaign {
     pub fn begin_round(&mut self, won: bool) -> Next {
         if self.kind == Kind::Hannibal {
             return self.hannibal_turn(won);
+        }
+        if self.kind == Kind::Caesar {
+            return self.caesar_turn(won);
         }
         self.last_won = won;
         self.pending.clear();
@@ -528,6 +624,10 @@ impl Campaign {
     /// provinces); reinforcements gather in Macedon, fewer the more
     /// provinces need watching (the rest garrison them).
     pub fn opening(&mut self) -> Vec<Event> {
+        // (Caesar's round has no opening: its events are logged by the turn)
+        if self.kind == Kind::Caesar {
+            return Vec::new();
+        }
         if self.kind == Kind::Hannibal {
             return self.hannibal_opening();
         }
@@ -582,6 +682,9 @@ impl Campaign {
         if self.round > ROUNDS {
             return Next::Results;
         }
+        if self.kind == Kind::Caesar {
+            return self.caesar_end_round();
+        }
         self.last = self.current;
         self.garrison = [0; 2];
         // Hannibal's: the province's battles, unless Subjugate
@@ -606,6 +709,12 @@ impl Campaign {
     pub fn results(&self) -> Results {
         let subjugated = self.subjugation.iter().filter(|&&s| s == TOTAL).count();
         let conquered = self.status.iter().filter(|&&s| s == CONQUERED).count();
+        if self.kind == Kind::Caesar {
+            // (`FUN_00531dd0`: rated by the armies destroyed)
+            let destroyed = self.armies[..4].iter().filter(|a| a.is_none()).count();
+            let id = [138, 140, 142, 158, 162][destroyed];
+            return Results { rounds: self.round, conquered: destroyed, rating: destroyed, victory: destroyed == 4, subjugated: 0, rating_string: Some(id) };
+        }
         if self.kind == Kind::Hannibal {
             // (`FUN_005325aa`: the rating named by how it ended)
             let victory = self.hannibal_victory();
@@ -649,10 +758,20 @@ impl Campaign {
         let list = |v: &[u16]| v.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(" ");
         let units: Vec<u16> = self.units.iter().flatten().copied().collect();
         let later = |q: &VecDeque<usize>| list(&q.iter().map(|&b| b as u16).collect::<Vec<_>>());
-        let head = if self.kind == Kind::Hannibal {
-            format!("game hannibal\nlater {}\nlater2 {}\nsubjugate {}\n", later(&self.later[0]), later(&self.later[1]), self.subjugate as u8)
-        } else {
-            String::new()
+        let place = |a: &Option<usize>| a.map_or("-1".to_string(), |p| p.to_string());
+        let head = match self.kind {
+            Kind::Hannibal => format!("game hannibal\nlater {}\nlater2 {}\nsubjugate {}\n", later(&self.later[0]), later(&self.later[1]), self.subjugate as u8),
+            Kind::Caesar => format!(
+                "game caesar\narmies {}\nroute1 {}\nroute2 {}\nroute3 {}\nfleets {} {}\npenalty {}\n",
+                self.armies.iter().map(place).collect::<Vec<_>>().join(" "),
+                later(&self.routes[0]),
+                later(&self.routes[1]),
+                later(&self.routes[2]),
+                self.fleets[0] as u8,
+                self.fleets[1] as u8,
+                self.penalty
+            ),
+            Kind::Alexander => String::new(),
         };
         head + &format!(
             "round {}\nlast {}\ncurrent {}\nwon {} {}\nindus_round {}\nunits {}\nsubjugation {}\nstatus {}\nnavy {}\nlast_won {}\npending {}\nlast_battle {}\nrng {}\n",
@@ -675,7 +794,14 @@ impl Campaign {
 
     /// Read a campaign written by [`Campaign::to_text`].
     pub fn parse(text: &str) -> Option<Self> {
-        let mut c = if text.lines().any(|l| l.trim() == "game hannibal") { Self::new_hannibal(0) } else { Self::new(0) };
+        let game = |g: &str| text.lines().any(|l| l.trim() == g);
+        let mut c = if game("game hannibal") {
+            Self::new_hannibal(0)
+        } else if game("game caesar") {
+            Self::new_caesar(0)
+        } else {
+            Self::new(0)
+        };
         let n = c.provinces();
         for line in text.lines() {
             let (key, rest) = line.split_once(' ').unwrap_or((line, ""));
@@ -698,6 +824,10 @@ impl Campaign {
                 "later" => c.later[0] = nums.iter().map(|&v| v as usize).collect(),
                 "later2" => c.later[1] = nums.iter().map(|&v| v as usize).collect(),
                 "subjugate" => c.subjugate = one()? != 0,
+                "armies" => nums.iter().take(5).enumerate().for_each(|(k, &v)| c.armies[k] = usize::try_from(v).ok()),
+                "route1" | "route2" | "route3" => c.routes[key.as_bytes()[5] as usize - b'1' as usize] = nums.iter().map(|&v| v as usize).collect(),
+                "fleets" => (c.fleets[0], c.fleets[1]) = (*nums.first()? != 0, *nums.get(1)? != 0),
+                "penalty" => c.penalty = one()? as u16,
                 "last_won" => c.last_won = one()? != 0,
                 "pending" => c.pending = nums.iter().map(|&n| n as usize).collect(),
                 "last_battle" => c.last_battle = one().filter(|&b| b >= 0).map(|b| b as usize),
@@ -709,9 +839,184 @@ impl Campaign {
     }
 }
 
+impl Campaign {
+    /// Caesar's turn (`FUN_0053205c`), after a battle (or with nothing
+    /// fought, `won` true): a victory destroys the armies where Caesar
+    /// stands and brings the province's events; then the campaign is won
+    /// (no army left) or lost (the battle lost, or Roma taken); else a new
+    /// round: the Pompeians march and the map shows.
+    fn caesar_turn(&mut self, won: bool) -> Next {
+        self.last_won = won;
+        self.pending.clear();
+        let here = self.current;
+        if won {
+            let mut defeated = false;
+            for k in 0..4 {
+                if self.armies[k] == Some(here) {
+                    self.armies[k] = None;
+                    if k < 3 {
+                        self.routes[k].clear();
+                    }
+                    defeated = true;
+                }
+            }
+            if defeated {
+                self.log.push(Event::Defeated { province: here });
+            }
+            if here == CAESAR_ROMA {
+                if self.armies[4] == Some(here) {
+                    // Pompey driven out
+                    self.log.push(Event::Message(45));
+                } else {
+                    // riots in Rome
+                    self.penalty += 1;
+                    self.log.push(Event::Message(46));
+                }
+            }
+            if here == CAESAR_EGYPT {
+                // hunger, and Cleopatra may keep him a round
+                self.penalty += 1;
+                self.log.push(Event::Message(81));
+                if self.rand() % 100 < 50 {
+                    self.round += 1;
+                    self.log.push(Event::Message(82));
+                }
+            }
+            if self.armies[4] == Some(here) {
+                // Pompey flees to one of his armies (🟡 or is lost)
+                let r = self.rand() % 100;
+                self.armies[4] = match r {
+                    0..50 => self.armies[0],
+                    50..70 => self.armies[1],
+                    70..90 => self.armies[2],
+                    _ => None,
+                };
+            }
+        }
+        if self.armies[..4].iter().all(|a| a.is_none()) {
+            return Next::Results;
+        }
+        let roma = Some(CAESAR_ROMA);
+        if !won || self.armies[..3].contains(&roma) || (self.armies[4] == roma && self.round > 1) {
+            return Next::Results;
+        }
+        self.round += 1;
+        self.caesar_marches();
+        self.last = self.current;
+        self.log.push(if self.round > ROUNDS { Event::Final } else { Event::Round(self.round) });
+        if self.round <= ROUNDS {
+            self.log.push(Event::TurnsLeft(ROUNDS + 1 - self.round));
+        }
+        Next::Map
+    }
+
+    /// The Pompeians march (`FUN_0053258d`): an army waiting at home sets
+    /// out a round in four (in two with Pompey), Graecia's and Numidia's
+    /// by sea once (a time in four) or, more surely as the war goes on, by
+    /// land; Hispania's by Massilia; Egypt's stays. Each marching army
+    /// takes a step; Pompey goes with his.
+    fn caesar_marches(&mut self) {
+        const HOMES: [usize; 3] = [6, 11, 0];
+        for (k, &home) in HOMES.iter().enumerate() {
+            if !self.routes[k].is_empty() || self.armies[k] != Some(home) {
+                continue;
+            }
+            let chance = if self.armies[4] == self.armies[k] { 50 } else { 25 };
+            if self.rand() % 100 >= chance {
+                continue;
+            }
+            let land = (self.round as u32 * 50).min(100);
+            let route: &[usize] = match k {
+                0 if self.fleets[1] && self.rand() % 100 < 25 => {
+                    self.fleets[1] = false;
+                    &[3]
+                }
+                0 if self.rand() % 100 < land => &[5, 2, 3],
+                1 if self.fleets[0] && self.rand() % 100 < 25 => {
+                    self.fleets[0] = false;
+                    &[4, 3]
+                }
+                1 if self.rand() % 100 < land => {
+                    if self.rand() % 100 < 50 {
+                        &[12, 0, 1, 2, 3]
+                    } else {
+                        &[10, 9, 8, 7, 6, 5, 2, 3]
+                    }
+                }
+                2 => &[1, 2, 3],
+                _ => &[],
+            };
+            self.routes[k] = route.iter().copied().collect();
+        }
+        for k in 0..3 {
+            let Some(to) = self.routes[k].pop_front() else { continue };
+            if self.armies[4].is_some() && self.armies[4] == self.armies[k] {
+                self.armies[4] = Some(to);
+            }
+            self.armies[k] = Some(to);
+        }
+    }
+
+    /// The map closed with Finish: Caesar's move logged, and the battle of
+    /// each army where he now stands queued; with none, the next turn
+    /// comes at once.
+    fn caesar_end_round(&mut self) -> Next {
+        if self.current != self.last {
+            self.log.push(Event::Moved { province: self.current });
+        }
+        for (k, &b) in CAESAR_ARMY_BATTLES.iter().enumerate() {
+            if self.armies[k] == Some(self.current) {
+                self.pending.push_back(b);
+            }
+        }
+        match self.pending.pop_front() {
+            Some(b) => {
+                self.last_battle = Some(b);
+                Next::Battle(b)
+            }
+            None => self.caesar_turn(true),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Caesar's: into Roma at once (Pompey driven out), then on to an army
+    /// to fight its battle; a win destroys it; the campaign saves.
+    #[test]
+    fn caesar_campaign() {
+        let mut c = Campaign::new_caesar(5);
+        assert_eq!(c.after_battle(true), Next::Map);
+        assert_eq!(c.round, 1);
+        assert!(c.can_march(3) && c.can_march(0) && !c.can_march(9));
+        assert!(c.march(3));
+        assert!(!c.battle_offered() || c.armies[..4].contains(&Some(3)));
+        let next = c.end_round();
+        if next == Next::Map {
+            assert!(c.log.contains(&Event::Message(45)));
+            assert_ne!(c.armies[4], Some(3));
+        }
+        // walk to Graecia's army (or wherever it went) and beat it
+        for _ in 0..12 {
+            let Some(target) = c.armies[0] else { break };
+            if c.round > ROUNDS {
+                break;
+            }
+            let (near, far) = caesar_neighbours(c.last);
+            let step = if near.contains(&target) || far.contains(&target) { target } else { near[0] };
+            assert!(c.march(step));
+            if let Next::Battle(b) = c.end_round() {
+                assert_eq!(b, c.last_battle.unwrap());
+                let _ = c.after_battle(true);
+            }
+        }
+        // (the log isn't saved)
+        let back = Campaign::parse(&c.to_text()).unwrap();
+        assert_eq!(back, Campaign { log: Vec::new(), ..c.clone() });
+        assert!(c.results().rating_string.is_some());
+    }
 
     /// Hannibal's: the army in Gaul; into Cisalpine Gaul, Trebbia then
     /// Trasimene; Cannae won brings Baecula and Metaurus the round after

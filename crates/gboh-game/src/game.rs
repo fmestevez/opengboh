@@ -51,6 +51,22 @@ fn opposite(facing: u8) -> u8 {
     }
 }
 
+/// Caesar's battles in its table's order, by map file: Dyrrhachium,
+/// Pharsalus, Ruspina, Thapsus, Munda, Vercellae, Chaeronea, Bibracte,
+/// Sabis, Rhine.
+const CAESAR_BATTLES: [&str; 10] = ["DYRRHACH", "PHARSAL", "RUSPINA", "THAPSUS", "MUNDA", "VERCELL", "CHAERON", "BIBRAC", "SABIS", "RHINE"];
+
+/// Per Caesar battle: the (0-based) turn that ends it when turn limits are
+/// on, for the home army (`FUN_00555709`); none at Dyrrhachium and
+/// Ruspina.
+const CAESAR_TURN_LIMITS: [Option<u16>; 10] = [None, Some(7), None, Some(5), Some(11), Some(5), Some(5), Some(5), Some(5), Some(4)];
+
+/// The battle number of a Caesar map file.
+fn caesar_battle(map_file: &str) -> Option<usize> {
+    let stem = map_file.split('.').next().unwrap_or("").to_ascii_uppercase();
+    CAESAR_BATTLES.iter().position(|b| *b == stem)
+}
+
 /// The battle number of a Hannibal map file.
 fn hannibal_battle(map_file: &str) -> Option<usize> {
     let stem = map_file.split('.').next().unwrap_or("").to_ascii_uppercase();
@@ -64,6 +80,16 @@ pub enum Rules {
     #[default]
     Alexander,
     Hannibal,
+    /// Caesar's: Hannibal's engine without its nations' and battles' own
+    /// rules, with its own classes, terrain and battles.
+    Caesar,
+}
+
+impl Rules {
+    /// Hannibal's engine (Hannibal's or Caesar's rules).
+    pub fn newer(self) -> bool {
+        self != Rules::Alexander
+    }
 }
 
 #[derive(Clone)]
@@ -92,6 +118,8 @@ pub struct Game {
     /// and whether its turn limits apply (an option of its set-up).
     pub hannibal_battle: Option<usize>,
     pub turn_limits: bool,
+    /// Caesar's battle number (its table's order).
+    pub caesar_battle: Option<usize>,
     /// Hannibal's Triarii tactical doctrine option.
     pub triarii_doctrine: bool,
     /// Hannibal's deployment phase, while on: its line (see
@@ -169,8 +197,14 @@ impl Game {
         let battle = Battle::from_scenario(scn, &map);
         let mut activation = Activation::new(&battle, battle_index(&scn.map_file));
         activation.romans_idle_first_turn = scn.map_file.to_ascii_uppercase().starts_with("TRASIMEN");
-        // (Caesar's are fought by Hannibal's rules, its engine's next version: 🟡)
-        let rules = if scn.layout.newer() { Rules::Hannibal } else { Rules::Alexander };
+        activation.caesarians_idle_first_turn = scn.layout == gboh_formats::scn::Layout::Caesar && caesar_battle(&scn.map_file) == Some(8);
+        let mut map = map;
+        map.caesar = scn.layout == gboh_formats::scn::Layout::Caesar;
+        let rules = match scn.layout {
+            gboh_formats::scn::Layout::Alexander => Rules::Alexander,
+            gboh_formats::scn::Layout::Hannibal => Rules::Hannibal,
+            gboh_formats::scn::Layout::Caesar => Rules::Caesar,
+        };
         Self {
             battle,
             rules,
@@ -188,6 +222,7 @@ impl Game {
             log: Vec::new(),
             battle_index: battle_index(&scn.map_file),
             hannibal_battle: hannibal_battle(&scn.map_file),
+            caesar_battle: if scn.layout == gboh_formats::scn::Layout::Caesar { caesar_battle(&scn.map_file) } else { None },
             turn_limits: false,
             triarii_doctrine: true,
             deployment: None,
@@ -214,12 +249,32 @@ impl Game {
         // Hannibal's Cannae: wind on seven turns in ten (from direction 2)
         if self.rules == Rules::Hannibal && self.hannibal_battle == Some(2) {
             self.wind = self.rng.random() % 10 < 7;
+            self.battle.wind = self.wind;
         }
         let l = self.activation.begin_turn(&self.battle, &mut self.rng);
         self.activate(l)
     }
 
+    /// Answer the elite initiative offered to a player's leader: taken,
+    /// he stays active; declined, the turn's first leader is drawn as
+    /// usual. Returns the active leader.
+    pub fn answer_elite(&mut self, accept: bool) -> Option<usize> {
+        if !self.activation.offered {
+            return self.activation.active();
+        }
+        if accept {
+            self.activation.offered = false;
+            return self.activation.active();
+        }
+        let l = self.activation.decline(&self.battle, &mut self.rng);
+        self.activate(l)
+    }
+
     fn activate(&mut self, leader: Option<usize>) -> Option<usize> {
+        // the free units' entry drawn first: they act now
+        if std::mem::take(&mut self.activation.free_drawn) {
+            self.free_units();
+        }
         self.points = leader.map(|l| CommandPoints::new(&self.battle, l));
         self.leader_moved = false;
         self.group_move = None;
@@ -248,15 +303,8 @@ impl Game {
             u.reorder_hit = false;
             u.fired = false;
         }
-        // Hannibal's Cannae wind: a unit facing into it has a hex less (🟡
-        // the original takes it from the move's budget as it searches)
-        if self.wind {
-            for u in &mut self.battle.units {
-                if matches!(u.facing, 6 | 7) {
-                    u.mp = (u.mp - 1).max(0);
-                }
-            }
-        }
+        // (Hannibal's Cannae wind is taken from the moves' search budget
+        // and the missiles' range: see `Battle::into_wind`)
         self.resupplied = match leader {
             Some(l) => {
                 let units = commanded(&self.battle, &self.map, l);
@@ -336,7 +384,7 @@ impl Game {
     /// The hexes it can reach that way.
     pub fn backward_options(&self, unit: usize) -> Vec<crate::hex::Hex> {
         let u = &self.battle.units[unit];
-        if self.rules != Rules::Hannibal || u.state != UnitState::Fighting || u.leader.is_some() || u.mp <= 0 {
+        if !self.rules.newer() || u.state != UnitState::Fighting || u.leader.is_some() || u.mp <= 0 {
             return Vec::new();
         }
         let mut b = self.battle.clone();
@@ -454,14 +502,21 @@ impl Game {
         if u.state != UnitState::Routed {
             return false;
         }
-        let (tq, hits) = (u.tq, u.hits);
+        let (tq, hits, rallied) = (u.tq, u.hits, u.rallied);
         let ini = self.battle.units[l].leader.map_or(0, |r| r.initiative);
         let rng = &mut self.rng;
-        match crate::rout::rally(tq, hits, ini, || rng.next() % 10) {
+        match crate::rout::rally(tq, hits, ini, rallied, || rng.next() % 10) {
             Some(h) => {
+                let caesar = self.rules == Rules::Caesar;
                 let u = &mut self.battle.units[unit];
                 u.hits = h;
                 u.state = UnitState::Fighting;
+                // (Caesar's: marked for good, but its first and tenth
+                // cohorts, `FUN_0058f6ce`)
+                let exempt = u.legion.is_some() && u.name.contains('1');
+                if caesar && !exempt {
+                    u.rallied = true;
+                }
                 self.spend(unit, true);
                 true
             }
@@ -508,7 +563,7 @@ impl Game {
         let facing = self.battle.units[first].facing;
         let orderable = self.orderable();
         // (Hannibal's: no command test; refused only with an enemy beside)
-        let hannibal = self.rules == Rules::Hannibal;
+        let hannibal = self.rules.newer();
         let reach = if hannibal { 1 } else { 2 };
         for &u in &group {
             let o = &self.battle.units[u];
@@ -546,14 +601,16 @@ impl Game {
         let full = ((ini - 2) * 20 + 30).min(100);
         let one = ((ini - 2) * 20 + 50).min(100);
         // (Hannibal's roll on `random()`; its Roman leaders never fail)
-        let hannibal = self.rules == Rules::Hannibal;
+        let hannibal = self.rules.newer();
         let mut roll = (if hannibal { self.rng.random() } else { self.rng.next() } % 100) as i32;
         match self.group_streak.get(&l).copied().unwrap_or(0) {
             0 => {}
             1 => roll = (roll - 30).max(0),
             _ => roll = 0,
         }
-        if hannibal && self.battle.units[l].nation == ROMAN {
+        // (Caesar's Romans, Caesarians and Pompeians alike)
+        let n = self.battle.units[l].nation;
+        if (self.rules == Rules::Hannibal && n == ROMAN) || (self.rules == Rules::Caesar && matches!(n, ROMAN | 9 | 10)) {
             roll = 0;
         }
         self.group_tried.insert(l, true);
@@ -694,55 +751,63 @@ impl Game {
     /// other order.
     pub fn can_extend_line(&self) -> bool {
         let Some(l) = self.activation.active() else { return false };
-        self.rules == Rules::Hannibal
-            && self.battle.units[l].nation == ROMAN
+        // (Caesar's: any Roman's, Caesarian's or Pompeian's)
+        let romans: &[u8] = if self.rules == Rules::Caesar { &[ROMAN, 9, 10] } else { &[ROMAN] };
+        self.rules.newer()
+            && romans.contains(&self.battle.units[l].nation)
             && self.points.as_ref().is_none_or(|p| p.used == 0)
             && !self.leader_moved
             && self.group(l).iter().any(|&u| self.battle.units[u].legion.is_some())
     }
 
-    /// Hannibal's manipular line extension (`FUN_0056fe45`): no roll, the
-    /// leader's whole activation. A maniple of his group whose one flank
-    /// holds a maniple of the same line and group steps into the hex on its
-    /// other flank if empty, the outermost first, so the line spreads (🟡
-    /// the original's step directions are not recovered). Returns how many
-    /// stepped.
+    /// Manipular line extension (Hannibal's `FUN_0056fe45`, Caesar's
+    /// `FUN_0057130c`): no roll, the leader's whole activation. In the
+    /// group's order, a maniple (a cohort) whose right-front hex holds one
+    /// of the same nation, group and line (cohort type) steps into its
+    /// left-front hex by the leader's facing if that is empty: a rear
+    /// maniple standing behind-left of a front one comes up on its left, so
+    /// the line extends to the left. Facings are kept; each step is made
+    /// before the next unit is looked at. Returns how many stepped.
     pub fn extend_line(&mut self) -> usize {
         if !self.can_extend_line() {
             return 0;
         }
         let Some(l) = self.activation.active() else { return 0 };
         let group = self.group(l);
-        let centre = {
-            let n = group.len().max(1) as i32;
-            let (sx, sy) = group.iter().fold((0, 0), |(x, y), &u| (x + self.battle.units[u].hex.x, y + self.battle.units[u].hex.y));
-            crate::hex::Hex::new(sx / n, sy / n)
+        let (nation, leader_facing) = (self.battle.units[l].nation, self.battle.units[l].facing);
+        // the sides by facing: right-front of a unit, left-front of the leader
+        let right_front = |f: u8| match f {
+            2 => 2,
+            3 => 4,
+            4 => 5,
+            6 => 6,
+            7 => 8,
+            _ => 1,
         };
-        let mut order: Vec<usize> = group.iter().copied().filter(|&u| self.battle.units[u].legion.is_some()).collect();
-        order.sort_by_key(|&u| std::cmp::Reverse(self.battle.units[u].hex.distance(centre)));
+        let left_front = match leader_facing {
+            2 => 1,
+            3 => 2,
+            4 => 4,
+            6 => 5,
+            7 => 6,
+            _ => 8,
+        };
+        let legion = |u: &crate::battle::Unit| crate::movement::MoveClass::of_type(u.type_id) == Some(crate::movement::MoveClass::Legion);
         let mut stepped = 0;
-        for u in order {
+        for &u in &group {
             let o = &self.battle.units[u];
-            if o.state != UnitState::Fighting {
+            if !legion(o) {
                 continue;
             }
-            let (here, facing, legion, grp) = (o.hex, o.facing, o.legion, o.group);
-            let right = crate::battle::flank(here, facing);
-            let left = crate::battle::neighbour(here, (facing as usize + 5) % 8 + 1);
-            let partner = |h: Option<crate::hex::Hex>| {
-                h.is_some_and(|h| self.battle.units.iter().any(|x| x.hex == h && x.state == UnitState::Fighting && x.legion == legion && x.group == grp))
-            };
-            let empty = |h: Option<crate::hex::Hex>| {
-                h.is_some_and(|h| crate::movement::on_map(&self.map, h) && (0..self.battle.units.len()).all(|x| !self.battle.units[x].on_field() || !self.battle.hexes(x).contains(&h)))
-            };
-            let to = if partner(left) && empty(right) {
-                right
-            } else if partner(right) && empty(left) {
-                left
-            } else {
-                None
-            };
-            if let Some(to) = to {
+            let (here, line, grp) = (o.hex, o.legion, o.group);
+            let Some(h1) = crate::battle::neighbour(here, right_front(o.facing)) else { continue };
+            let partner = self.battle.units.iter().find(|x| x.on_field() && x.hex == h1);
+            if !partner.is_some_and(|v| v.leader.is_none() && v.nation == nation && legion(v) && v.legion == line && v.group == grp) {
+                continue;
+            }
+            let Some(to) = crate::battle::neighbour(here, left_front) else { continue };
+            let empty = crate::movement::on_map(&self.map, to) && (0..self.battle.units.len()).all(|x| !self.battle.units[x].on_field() || !self.battle.hexes(x).contains(&to));
+            if empty {
                 self.log.push(Happened::Moved { unit: u, path: vec![here, to], running: false });
                 self.battle.units[u].hex = to;
                 stepped += 1;
@@ -966,7 +1031,8 @@ impl Game {
         for (attackers, defenders) in std::mem::take(&mut self.shocks) {
             let target_hex = defenders.first().map(|&d| self.battle.units[d].hex);
             self.log.push(Happened::Shock { attackers: attackers.iter().map(|a| a.0).collect(), defenders: defenders.clone() });
-            let out = shock::resolve(&mut self.battle, &attackers, &defenders, &mut self.rng);
+            let berms = self.berms();
+            let out = shock::resolve(&mut self.battle, &attackers, &defenders, &berms, &mut self.rng);
             for &(u, h) in &out.hits {
                 if h > 0 {
                     let o = &self.battle.units[u];
@@ -986,7 +1052,7 @@ impl Game {
             if let Some((l, effect)) = out.leader {
                 self.leader_casualty(l, effect, 2);
             }
-            if self.rules == Rules::Hannibal {
+            if self.rules.newer() {
                 self.pursue_or_advance(&attackers, &defenders, &stood, target_hex);
             } else if let Some(h) = target_hex {
                 self.advance(&attackers, &defenders, h);
@@ -1122,16 +1188,18 @@ impl Game {
         }
     }
 
-    /// Hannibal's cavalry pursuit (`FUN_0057ef41`, `FUN_0057f86f`): a roll
-    /// of `rand() % 10` (+2 against foot) of at least 4 (heavy cavalry), 6
-    /// (Roman cavalry, lancers) or 8 (light cavalry); not from a hex in an
-    /// enemy's zone. The pursuer rides at the routed unit, stopping before
-    /// an occupied hex or in an enemy's zone; it catches it on a roll of no
-    /// more than its TQ if it ends next to it with no other enemy there.
-    /// Caught foot that fail a check at TQ 1 are eliminated (horse are
-    /// chased along their flight, 🟡 not ported). Enemy leaders next to the
-    /// pursuer at the end step away. Returns whether it pursued (false: it
-    /// may advance instead).
+    /// Cavalry pursuit (Hannibal's `FUN_0057ef41`, `FUN_0057f86f`; Caesar's
+    /// alike): a roll of `rand() % 10` (+2 against foot) of at least 4
+    /// (heavy and barbarian cavalry), 6 (Roman cavalry, lancers) or 8 (light
+    /// cavalry); not from a hex in an enemy's zone. The pursuer rides the
+    /// original's hex line at the routed unit, stopping before an occupied
+    /// hex and after one in an enemy's zone, its facing kept; it catches it
+    /// on a roll of no more than its TQ if the unit is in its front then,
+    /// with no other foe there. A caught unit checks at TQ 1: failing, foot
+    /// are cut down, horse, chariots and elephants flee again with the
+    /// pursuer after them (🟡 off the map it is out, not back as a free
+    /// unit). Uncaught, or after a chase, enemy leaders beside the pursuer
+    /// step away. Returns whether it pursued (false: it may advance).
     fn pursue(&mut self, p: usize, target: usize) -> bool {
         use crate::movement::MoveClass::*;
         let side = self.battle.units[p].side;
@@ -1139,7 +1207,7 @@ impl Game {
             return true;
         }
         let threshold = match crate::movement::MoveClass::of_type(self.battle.units[p].type_id) {
-            Some(HeavyCavalry) => 4,
+            Some(HeavyCavalry | BarbarianCavalry) => 4,
             Some(RomanCavalry | Lancer) => 6,
             _ => 8,
         };
@@ -1149,44 +1217,83 @@ impl Game {
         if roll < threshold {
             return false;
         }
-        // the way to the routed unit, one step at a time
+        let occupied = |g: &Self, h: crate::hex::Hex| (0..g.battle.units.len()).any(|u| u != p && g.battle.units[u].on_field() && g.battle.hexes(u).contains(&h));
+        // the hex line to the routed unit
         let goal = self.battle.units[target].hex;
-        let mut at = self.battle.units[p].hex;
-        let mut path = Vec::new();
-        while at.distance(goal) > 1 {
-            let Some(next) = at.neighbours().into_iter().filter(|n| crate::movement::on_map(&self.map, *n)).min_by_key(|n| n.distance(goal)) else { break };
-            if next.distance(goal) >= at.distance(goal) || (0..self.battle.units.len()).any(|u| self.battle.units[u].on_field() && self.battle.hexes(u).contains(&next)) {
+        let from = self.battle.units[p].hex;
+        let mut path = vec![from];
+        for h in crate::movement::hex_line(&self.map, from, goal).into_iter().skip(1) {
+            if occupied(self, h) {
                 break;
             }
-            path.push(next);
-            at = next;
-            if crate::movement::in_enemy_zoc(&self.battle, &self.map, side, next) {
+            path.push(h);
+            if crate::movement::in_enemy_zoc(&self.battle, &self.map, side, h) {
                 break;
             }
         }
+        let end = *path.last().unwrap_or(&from);
+        let facing = self.battle.units[p].facing;
+        let front: Vec<crate::hex::Hex> = crate::movement::forward(facing).map_or(Vec::new(), |d| d.iter().map(|&k| end.neighbours()[k]).collect());
         let tq = self.battle.units[p].tq as u32;
         let caught = self.rng.next() % 10 <= tq
-            && at.distance(goal) == 1
-            && !at.neighbours().iter().any(|n| *n != goal && self.battle.units.iter().any(|u| u.side != side && u.state == UnitState::Fighting && u.hex == *n));
-        if let Some(&last) = path.last() {
-            let from = self.battle.units[p].hex;
-            self.log.push(Happened::Moved { unit: p, path: std::iter::once(from).chain(path.iter().copied()).collect(), running: false });
-            self.battle.units[p].hex = last;
+            && front.contains(&goal)
+            && !front.iter().any(|&h| h != goal && self.battle.units.iter().any(|u| u.on_field() && u.nation != self.battle.units[p].nation && u.hex == h));
+        if path.len() > 1 {
+            self.log.push(Happened::Moved { unit: p, path: path.clone(), running: false });
+            self.battle.units[p].hex = end;
         }
-        if let Some(s) = at.neighbours().iter().position(|n| *n == goal)
-            && let Some(f) = [2u8, 3, 4, 6, 7, 8].into_iter().find(|&f| crate::movement::forward(f).is_some_and(|d| d.contains(&s)))
-        {
-            self.battle.units[p].facing = f;
-        }
-        if caught && foot && (self.rng.next() % 10).saturating_sub(1) != 0 {
-            let o = &mut self.battle.units[target];
-            o.state = UnitState::Gone;
-            let (hex, facing) = (o.hex, o.facing);
-            self.log.push(Happened::Eliminated { unit: target, hex, facing });
+        if caught {
+            // the caught unit's check at TQ 1 (fails on 2..9)
+            if (self.rng.next() % 10).saturating_sub(1) == 0 {
+                return true;
+            }
+            if foot {
+                let o = &mut self.battle.units[target];
+                o.state = UnitState::Gone;
+                let (hex, facing) = (o.hex, o.facing);
+                self.log.push(Happened::Eliminated { unit: target, hex, facing });
+            } else {
+                // it flees again, the pursuer after it
+                let before = self.battle.units[target].hex;
+                let mp = self.battle.units[target].max_mp.max(0) as u32;
+                let mut flight = vec![before];
+                if let Some(Happened::Moved { path, .. }) = {
+                    self.rout(target, mp);
+                    self.log.iter().rev().find(|e| matches!(e, Happened::Moved { unit, .. } if *unit == target))
+                } {
+                    flight = path.clone();
+                }
+                let there = self.battle.units[target].on_field().then(|| self.battle.units[target].hex);
+                let here = self.battle.units[p].hex;
+                let mut chase = Vec::new();
+                for &h in &flight {
+                    if h == here {
+                        continue;
+                    }
+                    if (occupied(self, h) && Some(h) != there) || crate::movement::in_enemy_zoc(&self.battle, &self.map, side, h) {
+                        break;
+                    }
+                    chase.push(h);
+                }
+                if let Some(&last) = chase.last() {
+                    self.log.push(Happened::Moved { unit: p, path: std::iter::once(here).chain(chase.iter().copied()).collect(), running: false });
+                    self.battle.units[p].hex = last;
+                    // (off the map's edge it rides out, leaderless, to come
+                    // back from that edge, `FUN_004b91d7`)
+                    if last.neighbours().iter().any(|&n| !crate::movement::on_map(&self.map, n)) {
+                        let edge = self.battle.units[target].retreat;
+                        let o = &mut self.battle.units[p];
+                        (o.state, o.group, o.retreat) = (UnitState::Away, 0xffff, edge);
+                    }
+                }
+            }
         }
         // enemy leaders beside the pursuer step away
+        if !self.battle.units[p].on_field() {
+            return true;
+        }
         let here = self.battle.units[p].hex;
-        let leaders: Vec<usize> = self.battle.leaders().filter(|&l| self.battle.units[l].side != side && self.battle.units[l].hex.distance(here) == 1).collect();
+        let leaders: Vec<usize> = self.battle.leaders().filter(|&l| self.battle.units[l].side != side && self.battle.units[l].hex.distance(here) <= 1).collect();
         for l in leaders {
             // (at risk: finished, then wounded on d100 25..70, killed above)
             if crate::orders::leader_withdraw(&mut self.battle, &self.map, l, p, &mut self.rng) {
@@ -1264,6 +1371,11 @@ impl Game {
                 let Some(next) = crate::battle::neighbour(here, side).filter(|&h| crate::movement::on_map(&self.map, h)) else {
                     break 'legs;
                 };
+                // (Caesar's: an impassable side ends it, `FUN_0054be4a`)
+                let map_side = gboh_formats::map::Side::ALL[[1, 2, 4, 5, 6, 8].iter().position(|&d| d == side).unwrap_or(0)];
+                if self.map.caesar && self.map.side_features(here.x as usize, here.y as usize, map_side).contains(&20) {
+                    break 'legs;
+                }
                 let at: Vec<usize> = (0..self.battle.units.len())
                     .filter(|&u| u != elephant && self.battle.units[u].on_field() && self.battle.hexes(u).contains(&next))
                     .collect();
@@ -1281,7 +1393,7 @@ impl Game {
                         continue;
                     }
                     // (Hannibal's: routed units in the way are trampled out)
-                    if o.state == UnitState::Routed && self.rules == Rules::Hannibal {
+                    if o.state == UnitState::Routed && self.rules.newer() {
                         let o = &mut self.battle.units[u];
                         o.state = UnitState::Gone;
                         let (hex, facing) = (o.hex, o.facing);
@@ -1375,9 +1487,6 @@ impl Game {
     /// End the turn: routed units flee their full movement allowance, then
     /// the armies' rout points are compared with their levels.
     pub fn end_turn(&mut self) -> Verdict {
-        if self.rules == Rules::Hannibal {
-            self.free_units();
-        }
         for u in 0..self.battle.units.len() {
             if self.battle.units[u].state == UnitState::Routed {
                 let mp = self.battle.units[u].max_mp.max(0) as u32;
@@ -1397,12 +1506,38 @@ impl Game {
     }
 
     /// Hannibal's free units (`FUN_004b9302`): units with no leader (group
-    /// 0xffff) act on their own, as the computer's do: each closes on its
-    /// nearest enemy and attacks it if it can. (🟡 The original draws a
-    /// "Free Units" chit of initiative 3 among the leaders; the rewrite lets
-    /// them act at the end of the turn. Its off-map ones, entering at random,
+    /// 0xffff) act on their own, as the computer's do, when their entry is
+    /// drawn among the leaders': each closes on its nearest enemy and
+    /// attacks it if it can. (🟡 Its off-map ones, entering at random,
     /// aren't ported.)
     fn free_units(&mut self) {
+        // those off the map come back on 40 %, at a free hex of their edge
+        // with no enemy leader beside it, facing about (`FUN_004b9302`)
+        for u in 0..self.battle.units.len() {
+            if self.battle.units[u].state != UnitState::Away || self.rng.random() % 100 >= 40 {
+                continue;
+            }
+            let (w, h) = (self.map.width as i32, self.map.height as i32);
+            let mut hexes: Vec<crate::hex::Hex> = match self.battle.units[u].retreat {
+                1 => (1..w).map(|c| crate::hex::Hex::new(c, 0)).collect(),
+                3 => (0..h).map(|r| crate::hex::Hex::new(w - 1, r)).collect(),
+                5 => (0..w).map(|c| crate::hex::Hex::new(c, if c & 1 == 1 { h - 2 } else { h - 1 })).collect(),
+                _ => (0..h).map(|r| crate::hex::Hex::new(0, r)).collect(),
+            };
+            let side = self.battle.units[u].side;
+            while !hexes.is_empty() {
+                let k = self.rng.random() as usize % hexes.len();
+                let at = hexes.remove(k);
+                let b = &self.battle;
+                let held = (0..b.units.len()).any(|x| b.units[x].on_field() && b.hexes(x).contains(&at));
+                let leader = b.units.iter().any(|x| x.on_field() && x.leader.is_some() && x.side != side && at.neighbours().contains(&x.hex));
+                if !held && !leader {
+                    let o = &mut self.battle.units[u];
+                    (o.hex, o.facing, o.state) = (at, opposite(o.facing), UnitState::Fighting);
+                    break;
+                }
+            }
+        }
         let free: Vec<usize> = (0..self.battle.units.len())
             .filter(|&u| {
                 let o = &self.battle.units[u];
@@ -1423,7 +1558,8 @@ impl Game {
             }
         }
         for (attackers, defenders) in std::mem::take(&mut self.shocks) {
-            let out = shock::resolve(&mut self.battle, &attackers, &defenders, &mut self.rng);
+            let berms = self.berms();
+            let out = shock::resolve(&mut self.battle, &attackers, &defenders, &berms, &mut self.rng);
             for &u in &out.eliminated {
                 self.battle.units[u].state = UnitState::Gone;
             }
@@ -1434,13 +1570,37 @@ impl Game {
         self.shocks = saved;
     }
 
-    /// Units due this turn take their places on the field (🟡 the
-    /// original's counter taken to start at 0 as the rewrite's does).
+    /// Caesar's berm hexes (hex code 4: Dyrrhachium's).
+    fn berms(&self) -> Vec<crate::hex::Hex> {
+        if !self.map.caesar {
+            return Vec::new();
+        }
+        (0..self.map.width)
+            .flat_map(|x| (0..self.map.height).map(move |y| (x, y)))
+            .filter(|&(x, y)| self.map.hex_features(x, y).contains(&4))
+            .map(|(x, y)| crate::hex::Hex::new(x as i32, y as i32))
+            .collect()
+    }
+
+    /// Units due this turn (the counter from 0) take their places on the
+    /// field if they're free.
     pub fn arrivals(&mut self) {
         let turn = self.activation.turn;
-        for u in &mut self.battle.units {
-            if u.state == UnitState::Waiting && u.arrival <= turn {
-                u.state = UnitState::Fighting;
+        for u in 0..self.battle.units.len() {
+            let o = &self.battle.units[u];
+            if o.state != UnitState::Waiting || o.arrival > turn {
+                continue;
+            }
+            // (`FUN_00526f1e`: its hexes empty of anyone and with no enemy
+            // leader beside them, else it tries again next turn)
+            let side = o.side;
+            let hexes = self.battle.hexes(u);
+            let b = &self.battle;
+            let held = |h: crate::hex::Hex| (0..b.units.len()).any(|x| x != u && b.units[x].on_field() && b.hexes(x).contains(&h));
+            let enemy_leader = |h: crate::hex::Hex| b.units.iter().any(|x| x.on_field() && x.leader.is_some() && x.side != side && h.neighbours().contains(&x.hex));
+            let ok = (!o.two_hex() || o.second_hex().is_some_and(|h| crate::movement::on_map(&self.map, h))) && hexes.iter().all(|&h| !held(h) && !enemy_leader(h));
+            if ok {
+                self.battle.units[u].state = UnitState::Fighting;
             }
         }
     }
@@ -1460,7 +1620,7 @@ impl Game {
     /// An army that has reached its rout level withdraws. If both have, the
     /// one less far past its level wins; on a tie the Macedonians (manual).
     pub fn verdict(&self) -> Verdict {
-        if self.rules == Rules::Hannibal {
+        if self.rules.newer() {
             return self.hannibal_verdict();
         }
         // the Macedonian army is the original's first side
@@ -1507,7 +1667,8 @@ impl Game {
             (true, true) => return Verdict::Won(if over(0) < over(1) { 0 } else { 1 }),
             (false, false) => {}
         }
-        let hannibal = self.battle.units.iter().find(|u| u.leader.is_some() && u.state == UnitState::Gone && u.name.contains("Hannibal"));
+        // (not Caesar's: no leader's death ends its battles)
+        let hannibal = self.battle.units.iter().find(|u| self.rules == Rules::Hannibal && u.leader.is_some() && u.state == UnitState::Gone && u.name.contains("Hannibal"));
         if let Some(h) = hannibal {
             let his = self.armies.iter().position(|a| a.0 == h.side).unwrap_or(0);
             return Verdict::Won(1 - his);
@@ -1518,6 +1679,18 @@ impl Game {
             && self.activation.turn >= last
         {
             return Verdict::Won(winner);
+        }
+        if self.turn_limits
+            && let Some(Some(last)) = self.caesar_battle.map(|b| CAESAR_TURN_LIMITS[b])
+            && self.activation.turn >= last
+        {
+            return Verdict::Won(0);
+        }
+        // Caesar's Ruspina (`FUN_005558b5`): his army surrounded, no unit of
+        // it still fighting, the Pompeians win (🟡 the test taken as that)
+        if self.caesar_battle == Some(2) && !self.battle.units.iter().any(|u| u.nation == 9 && u.leader.is_none() && u.state == UnitState::Fighting) {
+            let pompeians = self.armies.iter().position(|a| a.0 != 9).unwrap_or(1);
+            return Verdict::Won(pompeians);
         }
         Verdict::Continue
     }
@@ -1597,12 +1770,13 @@ mod tests {
             wounded: false,
             reordered: false,
             reorder_hit: false,
+            rallied: false,
             done: false,
         }
     }
 
     fn game(units: Vec<Unit>) -> Game {
-        let battle = Battle { units };
+        let battle = Battle { units, wind: false };
         let activation = Activation::new(&battle, None);
         Game {
             triarii_doctrine: false,
@@ -1610,6 +1784,7 @@ mod tests {
             wind: false,
             reliable: Vec::new(),
             hannibal_battle: None,
+            caesar_battle: None,
             turn_limits: false,
             rules: Rules::Alexander,
             battle,
@@ -1624,6 +1799,7 @@ mod tests {
                 unk_b: 1,
                 elevation: vec![1; 144],
                 cells: vec![Vec::new(); (2 * 12 + 2) * (4 * 12 + 1)],
+                caesar: false,
             },
             activation,
             rng: BorlandRand::new(1),

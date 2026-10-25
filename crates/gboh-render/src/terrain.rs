@@ -641,7 +641,7 @@ mod tests {
     /// column `w - 1 - i / h`, row `i % h - (x & 1)`), and maps back.
     #[test]
     fn reversed_blocks() {
-        let map = Map { name: String::new(), width: 33, height: 45, hex_id_origin: 1000, unk_b: 0, elevation: vec![1; 33 * 45], cells: Vec::new() };
+        let map = Map { name: String::new(), width: 33, height: 45, hex_id_origin: 1000, unk_b: 0, elevation: vec![1; 33 * 45], cells: Vec::new(), caesar: false };
         let normal = Layout::new(&map, Zoom::Normal);
         let reversed = Layout::reversed(&map, Zoom::Normal);
         for r in 0..reversed.rows {

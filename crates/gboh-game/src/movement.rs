@@ -16,6 +16,8 @@ pub enum MoveClass {
     Legion = 1,
     HeavyInfantry = 2,
     MediumInfantry = 3,
+    /// Caesar's barbarian foot.
+    BarbarianInfantry = 4,
     /// Macedonian and Greek light infantry.
     LightInfantryMG = 5,
     LightInfantry = 6,
@@ -24,6 +26,8 @@ pub enum MoveClass {
     HeavyCavalry = 8,
     /// Hannibal's Roman cavalry: heavy cavalry, told apart by some rules.
     RomanCavalry = 9,
+    /// Caesar's barbarian horse.
+    BarbarianCavalry = 10,
     Lancer = 11,
     LightCavalry = 12,
     Elephant = 13,
@@ -53,9 +57,9 @@ impl MoveClass {
                 C::HeavyCavalry => HeavyCavalry,
                 C::Elephant => Elephant,
                 C::Chariot => Chariot,
-                // 🟡 Caesar's new classes as the nearest of Alexander's
-                C::BarbarianInfantry => MediumInfantry,
-                C::BarbarianCavalry => HeavyCavalry,
+                C::BarbarianInfantry => BarbarianInfantry,
+                C::BarbarianCavalry => BarbarianCavalry,
+                // (scorpions and ballistas are oxybeles to its rules)
                 C::Artillery => Oxybeles,
             });
         }
@@ -77,7 +81,7 @@ impl MoveClass {
     }
 
     pub fn horse(self) -> bool {
-        matches!(self, MoveClass::HeavyCavalry | MoveClass::RomanCavalry | MoveClass::Lancer | MoveClass::LightCavalry)
+        matches!(self, MoveClass::HeavyCavalry | MoveClass::RomanCavalry | MoveClass::BarbarianCavalry | MoveClass::Lancer | MoveClass::LightCavalry)
     }
 
     /// The steepest climb (in levels, elevation 0 counted as 1) the class
@@ -190,6 +194,9 @@ pub fn step_cost(map: &Map, class: MoveClass, from: Hex, dir: usize) -> Option<i
     if !on_map(map, to) {
         return None;
     }
+    if map.caesar {
+        return caesar_step_cost(map, class, from, dir);
+    }
     let side = map.side_features(from.x as usize, from.y as usize, SIDES[dir]);
     if side.contains(&IMPASSABLE_SIDE) {
         return None;
@@ -214,6 +221,134 @@ pub fn step_cost(map: &Map, class: MoveClass, from: Hex, dir: usize) -> Option<i
     }
     let extra = if side.contains(&STREAM) { 1 } else { 0 };
     Some(cost + extra + (z0 - z1).abs())
+}
+
+/// Caesar's step (`FUN_004be2a3`, `FUN_0057fffb`): road to road a flat
+/// point; else the target's terrain (woods and marsh 2), a point more
+/// across a stream or a ditch (and another onto a berm from off it), and
+/// the climb, elevation 0 counted as 1. Walls are impassable to all;
+/// chariots keep out of woods, rough ground, marsh and the lowest ground
+/// and don't cross ditches or streams; elephants keep out of marsh and the
+/// lowest ground.
+fn caesar_step_cost(map: &Map, class: MoveClass, from: Hex, dir: usize) -> Option<i32> {
+    const STREAM: u16 = 6;
+    const DITCH: u16 = 10;
+    const WALLS: [u16; 2] = [9, 11];
+    const MARSH: u16 = 3;
+    const BERM: u16 = 4;
+    const ROAD: u16 = 12;
+    let to = from.neighbours()[dir];
+    let side = map.side_features(from.x as usize, from.y as usize, SIDES[dir]);
+    if side.contains(&IMPASSABLE_SIDE) || side.iter().any(|c| WALLS.contains(c)) {
+        return None;
+    }
+    let here = map.hex_features(from.x as usize, from.y as usize);
+    let codes = map.hex_features(to.x as usize, to.y as usize);
+    let (z0, z1) = (elevation(map, from), elevation(map, to));
+    let chariot = class == MoveClass::Chariot;
+    if chariot && (codes.iter().any(|&c| matches!(c, 1 | 2 | MARSH | 5)) || side.iter().any(|&c| c == DITCH || c == STREAM)) {
+        return None;
+    }
+    if (chariot || class == MoveClass::Elephant) && (z1 == 0 || codes.contains(&MARSH)) {
+        return None;
+    }
+    if (z0.max(1) - z1.max(1)).abs() > class.max_climb() {
+        return None;
+    }
+    if here.contains(&ROAD) && codes.contains(&ROAD) {
+        return Some(1);
+    }
+    let mut cost = 1;
+    for &c in codes {
+        cost = cost.max(match c {
+            1 | MARSH | 5 => 2,
+            _ => 1,
+        });
+    }
+    let mut extra = side.contains(&STREAM) as i32;
+    if side.contains(&DITCH) {
+        extra += 1 + (codes.contains(&BERM) && !here.contains(&BERM)) as i32;
+    }
+    Some(cost + extra + (z0.max(1) - z1.max(1)).abs())
+}
+
+/// The right-front and left-front map sides of facing `f` (the sides of
+/// the two hexes before it, clockwise and anticlockwise of its vertex).
+pub fn front_sides(f: u8) -> (usize, usize) {
+    match f {
+        2 => (2, 1),
+        3 => (4, 2),
+        4 => (5, 4),
+        6 => (6, 5),
+        7 => (8, 6),
+        _ => (1, 8),
+    }
+}
+
+/// The original's line of hexes from `from` to `to`, both included
+/// (`FUN_004bc3ef`, also its missiles' line of sight): its bearing in 15°
+/// steps picks one vertex direction for the whole line; each step takes
+/// whichever of the two hexes before that vertex lies nearer the straight
+/// line from where it stands to `to` (the right one on a tie).
+pub fn hex_line(map: &Map, from: Hex, to: Hex) -> Vec<Hex> {
+    let xy = |h: Hex| (2 * h.x + 2, 4 * h.y + 2 * (h.x & 1) + 2);
+    let ((x0, y0), (x1, y1)) = (xy(from), xy(to));
+    let (dx, dy) = (x1 - x0, y1 - y0);
+    let (ax, ay) = (dx.abs(), dy.abs());
+    if from == to {
+        return vec![from];
+    }
+    let slope = if dx == 0 {
+        1
+    } else if dy == 0 {
+        2
+    } else if ay == ax {
+        3
+    } else if ay < ax {
+        4
+    } else if ay == 3 * ax {
+        5
+    } else if ay < 3 * ax {
+        6
+    } else {
+        7
+    };
+    let quadrant = match (dx >= 1, dy <= 0) {
+        (true, true) => 0,
+        (false, true) => 1,
+        (true, false) => 2,
+        (false, false) => 3,
+    };
+    const BEARING: [[i32; 7]; 4] = [[0, 6, 4, 5, 2, 3, 1], [0, 18, 20, 19, 22, 21, 23], [0, 0, 8, 7, 10, 9, 11], [12, 18, 16, 17, 14, 15, 13]];
+    let vertex = [2u8, 3, 4, 6, 7, 8][(BEARING[quadrant][slope - 1] / 4) as usize];
+    let (right, left) = front_sides(vertex);
+    let mut path = Vec::new();
+    let mut cur = from;
+    for _ in 0..(map.width + map.height) * 2 {
+        if cur == to {
+            break;
+        }
+        path.push(cur);
+        let a = crate::battle::neighbour(cur, left);
+        let b = crate::battle::neighbour(cur, right);
+        let (Some(a), Some(b)) = (a, b) else { break };
+        // (re-anchored at the hex it stands on each step)
+        let cross = |h: Hex| -> i64 {
+            if !on_map(map, h) {
+                return 999;
+            }
+            let (hx, hy) = xy(h);
+            let (sx, sy) = xy(cur);
+            ((x1 - sx) as i64 * (hy - sy) as i64 - (y1 - sy) as i64 * (hx - sx) as i64).abs()
+        };
+        let (ea, eb) = (cross(a), cross(b));
+        if ea >= 999 && eb >= 999 {
+            break;
+        }
+        cur = if ea < eb { a } else { b };
+    }
+    path.push(to);
+    path
 }
 
 /// The hexes `unit` holds in its zone of control (the original's set at
@@ -258,10 +393,12 @@ pub(crate) fn in_enemy_zoc(battle: &Battle, map: &Map, side: u8, hex: Hex) -> bo
 }
 
 /// Whether horses may not enter `hex` (`FUN_00571b5e`): it is in an enemy
-/// zone of control and an enemy elephant next to it holds it.
+/// zone of control and an enemy elephant next to it holds it (Caesar's: an
+/// enemy elephant next to it has it in its zone).
 fn elephant_bars(battle: &Battle, map: &Map, side: u8, hex: Hex) -> bool {
     let near = hex.neighbours();
-    in_enemy_zoc(battle, map, side, hex)
+    // (Caesar's: next to such an elephant at all, `FUN_0057fffb`)
+    (map.caesar || in_enemy_zoc(battle, map, side, hex))
         && (0..battle.units.len()).any(|e| {
             let o = &battle.units[e];
             o.side != side && near.contains(&o.hex) && MoveClass::of_type(o.type_id) == Some(MoveClass::Elephant) && zoc_of(battle, map, e).contains(&hex)
@@ -289,13 +426,19 @@ fn can_enter(battle: &Battle, mover: usize, hex: Hex) -> bool {
 /// the cost is the main hex's, and the result lists the positions of its
 /// main hex (see [`highlighted`] for both).
 pub fn reachable(battle: &Battle, map: &Map, unit: usize, points: i32) -> HashMap<Hex, i32> {
-    search(battle, map, unit, points).0
+    search(battle, map, unit, budget(battle, unit, points)).0
+}
+
+/// The search's budget: the points given, a hex less facing into the wind
+/// (taken each time moves are found, not from the unit's points).
+fn budget(battle: &Battle, unit: usize, points: i32) -> i32 {
+    points - battle.into_wind(unit) as i32
 }
 
 /// The cheapest path from the unit's hex to `to` (excluding its start), if
 /// reachable.
 pub fn path_to(battle: &Battle, map: &Map, unit: usize, points: i32, to: Hex) -> Option<Vec<Hex>> {
-    let (costs, parent) = search(battle, map, unit, points);
+    let (costs, parent) = search(battle, map, unit, budget(battle, unit, points));
     costs.get(&to)?;
     let mut path = vec![to];
     let mut h = to;
@@ -419,6 +562,7 @@ mod tests {
             unk_b: 1,
             elevation: vec![1; w * h],
             cells: vec![Vec::new(); (2 * w + 2) * (4 * h + 1)],
+            caesar: false,
         }
     }
 
@@ -451,8 +595,22 @@ mod tests {
             wounded: false,
             reordered: false,
             reorder_hit: false,
+            rallied: false,
             done: false,
         }
+    }
+
+    /// The hex line: straight down a column, and a diagonal whose every
+    /// step is to a neighbour.
+    #[test]
+    fn hex_lines() {
+        let map = flat_map(12, 12);
+        let line = hex_line(&map, Hex::new(4, 2), Hex::new(4, 6));
+        assert_eq!(line, (2..=6).map(|y| Hex::new(4, y)).collect::<Vec<_>>());
+        let line = hex_line(&map, Hex::new(2, 2), Hex::new(8, 7));
+        assert_eq!((line[0], *line.last().unwrap()), (Hex::new(2, 2), Hex::new(8, 7)));
+        assert!(line.windows(2).all(|w| w[0].distance(w[1]) == 1), "{line:?}");
+        assert_eq!(line.len() as i32, Hex::new(2, 2).distance(Hex::new(8, 7)) + 1);
     }
 
     #[test]
@@ -460,7 +618,7 @@ mod tests {
         let map = flat_map(12, 12);
         let mut l = unit(4, 2, Hex::new(3, 5), 3);
         l.leader = Some(crate::battle::LeaderRatings { charisma: 1, command_range: 4, initiative: 3, personal_combat: 1 });
-        let battle = Battle { units: vec![l, unit(31, 1, Hex::new(6, 5), 7), unit(31, 2, Hex::new(3, 4), 3)] };
+        let battle = Battle { units: vec![l, unit(31, 1, Hex::new(6, 5), 7), unit(31, 2, Hex::new(3, 4), 3)], wind: false };
         let m = leader_moves(&battle, &map, 0, 2);
         // any direction, two steps, but not next to the enemy nor onto a friend
         assert!(m.contains(&Hex::new(1, 5)) && m.contains(&Hex::new(3, 7)));
@@ -471,7 +629,7 @@ mod tests {
     #[test]
     fn moves_only_forward() {
         let map = flat_map(10, 10);
-        let battle = Battle { units: vec![unit(31, 2, Hex::new(4, 4), 3)] };
+        let battle = Battle { units: vec![unit(31, 2, Hex::new(4, 4), 3)], wind: false };
         let r = reachable(&battle, &map, 0, 1);
         // facing 3: the NE and SE neighbours
         let n = Hex::new(4, 4).neighbours();
@@ -488,7 +646,7 @@ mod tests {
         // facing 4 moves SE and S; an enemy at (3, 5) facing them (8: NW
         // and N) holds both first steps in its zone of control
         let start = Hex::new(2, 4);
-        let battle = Battle { units: vec![unit(31, 2, start, 4), unit(31, 1, Hex::new(3, 5), 8)] };
+        let battle = Battle { units: vec![unit(31, 2, start, 4), unit(31, 1, Hex::new(3, 5), 8)], wind: false };
         let zone = zoc_of(&battle, &map, 1);
         let r = reachable(&battle, &map, 0, 6);
         let mut got: Vec<_> = r.keys().copied().collect();
@@ -496,15 +654,15 @@ mod tests {
         assert!(got.iter().all(|h| zone.contains(h)), "{got:?} {zone:?}");
         assert!(!got.is_empty());
         // facing away, it holds nothing the unit walks through
-        let battle = Battle { units: vec![unit(31, 2, start, 4), unit(31, 1, Hex::new(3, 5), 4)] };
+        let battle = Battle { units: vec![unit(31, 2, start, 4), unit(31, 1, Hex::new(3, 5), 4)], wind: false };
         assert!(reachable(&battle, &map, 0, 6).len() > 2);
         // a skirmisher stopped in a zone moves on from where it stands
-        let mut battle = Battle { units: vec![unit(2, 2, start, 4), unit(31, 1, Hex::new(3, 5), 8)] };
+        let mut battle = Battle { units: vec![unit(2, 2, start, 4), unit(31, 1, Hex::new(3, 5), 8)], wind: false };
         let first = *got.first().unwrap();
         battle.units[0].hex = first;
         battle.units[0].mp = 3;
         assert!(!reachable(&battle, &map, 0, 3).is_empty());
-        let mut battle = Battle { units: vec![unit(31, 2, first, 4), unit(31, 1, Hex::new(3, 5), 8)] };
+        let mut battle = Battle { units: vec![unit(31, 2, first, 4), unit(31, 1, Hex::new(3, 5), 8)], wind: false };
         battle.units[0].mp = 3;
         assert!(reachable(&battle, &map, 0, 3).is_empty(), "others stay once stopped");
     }

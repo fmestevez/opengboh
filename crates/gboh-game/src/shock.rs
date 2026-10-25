@@ -82,7 +82,19 @@ fn involved_leader(battle: &Battle, units: &[usize]) -> Option<usize> {
 }
 
 fn class(battle: &Battle, u: usize) -> MoveClass {
-    MoveClass::of_type(battle.units[u].type_id).unwrap_or(MoveClass::HeavyInfantry)
+    let o = &battle.units[u];
+    // Caesar's cohorts fight by their type (`FUN_0048b4d9`): veterans as
+    // legionaries, recruits as heavy infantry, conscripts as light
+    if o.type_id >= gboh_formats::units::CAESAR
+        && let Some(t) = o.legion
+    {
+        return match t {
+            1 => MoveClass::Legion,
+            2 => MoveClass::HeavyInfantry,
+            _ => MoveClass::LightInfantry,
+        };
+    }
+    MoveClass::of_type(o.type_id).unwrap_or(MoveClass::HeavyInfantry)
 }
 
 fn routed(battle: &Battle, u: usize) -> bool {
@@ -91,7 +103,8 @@ fn routed(battle: &Battle, u: usize) -> bool {
 
 /// Resolve one shock of `attackers` (with whether each moved this phase)
 /// against `defenders`, updating hits on `battle`.
-pub fn resolve(battle: &mut Battle, attackers: &[(usize, bool)], defenders: &[usize], rng: &mut BorlandRand) -> Outcome {
+/// `berms`: Caesar's berm hexes (Dyrrhachium's), which shift the column.
+pub fn resolve(battle: &mut Battle, attackers: &[(usize, bool)], defenders: &[usize], berms: &[crate::hex::Hex], rng: &mut BorlandRand) -> Outcome {
     let mut out = Outcome::default();
     let hit = |out: &mut Outcome, battle: &mut Battle, u: usize, h: i32| {
         battle.units[u].hits += h;
@@ -121,12 +134,12 @@ pub fn resolve(battle: &mut Battle, attackers: &[(usize, bool)], defenders: &[us
             // Hannibal's: charging Celts shake the defenders as chariots do
             // (the unit's name has the word); and elephants other than the
             // Carthaginians' shake Carthaginian elephants (🟡)
-            if battle.hannibal() {
+            if battle.hannibal() && !battle.caesar() {
                 chariot |= battle.units[a].name.contains("Celts");
                 foreign_elephant |= class(battle, a) == MoveClass::Elephant && battle.units[a].nation != CARTHAGINIAN;
             }
             let u = &battle.units[a];
-            let (h, rout) = tq_check_unit(u.hits, u.tq as i32, rng.next() % 10);
+            let (h, rout) = tq_check_unit(u.hits, u.tq as i32, rng.next() % 10 + u.rallied as u32);
             let before = u.hits;
             hit(&mut out, battle, a, h - before);
             if rout {
@@ -151,7 +164,7 @@ pub fn resolve(battle: &mut Battle, attackers: &[(usize, bool)], defenders: &[us
             let u = &battle.units[d];
             let elephants = foreign_elephant && c == MoveClass::Elephant && battle.units[d].nation == CARTHAGINIAN;
             let roll = rng.next() % 10 + (chariot || elephants) as u32;
-            let (h, rout) = tq_check_unit(u.hits, u.tq as i32, roll);
+            let (h, rout) = tq_check_unit(u.hits, u.tq as i32, roll + u.rallied as u32);
             let before = u.hits;
             hit(&mut out, battle, d, h - before);
             if rout {
@@ -180,8 +193,16 @@ pub fn resolve(battle: &mut Battle, attackers: &[(usize, bool)], defenders: &[us
         defender_cataphract: standing.iter().any(|&d| gboh_formats::units::cataphract(battle.units[d].type_id)),
         defender_missile: false,
         no_superiority: false,
-        column_shift: 0,
-        hannibal: battle.hannibal(),
+        // (Caesar's berms, `FUN_004aee30`: the attacker on one and the
+        // defender not −2, the other way round −3)
+        column_shift: match (berms.contains(&battle.units[lead].hex), berms.contains(&battle.units[standing[0]].hex)) {
+            (true, false) => -2,
+            (false, true) => -3,
+            _ => 0,
+        },
+        // (Caesar's: Alexander's superiority order, no nations' rules)
+        hannibal: battle.hannibal() && !battle.caesar(),
+        caesar: battle.caesar(),
         attacker_nation: battle.units[lead].nation,
         defender_nation: battle.units[standing[0]].nation,
     };
@@ -251,6 +272,7 @@ mod tests {
             wounded: false,
             reordered: false,
             reorder_hit: false,
+            rallied: false,
             done: false,
         }
     }
@@ -261,7 +283,7 @@ mod tests {
         let n = t.neighbours();
         // target faces 3 (front n[1], n[2]); flank n[0], rear n[4]
         let mk = |ty, hex| unit(ty, 2, hex, 6, 6, 6);
-        let mut b = Battle { units: vec![unit(31, 1, t, 3, 6, 6), mk(31, n[1]), mk(2, n[0])] };
+        let mut b = Battle { units: vec![unit(31, 1, t, 3, 6, 6), mk(31, n[1]), mk(2, n[0])], wind: false };
         // a skirmisher on the flank scores below the frontal hoplites: not used
         assert_eq!(leading_attacker(&b, &[1, 2], 0), (1, 0));
         // listed first it leads, and a frontal unit cannot take over
@@ -284,16 +306,16 @@ mod tests {
 
     #[test]
     fn routed_defenders_are_eliminated() {
-        let mut b = Battle { units: vec![unit(31, 2, Hex::new(5, 5), 3, 6, 6), unit(31, 1, Hex::new(6, 5), 7, 6, 6)] };
+        let mut b = Battle { units: vec![unit(31, 2, Hex::new(5, 5), 3, 6, 6), unit(31, 1, Hex::new(6, 5), 7, 6, 6)], wind: false };
         b.units[1].hits = 6;
-        let out = resolve(&mut b, &[(0, true)], &[1], &mut BorlandRand::new(1));
+        let out = resolve(&mut b, &[(0, true)], &[1], &[], &mut BorlandRand::new(1));
         assert_eq!(out.eliminated, vec![1]);
     }
 
     #[test]
     fn a_shock_deals_hits_to_both_sides() {
-        let mut b = Battle { units: vec![unit(31, 2, Hex::new(5, 5), 3, 6, 9), unit(31, 1, Hex::new(6, 5), 7, 6, 9)] };
-        let out = resolve(&mut b, &[(0, false)], &[1], &mut BorlandRand::new(1));
+        let mut b = Battle { units: vec![unit(31, 2, Hex::new(5, 5), 3, 6, 9), unit(31, 1, Hex::new(6, 5), 7, 6, 9)], wind: false };
+        let out = resolve(&mut b, &[(0, false)], &[1], &[], &mut BorlandRand::new(1));
         assert!(b.units[0].hits > 0 && b.units[1].hits > 0, "{out:?}");
     }
 }

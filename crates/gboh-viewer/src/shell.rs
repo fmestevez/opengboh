@@ -409,15 +409,13 @@ pub fn button_at(buttons: &[Button], x: i32, y: i32) -> Option<u16> {
     buttons.iter().find(|(_, (bx, by, bw, bh))| x >= *bx && x < bx + bw && y >= *by && y < by + bh).map(|(id, _)| *id)
 }
 
-/// The game selector's lines: each imported title's campaign (Alexander's
-/// only, so far) and its scenarios, by the battle's name in the scenario.
+/// The game selector's lines: each imported title's campaign and its
+/// scenarios, by the battle's name in the scenario.
 pub fn entries(imported: &[Title]) -> Vec<Entry> {
     let mut out = Vec::new();
     for &t in imported {
         let Some(dir) = crate::library::data_dir(t) else { continue };
-        if t != Title::Caesar {
-            out.push(Entry { title: t, scenario: None, name: "Campaign".into(), detail: None });
-        }
+        out.push(Entry { title: t, scenario: None, name: "Campaign".into(), detail: None });
         let mut files: Vec<(String, String)> = std::fs::read_dir(&dir)
             .into_iter()
             .flatten()

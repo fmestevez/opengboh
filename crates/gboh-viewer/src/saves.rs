@@ -58,6 +58,7 @@ pub fn order_line(o: &Order) -> String {
         Order::Undo => "u".into(),
         Order::Finish { momentum } => format!("f {}", flag(momentum)),
         Order::StepComputer => "s".into(),
+        Order::Elite { accept } => format!("e {}", flag(accept)),
         Order::Group(g) => format!("G {}", ["retreat", "attack", "restore", "extend"][g as usize]),
     }
 }
@@ -79,6 +80,7 @@ pub fn parse_order(line: &str) -> Result<Order, ()> {
         ["u"] => Order::Undo,
         ["f", m] => Order::Finish { momentum: *m == "1" },
         ["s"] => Order::StepComputer,
+        ["e", a] => Order::Elite { accept: *a == "1" },
         ["G", g] => Order::Group(match *g {
             "retreat" => GroupOrder::Retreat,
             "attack" => GroupOrder::Attack,
@@ -230,6 +232,7 @@ mod tests {
                 Order::Recover,
                 Order::Finish { momentum: true },
                 Order::StepComputer,
+                Order::Elite { accept: false },
             ],
             campaign: Some("round 3\ncurrent 1\n".into()),
         };

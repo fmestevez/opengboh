@@ -573,9 +573,10 @@ impl Host for AiHost<'_> {
             }),
             "findclosestenemytofire" => self.unit(arg(0)).map_or(-1, |u| {
                 let s = &self.game.battle.units[u];
-                let Some((w, n)) = s.missile.filter(|m| m.1 > 0) else { return -1 };
-                let _ = n;
-                let field = arc(s.hex, s.facing, w.range());
+                if s.missile.is_none_or(|m| m.1 == 0) {
+                    return -1;
+                }
+                let field = arc(s.hex, s.facing, self.game.battle.missile_range(u));
                 self.enemies_of(u)
                     .filter(|&e| field.contains(&self.game.battle.units[e].hex))
                     .min_by_key(|&e| (self.game.battle.units[e].hex.distance(s.hex), e))
@@ -645,11 +646,12 @@ impl Host for AiHost<'_> {
                 let b = &self.game.battle;
                 let (lh, side) = (b.units[l].hex, b.units[l].side);
                 let ini = b.units[l].leader.map_or(0, |r| r.initiative);
+                let least = a.first().copied().unwrap_or(0);
                 let nearest = |routed: bool| {
                     b.units
                         .iter()
                         .filter(|o| o.side == side && o.leader.is_none() && o.on_field())
-                        .filter(|o| if routed { o.state == UnitState::Routed } else { o.state == UnitState::Fighting && o.hits > 0 })
+                        .filter(|o| if routed { o.state == UnitState::Routed } else { o.state == UnitState::Fighting && o.hits > least })
                         .min_by_key(|o| o.hex.distance(lh))
                         .map(|o| hex_id(o.hex))
                 };

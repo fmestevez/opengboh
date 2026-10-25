@@ -95,6 +95,8 @@ pub const BUILTINS: &[(&str, usize)] = &[
     ("Random", 1),
     ("EnemyWithinRange", 2),
     ("FindHurtingUnit", 0),
+    // (Caesar's: the hits it must have more than)
+    ("FindHurtingUnit", 1),
     // Hannibal's
     ("DoGroupBerserk", 0),
     ("DoGroupRetreat", 1),
@@ -167,7 +169,9 @@ pub struct Plan {
 pub struct Script {
     pub consts: HashMap<String, i32>,
     pub globals: Vec<String>,
-    pub procs: HashMap<String, Procedure>,
+    /// Procedures by name and how many parameters (the language overloads
+    /// on the count: `basicman.ai` has two `FigurePriority`).
+    pub procs: HashMap<(String, usize), Procedure>,
     pub plan: Option<Plan>,
     imported: Vec<String>,
 }
@@ -364,7 +368,7 @@ impl Parser<'_> {
                     }
                     self.expect_sym(")")?;
                     let body = if self.is_sym("{") { Some(self.block()?) } else { None };
-                    let p = script.procs.entry(name).or_default();
+                    let p = script.procs.entry((name, params.len())).or_default();
                     p.params = params;
                     p.by_ref = by_ref;
                     if body.is_some() {
@@ -656,7 +660,7 @@ impl Script {
             }
         }
         calls.retain(|(n, k)| {
-            !self.procs.get(n).is_some_and(|p| p.body.is_some()) && !BUILTINS.iter().any(|(b, a)| b == n && a == k)
+            !self.procs.get(&(n.clone(), *k)).is_some_and(|p| p.body.is_some()) && !BUILTINS.iter().any(|(b, a)| b == n && a == k)
         });
         calls.sort();
         calls.dedup();
@@ -718,11 +722,13 @@ impl Machine {
         Ok(false)
     }
 
-    /// Name each command group after its leader, as the original does from
-    /// the scenario's groups: `Tribune III (Caesarian)` is
-    /// `TRIBUNE_III_CAESARIAN`, `Masinissa` `MASINISSA`, its value the
-    /// group's id. These override `constant.ai`'s (Hannibal's lists leaders
-    /// under numbers no scenario's groups have).
+    /// Name each command group after its leader, where the scripts haven't
+    /// a constant of that name: `Tribune III (Caesarian)` is
+    /// `TRIBUNE_III_CAESARIAN`, its value the group's id. The original
+    /// defines none (Caesar's scripts that use them fail to compile there;
+    /// Hannibal's `constant.ai` lists its leaders under numbers no
+    /// scenario's groups have, and those stand); the rewrite lets Caesar's
+    /// plans run as their authors meant.
     pub fn define_groups(&mut self, leaders: impl IntoIterator<Item = (String, i32)>) {
         for (name, group) in leaders {
             let mut key = String::new();
@@ -732,7 +738,7 @@ impl Machine {
                 }
                 key.push_str(&word.to_ascii_uppercase());
             }
-            self.script.consts.insert(key, group);
+            self.script.consts.entry(key).or_insert(group);
         }
     }
 
@@ -744,7 +750,7 @@ impl Machine {
     /// Call `name`, returning also a script procedure's final values of
     /// its parameters.
     fn call_with(&mut self, name: &str, args: &[i32], host: &mut dyn Host) -> Result<(i32, Vec<i32>), Error> {
-        if let Some(p) = self.script.procs.get(name).cloned()
+        if let Some(p) = self.script.procs.get(&(name.to_string(), args.len())).cloned()
             && let Some(body) = &p.body
         {
             let mut frame: HashMap<String, i32> = p.params.iter().cloned().zip(args.iter().copied()).collect();
@@ -842,7 +848,7 @@ impl Machine {
             Expr::Call(name, args) => {
                 let vals = args.iter().map(|a| self.eval(a, frame, host)).collect::<Result<Vec<_>, _>>()?;
                 let (v, out) = self.call_with(name, &vals, host)?;
-                let by_ref = self.script.procs.get(name).map(|p| p.by_ref.clone()).unwrap_or_default();
+                let by_ref = self.script.procs.get(&(name.to_string(), args.len())).map(|p| p.by_ref.clone()).unwrap_or_default();
                 for ((arg, &r), &value) in args.iter().zip(&by_ref).zip(&out) {
                     if let (true, Expr::Var(n)) = (r, arg) {
                         self.set(n, value, frame);

@@ -28,7 +28,7 @@ fn movement(class: MoveClass) -> &'static [&'static str] {
     match class {
         Phalanx | HeavyInfantry | Legion => &["hilup1", "hilup2", "hilup3", "hilup4"],
         MediumInfantry => &["milup1", "milup2"],
-        HeavyCavalry | RomanCavalry | Lancer => &["hcav1", "hcav2", "hcav3"],
+        HeavyCavalry | RomanCavalry | BarbarianCavalry | Lancer => &["hcav1", "hcav2", "hcav3"],
         LightCavalry => &["cavlup1", "cavlup2", "cavlup3", "cavlup4"],
         Elephant => &["eleflup1", "eleflup2", "eleflup3"],
         Chariot => &["charlup1", "charlup2", "charlup3"],
@@ -42,7 +42,7 @@ fn missile(weapon: Weapon) -> (&'static [&'static str], &'static [&'static str])
     match weapon {
         Weapon::Bow | Weapon::MountedBow => (&["bowshot", "bowshot1"], &["arohitsa", "arohitsb", "arohitsc"]),
         Weapon::Sling => (&["sling"], &["rokhit1", "rokhit2", "rokhit3"]),
-        Weapon::Javelin | Weapon::MountedJavelin => (&["bowshot"], &["javhits1", "javhits2", "javhits3"]),
+        Weapon::Javelin | Weapon::MountedJavelin | Weapon::Axe => (&["bowshot"], &["javhits1", "javhits2", "javhits3"]),
         Weapon::Bolt => (&["oxybeles"], &["oxyhit", "oxyhit1", "oxyhit2"]),
     }
 }
@@ -76,6 +76,8 @@ pub struct Sound {
     /// The battle music's next piece (Alexander's `main`, `alex4`;
     /// Hannibal's `track1`..`track3`).
     next_piece: usize,
+    /// Caesar's music (two battle pieces, its own CD tracks).
+    caesar: bool,
     /// When the next river sound is due, if the battlefield has water.
     next_ambient: Option<std::time::Instant>,
     /// A sound played until stopped (the video's).
@@ -102,7 +104,7 @@ impl Sound {
             .is_some_and(|g| g != gboh_formats::game::Game::Alexander)
             .then(|| data_dir.parent().and_then(|p| crate::find_ci(p, "MUSIC")))
             .flatten();
-        Self { output, dir: data_dir.into(), files, cd, cache: HashMap::new(), seed: 1, volumes: [0.5; 3], music, playing: Music::Silent, next_piece: 0, next_ambient: None, data: None, channels: HashMap::new() }
+        Self { output, dir: data_dir.into(), files, cd, cache: HashMap::new(), seed: 1, volumes: [0.5; 3], music, playing: Music::Silent, next_piece: 0, caesar: gboh_formats::game::Game::detect(data_dir) == Some(gboh_formats::game::Game::Caesar), next_ambient: None, data: None, channels: HashMap::new() }
     }
 
     /// Set the volumes (0 to 1) of the effects, the ambient sounds and the
@@ -198,16 +200,19 @@ impl Sound {
 
     /// Hannibal's music from its CD (`HanSoundManager`, `FUN_0058486c`):
     /// the start screen track 2, the battle 3 to 5 in turn, a defeat 6, a
-    /// victory 7; GOG's copy has them as `MUSIC/TrackNN.ogg` beside `DATA`.
+    /// victory 7; Caesar's two battle pieces 3 and 4, a defeat 5, a victory
+    /// 6. GOG's copies have them as `MUSIC/TrackNN.ogg` beside `DATA`.
     fn cd_track(&self, name: &str) -> Option<PathBuf> {
         let music = self.cd.as_ref()?;
-        let n = match name {
-            "start" => 2,
-            "track1" => 3,
-            "track2" => 4,
-            "track3" => 5,
-            "defeat" => 6,
-            "victory" => 7,
+        let n = match (name, self.caesar) {
+            ("start", _) => 2,
+            ("track1", _) => 3,
+            ("track2", _) => 4,
+            ("track3", false) => 5,
+            ("defeat", false) => 6,
+            ("victory", false) => 7,
+            ("defeat", true) => 5,
+            ("victory", true) => 6,
             _ => return None,
         };
         crate::find_ci(music, &format!("Track{n:02}.ogg"))
@@ -240,7 +245,13 @@ impl Sound {
         if idle && matches!(self.playing, Music::Start | Music::Battle) {
             self.playing = Music::Battle;
             // Alexander's two pieces, or Hannibal's three
-            let pieces: &[&str] = if self.files.keys().any(|k| k.starts_with("track1")) { &["track1", "track2", "track3"] } else { &["main", "alex4"] };
+            let pieces: &[&str] = if self.caesar {
+                &["track1", "track2"]
+            } else if self.files.keys().any(|k| k.starts_with("track1")) {
+                &["track1", "track2", "track3"]
+            } else {
+                &["main", "alex4"]
+            };
             let piece = pieces[self.next_piece % pieces.len()];
             self.next_piece += 1;
             self.queue_music(piece);

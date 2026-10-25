@@ -218,7 +218,7 @@ pub fn terrain_hits(battle: &Battle, map: &Map, unit: usize, from: Hex, to: Hex)
     let Some(class) = MoveClass::of_type(u.type_id) else { return 0 };
     let group = match class {
         Skirmisher => 1,
-        HeavyCavalry | RomanCavalry | Lancer | LightCavalry => 2,
+        HeavyCavalry | RomanCavalry | BarbarianCavalry | Lancer | LightCavalry => 2,
         Elephant => 3,
         Chariot => 4,
         _ => 0,
@@ -231,7 +231,34 @@ pub fn terrain_hits(battle: &Battle, map: &Map, unit: usize, from: Hex, to: Hex)
     let hex_codes = map.hex_features(to.x as usize, to.y as usize);
     let side = from.neighbours().iter().position(|&n| n == to).map(|d| gboh_formats::map::Side::ALL[d]);
     let side_codes = side.map_or(&[][..], |s| map.side_features(from.x as usize, from.y as usize, s));
-    for k in 0..15u16 {
+    if map.caesar {
+        // Caesar's table (`FUN_0057d32f`, `0x64ce08`): woods, rough ground,
+        // marsh, a ditch (and a hit more onto a berm from off it), a stream,
+        // the lowest ground
+        const CAESAR: [(u16, [i32; 5]); 6] =
+            [(1, [1, 1, 1, 0, 99]), (2, [1, 0, 1, 0, 99]), (3, [1, 1, 1, 99, 99]), (4, [1, 1, 1, 1, 99]), (5, [1, 1, 1, 99, 99]), (6, [1, 1, 1, 1, 99])];
+        const LOWEST: [i32; 5] = [1, 1, 1, 99, 99];
+        let row = |k: u16| CAESAR.iter().find(|r| r.0 == k).map_or(0, |r| r.1[group]);
+        let add = |h: i32| if h < 99 { h } else { 0 };
+        for k in [1, 2, 3, 5] {
+            if hex_codes.contains(&k) {
+                hits += add(row(k));
+            }
+        }
+        if side_codes.contains(&10) {
+            hits += add(row(4));
+            if hex_codes.contains(&4) && !map.hex_features(from.x as usize, from.y as usize).contains(&4) {
+                hits += 1;
+            }
+        }
+        if side_codes.contains(&6) {
+            hits += add(row(6));
+        }
+        if map.elevation_at(to.x as usize, to.y as usize) == 0 {
+            hits += add(LOWEST[group]);
+        }
+    }
+    for k in (0..15u16).filter(|_| !map.caesar) {
         let present = match k {
             0..=5 | 10 => hex_codes.contains(&k),
             6 | 8 | 9 | 11 => side_codes.contains(&k),
@@ -305,7 +332,7 @@ fn withdrawers(battle: &Battle, map: &Map, mover: usize) -> (Vec<usize>, Vec<usi
     use MoveClass::*;
     let m = &battle.units[mover];
     let m_class = MoveClass::of_type(m.type_id);
-    let m_horse = matches!(m_class, Some(HeavyCavalry | RomanCavalry | Lancer | LightCavalry));
+    let m_horse = m_class.is_some_and(MoveClass::horse);
     let hannibal = battle.hannibal();
     let (mut units, mut leaders) = (Vec::new(), Vec::new());
     let near: Vec<Hex> = battle.hexes(mover).iter().flat_map(|h| h.neighbours()).collect();
@@ -327,7 +354,7 @@ fn withdrawers(battle: &Battle, map: &Map, mover: usize) -> (Vec<usize>, Vec<usi
             }
             let eligible = match MoveClass::of_type(o.type_id) {
                 // Hannibal's: horse withdraw only before foot
-                Some(HeavyCavalry | RomanCavalry | LightCavalry | Lancer) if hannibal => !m_horse,
+                Some(HeavyCavalry | RomanCavalry | BarbarianCavalry | LightCavalry | Lancer) if hannibal => !m_horse,
                 Some(HeavyCavalry | LightCavalry) => true,
                 Some(Lancer) => !m_horse,
                 Some(Skirmisher) => matches!(m_class, Some(HeavyInfantry | Phalanx)),
@@ -484,7 +511,7 @@ pub fn volley(battle: &mut Battle, shooter: usize, target: usize, rng: &mut Borl
     }
     let Some((weapon, left)) = s.missile else { return Err(Refused::Unreachable) };
     let range = s.hex.distance(t.hex);
-    if s.fired || left == 0 || !arc(s.hex, s.facing, weapon.range()).contains(&t.hex) {
+    if s.fired || left == 0 || !arc(s.hex, s.facing, battle.missile_range(shooter)).contains(&t.hex) {
         return Err(Refused::Unreachable);
     }
     if MoveClass::of_type(s.type_id) != Some(MoveClass::Oxybeles) && ordered_again(battle, shooter) {
@@ -499,6 +526,11 @@ pub fn volley(battle: &mut Battle, shooter: usize, target: usize, rng: &mut Borl
         from_front: arc(t.hex, t.facing, 1).contains(&s.hex),
         moved: s.mp < s.max_mp,
         target_cataphract: gboh_formats::units::cataphract(t.type_id),
+        // (Caesar's: ballistas by their own table; a shooter that rallied
+        // +1; the barbarians' bows −1, `FUN_00548d26` 🟡 its wiring of the
+        // ballista and cataphract arguments read as meant)
+        ballista: gboh_formats::units::title(s.type_id).is_some_and(|t| t.contains("Ballista")),
+        bonus: s.rallied as i32 - (s.nation == 11 && weapon == crate::missile::Weapon::Bow) as i32,
     };
     let hits = v.resolve(rng.next() % 10).hits;
     battle.units[shooter].missile = Some((weapon, left - 1));
@@ -625,8 +657,12 @@ impl CommandPoints {
             return;
         }
         self.last = Some(unit);
-        let own = battle.units[unit].group == battle.units[leader].group;
-        self.used = (self.used + if own { 1 } else { 2 }).min(self.max);
+        let l = &battle.units[leader];
+        let own = battle.units[unit].group == l.group;
+        // (Caesar's staff leaders, whose own group has no units, pay no
+        // more for another's, `FUN_0056b057`)
+        let staff = battle.caesar() && !battle.units.iter().any(|u| u.leader.is_none() && u.group == l.group && u.side == l.side);
+        self.used = (self.used + if own || staff { 1 } else { 2 }).min(self.max);
     }
 
     /// A line command uses all remaining points.
@@ -669,6 +705,7 @@ mod tests {
             wounded: false,
             reordered: false,
             reorder_hit: false,
+            rallied: false,
             done: false,
         }
     }
@@ -682,12 +719,13 @@ mod tests {
             unk_b: 1,
             elevation: vec![1; 144],
             cells: vec![Vec::new(); (2 * 12 + 2) * (4 * 12 + 1)],
+            caesar: false,
         }
     }
 
     #[test]
     fn about_face_reverses_and_swaps() {
-        let mut b = Battle { units: vec![unit(17, Hex::new(5, 5), 2, 0, None)] };
+        let mut b = Battle { units: vec![unit(17, Hex::new(5, 5), 2, 0, None)], wind: false };
         b.units[0].mp = 4;
         let second = b.units[0].second_hex().unwrap();
         about_face(&mut b, 0).unwrap();
@@ -710,7 +748,7 @@ mod tests {
 
     #[test]
     fn turning_costs_a_point_but_skirmishers_only_once() {
-        let mut b = Battle { units: vec![unit(31, Hex::new(5, 5), 3, 0, None), unit(2, Hex::new(8, 8), 3, 0, None)] };
+        let mut b = Battle { units: vec![unit(31, Hex::new(5, 5), 3, 0, None), unit(2, Hex::new(8, 8), 3, 0, None)], wind: false };
         let m = map();
         turn(&mut b, &m, 0, true).unwrap();
         turn(&mut b, &m, 0, true).unwrap();
@@ -723,7 +761,7 @@ mod tests {
     #[test]
     fn two_hex_units_pivot() {
         let m = map();
-        let mut b = Battle { units: vec![unit(17, Hex::new(5, 5), 3, 0, None)] };
+        let mut b = Battle { units: vec![unit(17, Hex::new(5, 5), 3, 0, None)], wind: false };
         let second = b.units[0].second_hex().unwrap();
         // right turn: the second hex stays
         turn(&mut b, &m, 0, false).unwrap();
@@ -740,6 +778,7 @@ mod tests {
         use crate::missile::Weapon;
         let mut b = Battle {
             units: vec![unit(10, Hex::new(2, 4), 3, 0, None), unit(31, Hex::new(4, 4), 7, 0, None)],
+            wind: false,
         };
         b.units[1].side = 1;
         b.units[0].missile = Some((Weapon::Bow, 10));
@@ -761,6 +800,7 @@ mod tests {
         // the mover faces 3 and walks east past a javelin unit facing it
         let mut b = Battle {
             units: vec![unit(31, Hex::new(2, 5), 3, 0, None), unit(2, Hex::new(5, 5), 7, 0, None)],
+            wind: false,
         };
         b.units[1].side = 1;
         b.units[1].missile = Some((Weapon::Javelin, 3));
@@ -773,7 +813,7 @@ mod tests {
     #[test]
     fn resupply_only_empty_units() {
         use crate::missile::Weapon;
-        let mut b = Battle { units: vec![unit(2, Hex::new(2, 2), 3, 0, None), unit(2, Hex::new(3, 3), 3, 0, None)] };
+        let mut b = Battle { units: vec![unit(2, Hex::new(2, 2), 3, 0, None), unit(2, Hex::new(3, 3), 3, 0, None)], wind: false };
         b.units[0].missile = Some((Weapon::Javelin, 0));
         b.units[1].missile = Some((Weapon::Javelin, 2));
         let r = resupply(&mut b, &[0, 1], &mut BorlandRand::new(5));
@@ -790,7 +830,7 @@ mod tests {
         let (gx, gy) = Map::hex_cell(target.x as usize, target.y as usize);
         let gw = m.grid_width();
         m.cells[gy as usize * gw + gx as usize] = vec![1];
-        let b = Battle { units: vec![unit(31, Hex::new(2, 5), 3, 0, None), unit(2, Hex::new(2, 5), 3, 0, None), unit(8, Hex::new(2, 5), 3, 0, None)] };
+        let b = Battle { units: vec![unit(31, Hex::new(2, 5), 3, 0, None), unit(2, Hex::new(2, 5), 3, 0, None), unit(8, Hex::new(2, 5), 3, 0, None)], wind: false };
         assert_eq!(terrain_hits(&b, &m, 0, Hex::new(2, 5), target), 1);
         assert_eq!(terrain_hits(&b, &m, 1, Hex::new(2, 5), target), 0);
         // horses next to an enemy elephant: 2 more
@@ -812,6 +852,7 @@ mod tests {
         // always passes and backs away
         let mut b = Battle {
             units: vec![unit(31, Hex::new(2, 5), 3, 0, None), unit(8, Hex::new(5, 5), 7, 0, None)],
+            wind: false,
         };
         b.units[1].side = 1;
         b.units[1].tq = 9;
@@ -821,7 +862,7 @@ mod tests {
 
     #[test]
     fn recovery_chances_follow_the_leader() {
-        let mut b = Battle { units: vec![unit(31, Hex::new(2, 2), 3, 0, None)] };
+        let mut b = Battle { units: vec![unit(31, Hex::new(2, 2), 3, 0, None)], wind: false };
         let mut removed = [0; 4];
         let mut rng = BorlandRand::new(9);
         for _ in 0..4000 {
@@ -843,6 +884,7 @@ mod tests {
                 unit(31, Hex::new(2, 1), 3, 1, None),
                 unit(31, Hex::new(3, 1), 3, 2, None),
             ],
+            wind: false,
         };
         let mut c = CommandPoints::new(&b, 0);
         c.unit_done(&b, 0, 1);

@@ -514,6 +514,9 @@ struct Viewer {
     campaign: Option<gboh_game::campaign::Campaign>,
     campaign_art: Option<campaign::CampaignArt>,
     campaign_map: Option<campaign::MapState>,
+    /// The campaign map's last press: when and where (to tell a
+    /// double-click).
+    map_press: Option<(std::time::Instant, (i32, i32))>,
     campaign_results: Option<gboh_game::campaign::Results>,
     /// A network game: setting up or under way.
     net: Option<NetGame>,
@@ -899,9 +902,6 @@ impl Viewer {
                 setup::Outcome::Play { .. } | setup::Outcome::Campaign | setup::Outcome::Multiplayer if !self.game.is_none_or(|g| g.playable()) => {
                     self.notice(&["The rewrite does not play this game's battles yet."]);
                 }
-                setup::Outcome::Campaign if gboh_formats::game::Game::detect(&self.data_dir) == Some(gboh_formats::game::Game::Caesar) => {
-                    self.notice(&["The rewrite does not play this game's campaign yet."]);
-                }
                 setup::Outcome::Play { scenario, computer, levels } => {
                     if let Some(n) = &mut self.net {
                         // a network game: both armies played by hand, once
@@ -1009,6 +1009,25 @@ impl Viewer {
                     self.plain = None;
                     self.finish_leader();
                 }
+                (Asked::Group(order), Some(a @ (1 | 2))) => {
+                    if d.checked.contains(&17) && self.prefs.confirm_group {
+                        self.prefs.confirm_group = false;
+                        self.save_prefs();
+                    }
+                    self.plain = None;
+                    if a == 1 && self.play.as_mut().is_some_and(|p| p.group_order(order)) {
+                        self.changed();
+                    }
+                }
+                (Asked::Group(_), None) => return,
+                (Asked::Notice(play::Notice::Elite { .. }), Some(a @ (1 | 2))) => {
+                    self.plain = None;
+                    if let Some(p) = &mut self.play {
+                        p.elite(a == 1);
+                    }
+                    self.changed();
+                }
+                (Asked::Notice(play::Notice::Elite { .. }), None) => return,
                 (Asked::Notice(play::Notice::NoOrders), None) => {
                     self.set_quiet_finish(d.checked.contains(&17));
                     self.plain = None;
@@ -1472,7 +1491,8 @@ impl Viewer {
                             let kind = match w {
                                 Bow | MountedBow => 64,
                                 Sling => 65,
-                                Javelin | MountedJavelin => 66,
+                                // (🟡 Caesar's axes named as javelins)
+                                Javelin | MountedJavelin | Axe => 66,
                                 Bolt => 67,
                             };
                             (kind, w.range(), w.supply(), left)
@@ -1505,6 +1525,10 @@ impl Viewer {
                 self.command(247);
                 return;
             }
+            GroupAttack => {
+                self.command(259);
+                return;
+            }
             BackwardMovement => p.arm_backward(),
             _ => false,
         };
@@ -1534,6 +1558,7 @@ impl Viewer {
                 Undo => p.can_undo(),
                 GroupMove => p.game.group_move_refused().is_none(),
                 LineExtension => p.game.can_extend_line(),
+                GroupAttack => p.game.rules.newer() && p.game.points.as_ref().is_some_and(|c| c.used == 0),
                 BackwardMovement => p.can_back(),
                 _ => true,
             }
@@ -1547,7 +1572,7 @@ impl Viewer {
             209 | 224 => !p.over && p.leader().is_some(),
             212 => p.game.group_move_refused().is_none(),
             247 => p.game.can_extend_line(),
-            248 | 259 | 260 => p.game.rules == gboh_game::game::Rules::Hannibal && p.game.points.as_ref().is_some_and(|c| c.used == 0),
+            248 | 259 | 260 => p.game.rules.newer() && p.game.points.as_ref().is_some_and(|c| c.used == 0),
             246 => p.can_back(),
             222 | 213 | 214 | 220 | 221 => selected,
             225 => tool(hud::Tool::UnitDetails),
@@ -1598,14 +1623,14 @@ impl Viewer {
             }
             // Hannibal's: line extension, group retreat, attack, restore
             // cohesion
-            246 if self.play.as_ref().is_some_and(|p| p.game.rules == gboh_game::game::Rules::Hannibal) => {
+            246 if self.play.as_ref().is_some_and(|p| p.game.rules.newer()) => {
                 if self.my_turn()
                     && let Some(p) = &mut self.play
                 {
                     p.arm_backward();
                 }
             }
-            247 | 248 | 259 | 260 if self.play.as_ref().is_some_and(|p| p.game.rules == gboh_game::game::Rules::Hannibal) => {
+            247 | 248 | 259 | 260 if self.play.as_ref().is_some_and(|p| p.game.rules.newer()) => {
                 use play::GroupOrder::*;
                 let order = match id {
                     247 => LineExtension,
@@ -1613,7 +1638,12 @@ impl Viewer {
                     259 => Attack,
                     _ => RestoreCohesion,
                 };
-                if self.my_turn() && self.play.as_mut().is_some_and(|p| p.group_order(order)) {
+                if !self.my_turn() {
+                } else if self.prefs.confirm_group {
+                    // "this uses all of the leader's orders": OK or Cancel
+                    self.plain = Some((hud::Plain { name: "GROUPCOMMANDCONFIRM", ..Default::default() }, Asked::Group(order)));
+                    self.redraw();
+                } else if self.play.as_mut().is_some_and(|p| p.group_order(order)) {
                     self.changed();
                 }
             }
@@ -2001,6 +2031,11 @@ impl Viewer {
     /// A testing click or drag (see `GBOH_CLICKS`), as the mouse makes it.
     fn script_step(&mut self) {
         let Some((from, to)) = self.script.pop_front() else { return };
+        // (a click ends the intro, as the mouse's does)
+        if self.intro {
+            self.end_intro();
+            return;
+        }
         let at = |(x, y): (f64, f64)| PhysicalPosition::new(x, y);
         self.cursor = at(from);
         if !self.map_drag(true) {
@@ -2244,8 +2279,11 @@ impl Viewer {
     /// battles queued).
     fn start_campaign(&mut self) {
         let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_secs() as u32);
-        let hannibal = gboh_formats::game::Game::detect(&self.data_dir) == Some(gboh_formats::game::Game::Hannibal);
-        let mut c = if hannibal { gboh_game::campaign::Campaign::new_hannibal(seed) } else { gboh_game::campaign::Campaign::new(seed) };
+        let mut c = match gboh_formats::game::Game::detect(&self.data_dir) {
+            Some(gboh_formats::game::Game::Hannibal) => gboh_game::campaign::Campaign::new_hannibal(seed),
+            Some(gboh_formats::game::Game::Caesar) => gboh_game::campaign::Campaign::new_caesar(seed),
+            _ => gboh_game::campaign::Campaign::new(seed),
+        };
         let next = c.after_battle(true);
         self.campaign = Some(c);
         self.campaign_next(next);
@@ -2271,9 +2309,15 @@ impl Viewer {
                 let first = c.round == 1;
                 let over = c.round > gboh_game::campaign::ROUNDS;
                 let kind = c.kind;
-                let mut log: Vec<String> = c.log.iter().map(|e| campaign::describe(e, &names, kind)).collect();
+                // (Caesar's messages are the game's own text)
+                let strings = crate::ui::exe_resources(&self.data_dir);
+                let word = |e: &gboh_game::campaign::Event| match e {
+                    gboh_game::campaign::Event::Message(id) => strings.as_ref().and_then(|r| r.string(*id)).unwrap_or_default(),
+                    _ => campaign::describe(e, &names, kind),
+                };
+                let mut log: Vec<String> = c.log.iter().map(word).filter(|l| !l.is_empty()).collect();
                 if log.is_empty() {
-                    log = events.iter().map(|e| campaign::describe(e, &names, kind)).collect();
+                    log = events.iter().map(word).filter(|l| !l.is_empty()).collect();
                 }
                 // the first round opens with Battle (Macedon's battles are
                 // queued), the others with Subjugate until the army moves
@@ -2291,11 +2335,18 @@ impl Viewer {
                 // what to do next, in the rewrite's words (the original
                 // left it to its help)
                 if !over {
-                    log.push(if first && kind == gboh_game::campaign::Kind::Alexander { "Press Battle to fight for Macedon.".into() } else { "Drag the army's flag to march on a province, or press Subjugate to stay.".into() });
+                    log.push(match kind {
+                        gboh_game::campaign::Kind::Alexander if first => "Press Battle to fight for Macedon.".into(),
+                        gboh_game::campaign::Kind::Caesar => "Drag Caesar's flag to march on a province, then press Finish.".into(),
+                        _ => "Drag the army's flag to march on a province, or press Subjugate to stay.".into(),
+                    });
                 }
                 let scroll = changes.front().map_or(0, |&(p, _)| self.campaign_art().centre_on(p));
                 // (Hannibal's map always opens on Subjugate)
-                let first = first && kind == gboh_game::campaign::Kind::Alexander;
+                // (Caesar's Finish is always there)
+                let first = (first && kind == gboh_game::campaign::Kind::Alexander) || kind == gboh_game::campaign::Kind::Caesar;
+                let here = self.campaign.as_ref().map_or(0, |c| c.current);
+                let scroll = if kind == gboh_game::campaign::Kind::Caesar { self.campaign_art().centre_on(here) } else { scroll };
                 self.campaign_map = Some(campaign::MapState { battle: first, subjugate: !first, log, changes, scroll, ..Default::default() });
                 if over {
                     let next = self.campaign.as_mut().map(|c| c.end_round());
@@ -2336,6 +2387,7 @@ impl Viewer {
     fn campaign_battle(&mut self, b: usize) -> Result<()> {
         let (file, player) = match &self.campaign {
             Some(c) if c.kind == gboh_game::campaign::Kind::Hannibal => (gboh_game::campaign::HANNIBAL_BATTLES[b], c.player_nation()),
+            Some(c) if c.kind == gboh_game::campaign::Kind::Caesar => (gboh_game::campaign::CAESAR_BATTLES[b], c.player_nation()),
             _ => (setup::SCENARIOS[b], MACEDONIAN),
         };
         let data = find_ci(&self.data_dir, file).and_then(|p| std::fs::read(p).ok()).context("scenario not found")?;
@@ -2345,7 +2397,20 @@ impl Viewer {
         let campaign = self.campaign.take();
         let result = self.start_battle(file, computer, levels);
         self.campaign = campaign;
+        self.campaign_penalty();
         result
+    }
+
+    /// Caesar's campaign: his troops' quality lowered by the riots and
+    /// hunger met on the way (`GetCaesarianPenalty`; at least 1).
+    fn campaign_penalty(&mut self) {
+        let (Some(c), Some(p)) = (&self.campaign, &mut self.play) else { return };
+        if c.kind != gboh_game::campaign::Kind::Caesar || c.penalty == 0 {
+            return;
+        }
+        for u in p.game.battle.units.iter_mut().filter(|u| u.nation == 9 && u.leader.is_none()) {
+            u.tq = u.tq.saturating_sub(c.penalty).max(1);
+        }
     }
 
     /// A button of the campaign map.
@@ -2397,6 +2462,21 @@ impl Viewer {
         let (cx, cy) = ((self.cursor.x as f32 / self.scale) as i32, (self.cursor.y as f32 / self.scale) as i32);
         let (Some(art), Some(c), Some(m)) = (&self.campaign_art, &self.campaign, &self.campaign_map) else { return false };
         if pressed {
+            // a double-click splits or merges a garrison icon (once the
+            // opening's changes are over)
+            let double = self.map_press.is_some_and(|(t, (px, py))| t.elapsed().as_millis() < 400 && (px - cx).abs() < 5 && (py - cy).abs() < 5);
+            self.map_press = Some((std::time::Instant::now(), (cx, cy)));
+            if double
+                && m.changes.is_empty()
+                && let Some(m) = &mut self.campaign_map
+                && art.split(c, m, w, h, cx, cy)
+            {
+                self.map_press = None;
+                self.update_hud();
+                self.redraw();
+                return true;
+            }
+            let (Some(art), Some(c), Some(m)) = (&self.campaign_art, &self.campaign, &self.campaign_map) else { return false };
             let Some(what) = art.press(c, m, w, h, cx, cy) else { return false };
             let at = art.to_dialog(w, h, cx, cy);
             if let Some(m) = &mut self.campaign_map {
@@ -2417,11 +2497,22 @@ impl Viewer {
                         m.battle = c.battle_offered();
                         m.subjugate = !m.battle;
                         let name = art.province_names.get(p).cloned().unwrap_or_default();
-                        m.log.push(if m.battle { format!("Press Battle to fight for {name}.") } else { format!("Press Subjugate to hold {name} this round.") });
+                        m.log.push(match c.kind {
+                            gboh_game::campaign::Kind::Caesar if c.battle_offered() => format!("Press Finish to fight the Pompeians in {name}."),
+                            gboh_game::campaign::Kind::Caesar => format!("Press Finish to march into {name}."),
+                            _ if m.battle => format!("Press Battle to fight for {name}."),
+                            _ => format!("Press Subjugate to hold {name} this round."),
+                        });
+                        if c.kind == gboh_game::campaign::Kind::Caesar {
+                            (m.battle, m.subjugate) = (true, false);
+                        }
                     }
                 }
-                (campaign::Dragging::Unit { from, kind, value }, Some(p)) => {
-                    c.move_units(from, p, kind, value);
+                // (both garrisons regroup)
+                (campaign::Dragging::Unit { from, kind, value }, Some(p)) if c.move_units(from, p, kind, value) => {
+                    for q in [from, p] {
+                        m.split.remove(&(q, kind));
+                    }
                 }
                 _ => {}
             }
@@ -2880,6 +2971,7 @@ impl Viewer {
         self.net = None;
         self.deploy_next = save.deploy;
         self.start_battle(&save.scenario, save.computer, save.levels)?;
+        self.campaign_penalty();
         if let Some(p) = &mut self.play {
             p.replay(&save.orders);
             self.autosaved = p.game.activation.turn;
@@ -3024,6 +3116,11 @@ impl Viewer {
                 ),
                 play::Notice::NoOrders if !self.prefs.finish_leader_dialog || p.demo => None,
                 play::Notice::NoOrders => plain("LEADERALMOSTFINISHED", Vec::new()),
+                // (Caesar's is the same dialog under its own name)
+                play::Notice::Elite { .. } => plain(
+                    if gboh_formats::game::Game::detect(&self.data_dir) == Some(gboh_formats::game::Game::Caesar) { "JCELITEINITDLG" } else { "HANELITEINITDLG" },
+                    Vec::new(),
+                ),
             };
             if let Some(d) = shown {
                 self.plain = Some((d, Asked::Notice(notice)));
@@ -3754,6 +3851,7 @@ fn main() -> Result<()> {
         campaign: None,
         campaign_art: None,
         campaign_map: None,
+        map_press: None,
         campaign_results: None,
         net: None,
         video: None,
@@ -3847,6 +3945,8 @@ enum Asked {
     Momentum,
     /// Telling the player something.
     Notice(play::Notice),
+    /// Confirming one of Hannibal's group commands.
+    Group(play::GroupOrder),
     /// Saving (or loading) a game, with the saves found: file and
     /// description.
     Files { save: bool, entries: Vec<(String, String)> },
