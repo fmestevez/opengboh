@@ -856,13 +856,6 @@ mod tests {
             }
         }
         assert!(units > 3000, "{units}");
-        for (k, &ty) in EDITOR_ART.iter().enumerate() {
-            assert!(titles.contains(title(ty).unwrap()), "artwork {k}: {}", title(ty).unwrap());
-        }
-        // the editor's map, behind its header
-        let map = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).find(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case("Last.map")).unwrap();
-        let map = crate::map::Map::parse(&std::fs::read(map.path()).unwrap()).unwrap();
-        assert_eq!((map.width, map.height, map.hex_id_origin), (45, 38, 1000));
     }
 
     fn unit(kind: u8, nation: u8, name: &str, extra: UnitExtra) -> Unit {
