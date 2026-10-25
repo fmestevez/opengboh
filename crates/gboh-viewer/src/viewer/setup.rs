@@ -106,6 +106,14 @@ impl Viewer {
         self.title = String::from("The Great Battles of Alexander");
         self.save_name = None;
         self.sound.set_ambient(false);
+        // back to the game selected: the editor (on Caesar's data) or
+        // another game's battle from All Battles switched for a while
+        // (not when opened on a data folder, with no game selected)
+        let selected = self.settings.game_in_force(&library::imported());
+        if let Some(t) = selected.filter(|&t| self.game.is_some() && self.game != Some(t)) {
+            self.switch_game(t);
+            return;
+        }
         self.sound.set_music(sound::Music::Start);
         self.setup = Some(setup::Setup::new(&self.data_dir));
         self.show_setup();
