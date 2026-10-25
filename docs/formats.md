@@ -2123,7 +2123,8 @@ The editor (the start screen's **Scenario Editor**, on Caesar's data):
 more than a level apart: where the original refuses such a level, the land
 around is raised or lowered to slope down to it (water is never changed
 so; a level too high beside water is refused). Streams and walls go on the
-side of the hex nearest the click; its **Properties** brush shows a hex's level and
+side of the hex nearest the pointer, and on along a drag (or off, if the
+click that began it took one off); its **Properties** brush shows a hex's level and
 ground and sets its six sides, **Clear hex** clears them, and the map
 resizes (keeping its terrain, refused if units would fall off; the width
 odd as in the original, but up to 89 hexes a side, the games' largest,

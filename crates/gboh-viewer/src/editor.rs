@@ -155,6 +155,9 @@ pub struct EditorScreen {
     setting_hex: Option<usize>,
     /// The hex last painted in a drag.
     painted: Option<(usize, usize)>,
+    /// A side brush's drag: whether it puts the feature on (else takes it
+    /// off, as the click that began it did), and the side last done.
+    side_drag: Option<(bool, (usize, usize), MapSide)>,
     /// A redraw owed (with the terrain if `true`), done once the window's
     /// events are handled ([`EditorScreen::flush`]), so a drag paints as
     /// fast as the mouse moves.
@@ -221,6 +224,7 @@ impl EditorScreen {
             group: None,
             setting_hex: None,
             painted: None,
+            side_drag: None,
             stale: None,
             moved: false,
             inspected: None,
@@ -643,6 +647,8 @@ impl EditorScreen {
                 Brush::Side(code) => match side {
                     Some(s) => {
                         self.ed.toggle_side(hx, hy, s, code);
+                        // (a drag from here goes on putting on, or taking off)
+                        self.side_drag = Some((self.ed.has_side(hx, hy, s, code), (hx, hy), s));
                         Ok(true)
                     }
                     None => Err("click nearer the hex side".into()),
@@ -963,7 +969,7 @@ impl EditorScreen {
             return;
         }
         let brush = BRUSHES[self.brush].0;
-        if self.tab != Tab::Map || !matches!(brush, Brush::Hex(_) | Brush::ClearHex) {
+        if self.tab != Tab::Map || !matches!(brush, Brush::Hex(_) | Brush::ClearHex | Brush::Side(_)) {
             return self.scroll_by(from.0 - to.0, from.1 - to.1, w, h);
         }
         // every hex on the way (the mouse reports a fast drag in leaps)
@@ -971,7 +977,21 @@ impl EditorScreen {
         let steps = (dx.abs().max(dy.abs()) / 6).max(1);
         for k in 1..=steps {
             let (x, y) = (from.0 + dx * k / steps, from.1 + dy * k / steps);
-            let Some((hex, _)) = self.hex_at(x, y).filter(|_| !Self::on_panel(x, w)) else { continue };
+            let Some((hex, side)) = self.hex_at(x, y).filter(|_| !Self::on_panel(x, w)) else { continue };
+            // a side brush: the side nearest the pointer, on or off
+            if let (Brush::Side(code), Some(s), Some((on, last_hex, last_side))) = (brush, side, self.side_drag) {
+                if (hex, s) != (last_hex, last_side) {
+                    self.side_drag = Some((on, hex, s));
+                    if self.ed.has_side(hex.0, hex.1, s, code) != on {
+                        self.ed.toggle_side(hex.0, hex.1, s, code);
+                        self.stale = Some(true);
+                    }
+                }
+                continue;
+            }
+            if matches!(brush, Brush::Side(_)) {
+                continue;
+            }
             if self.painted == Some(hex) {
                 continue;
             }
@@ -1005,6 +1025,7 @@ impl EditorScreen {
     /// The end of a drag.
     pub fn drag_end(&mut self) {
         self.painted = None;
+        self.side_drag = None;
     }
 
     /// Typing into the field in focus: returns whether it took the key.
@@ -1115,6 +1136,25 @@ mod tests {
         assert!(e.flush() && e.stale.is_none());
         e.drag_end();
         assert!((6..=12).all(|y| e.ed.ground(4, y) == Paint::Woods), "{}", e.message);
+        // a stream drawn along a drag, then taken off along it (on a blank
+        // map)
+        e.act(Act::NewBlank);
+        e.tab = Tab::Map;
+        e.brush = BRUSHES.iter().position(|b| b.0 == Brush::Side(STREAM)).unwrap();
+        let streams = |e: &EditorScreen, x: usize| (5..=13).flat_map(|y| MapSide::ALL.map(|s| (y, s))).filter(|&(y, s)| e.ed.has_side(x, y, s, STREAM)).count();
+        let sx = 14;
+        assert_eq!(streams(&e, sx), 0);
+        let ((sx0, sy0), (sx1, sy1)) = (at(&e, sx, 6), at(&e, sx, 12));
+        let (sx0, sx1) = (sx0 + 20, sx1 + 20);
+        e.click(sx0, sy0, ww, wh);
+        e.drag((sx0, sy0), (sx1, sy1), ww, wh);
+        e.drag_end();
+        e.flush();
+        assert!(streams(&e, sx) >= 5, "{} sides", streams(&e, sx));
+        e.click(sx0, sy0, ww, wh);
+        e.drag((sx0, sy0), (sx1, sy1), ww, wh);
+        e.drag_end();
+        assert_eq!(streams(&e, sx), 0);
         // a level slopes the ground around it
         e.brush = BRUSHES.iter().position(|b| b.0 == Brush::Hex(Paint::Level(3))).unwrap();
         let (x, y) = at(&e, 8, 8);
