@@ -11,6 +11,7 @@ pub mod hlp;
 pub mod map;
 pub mod pal;
 pub mod pe;
+pub mod psf;
 mod read;
 pub mod rtf;
 pub mod scn;

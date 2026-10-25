@@ -1,9 +1,12 @@
 # Data formats
 
-Notes on the file formats used by Erudite's *Great Battles of History* engine.
-Verified against *The Great Battles of Alexander* (1997, patch 1.3, GOG);
-Hannibal and Caesar not yet checked. All values little-endian. Status: ✅ understood,
-🟡 partial, ❓ not yet looked at.
+Notes on the file formats used by Erudite's *Great Battles of History* engine,
+and the rules as its games implement them. The sections up to *Hannibal and
+Caesar* are verified against *The Great Battles of Alexander* (1997, patch
+1.3, GOG); Hannibal's and Caesar's differences (GOG releases) follow there,
+then the rule options, the *Collector's Edition* scenario editor's files,
+and opengboh's own folder. All values little-endian. Status: ✅
+understood, 🟡 partial, ❓ not yet looked at.
 
 ## EIF: sprite containers ✅
 
@@ -329,6 +332,10 @@ arms a volley that the next click on an enemy fires.
 
 ## Other files ❓
 
+Alexander's `DATA` (Hannibal's and Caesar's hold the same kinds; Caesar's
+also the *Collector's Edition* editor's `.psf` packages and its unit
+catalogue, `Scenario Editor/MainUnits.unt`, see the last sections):
+
 | ext | count | notes |
 |---|---|---|
 | `.MAP` | 12 | battle maps, see below 🟡 |
@@ -349,7 +356,10 @@ cell  := u16 count, u16 feature[count]       (count <= 12)
 ```
 
 All 11 battle maps (plus an unused `parait.map`, Paraitacene) parse with no
-bytes left over. `EIFFILE.MAP` is a different file (resource index).
+bytes left over. `EIFFILE.MAP` is a different file (resource index). Maps
+saved by the *Collector's Edition* editor have a u32 0 and a 16-byte GUID
+in front (see the last sections). The games' maps measure up to 89 hexes
+wide (Trasimene) and 85 high (Ilipa).
 
 * Hexes are in columns; **odd columns** are shifted down half a hex.
 * `elevation`: 0 = water (sea/river), 1..5 = land levels. (The manual says major
@@ -360,8 +370,9 @@ bytes left over. `EIFFILE.MAP` is a different file (resource index).
   running game; an earlier reading without the `+2` offsets put every
   feature one hex off. The original computes the column as `id / 50 + 2`
   (`id = 100x + y`, `FUN_004b1c4a`), so from `y = 50` on it is `2x + 3`;
-  only Paraitacene (65 hexes tall) reaches that, and its woods there are
-  only found with this rule (checked in game). Its six sides are the cells at offsets
+  of Alexander's maps only Paraitacene (65 hexes tall) reaches that, and
+  its woods there are only found with this rule (checked in game).
+  Hannibal's Ilipa (85) and Caesar's 66-hex maps reach it too. Its six sides are the cells at offsets
   N `(0,-2)`, NE `(1,-1)`, SE `(1,1)`, S `(0,2)`, SW `(-1,1)`, NW `(-1,-1)`.
 * Hex ids (used by scenarios) are `hex_id_origin + x*100 + y`; the origin is
   1000, or 3600 for Lyginus and Pelium. `unk_b` is mostly 1.
@@ -537,6 +548,10 @@ is a **minor stream**, not a wall. Overlays (bushes, stones, trees) from
 From the loader (`ALEXLOG3.CPP`) and the per-class `Load` methods. All 11
 scenarios (including the unused `parait.scn`) parse to the last byte, every
 unit lands on its map, and the leader count matches the number of kind-0 units.
+This is Alexander's layout; Hannibal's and Caesar's differ in the unit
+records (see *Hannibal and Caesar*), and the *Collector's Edition* editor
+writes a layout of its own (see the last sections). `gboh_formats::scn`
+tells them apart by their bytes.
 
 ```text
 file    := u16 n_leaders, leader[n_leaders], u16 unk (skipped by the game),
@@ -1604,6 +1619,11 @@ key or click ends them. The intro plays at start while Show Intro Video is
 ticked. The title
 screen plays the `start` music.
 
+opengboh adds four buttons of its own, top left: Content Manager (import
+the games), Settings (Select Game, the preferences, the rule options), All
+Battles (every imported game's battles and campaigns, and the editor's
+scenarios, in one list) and Scenario Editor (see the last sections).
+
 ## Campaign
 
 From the campaign object (`AlexCampaignGame`, `CAMPAIGN.CPP`); the rules
@@ -2087,6 +2107,11 @@ scenarios by Caesar's rules, and has its own editor after the original.
 - **Maps**: the games' layout behind a u32 0 and a GUID.
 - **The unit catalogue** (`MainUnits.unt`): a u32 count and as many unit
   records, 2,632 units of all twelve nations.
+- **Packages** (`.psf`, `gboh_formats::psf`): the editor's way of passing
+  a scenario around. A u8 1 and a u8 0, an i32 index of the last file,
+  each file's name (u8 length and bytes) and u32 size, then the files'
+  bytes in that order: map, scenario, home plan, visitor plan. The game
+  doesn't read them.
 - **AI plans**: written by the editor on saving, one per side
   (`<name>_H1.AI`, `<name>_V1.AI`), from its groups' orders: each group
   carries out its orders in turn, each for its turns (a move until the hex
@@ -2094,13 +2119,40 @@ scenarios by Caesar's rules, and has its own editor after the original.
 
 The editor (the start screen's **Scenario Editor**, on Caesar's data):
 **Map** paints levels (no two neighbours more than a level apart), water,
-woods, rough ground and roads, and puts streams and walls on hex sides;
+woods, rough ground and roads (by clicking or dragging), and puts streams
+and walls on hex sides; its **Properties** brush shows a hex's level and
+ground and sets its six sides, **Clear hex** clears them, and the map
+resizes (keeping its terrain, refused if units would fall off; the width
+odd as in the original, but up to 89 hexes a side, the games' largest,
+where the original stops at 50);
 **Units** places units from the catalogue, every unit fighting for one of
 the two sides and joining a leader's group (a leader forms one), facing
 the enemy from its side's retreat edge, a two-hex unit needing its second
 hex free; **Groups** gives each group its orders and behaviour;
 **Scenario** sets the title, sides, retreat edges, rout levels and turn
 limit; **File** starts on a map (or a blank one), opens a scenario (a
-game's own is taken over, its units keeping their art and stats), saves
-it with its map and plans to opengboh's `scenarios` folder (never the
-game's) and plays it.
+game's own is taken over, its units keeping their art and stats) or a
+package (unpacked into the scenarios folder, asking before replacing a
+different file), saves it with its map and plans to opengboh's
+`scenarios` folder (never the game's), packs it, and plays it.
+
+## opengboh's own folder
+
+opengboh keeps everything it writes in one folder of the platform's
+application data (`~/Library/Application Support/opengboh` on macOS,
+`%APPDATA%\opengboh` on Windows, `$XDG_DATA_HOME/opengboh` or
+`~/.local/share/opengboh` elsewhere), the parent of the saves folder (so
+`GBOH_SAVES` moves it all). Nothing is written to the games' folders.
+
+```text
+games/alexander/ALEX.EXE, games/alexander/DATA/...   imported copies
+games/hannibal/..., games/caesar/...
+settings.txt      "game <key>" (the game selected; earlier "theme <key>")
+                  and "options <key> ..." (the rule options on)
+preferences.txt   the game preferences, "<name> <value>" a line
+saves/            saved games (*.sav), Autosave.sav
+scenarios/        the editor's scenarios, maps, AI plans and packages
+```
+
+The game keys are `alexander`, `hannibal` and `caesar`; the option keys
+are those of `gboh_game::options::ALL` (see *Rule options*).

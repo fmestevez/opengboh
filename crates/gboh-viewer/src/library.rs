@@ -1,14 +1,15 @@
 //! The games' data the player has imported: a copy of each title's
 //! executable and `DATA` directory, kept with the rewrite's other files
-//! (beside the saves), and the title whose look the menus take (the
-//! theme). The rewrite carries no game data; it works from these copies.
+//! (beside the saves), and the game selected (whose start screen, menus,
+//! battles and campaign opengboh opens on). The rewrite carries no game
+//! data; it works from these copies.
 //!
 //! ```text
 //! <application data>/opengboh/
 //!     games/alexander/ALEX.EXE, games/alexander/DATA/...
 //!     games/hannibal/..., games/caesar/...
-//!     settings.txt          "theme alexander"
-//!     saves/, preferences.txt
+//!     settings.txt          "game alexander", "options ..."
+//!     saves/, scenarios/, preferences.txt
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -186,10 +187,10 @@ pub fn import(found: Found) -> Arc<Progress> {
     progress
 }
 
-/// The rewrite's settings: the title whose look the menus take.
+/// The rewrite's settings: the game selected, and the rule options.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Settings {
-    pub theme: Option<Title>,
+    pub game: Option<Title>,
     /// The rule options new battles are fought by.
     pub options: gboh_game::options::Options,
 }
@@ -197,22 +198,23 @@ pub struct Settings {
 impl Settings {
     pub fn load() -> Self {
         let text = std::fs::read_to_string(root().join("settings.txt")).unwrap_or_default();
-        let theme = text.lines().find_map(|l| l.strip_prefix("theme ").and_then(Title::from_key));
+        // (earlier versions called it the theme)
+        let game = text.lines().find_map(|l| l.strip_prefix("game ").or_else(|| l.strip_prefix("theme ")).and_then(Title::from_key));
         let options = text.lines().find_map(|l| l.strip_prefix("options ")).map(gboh_game::options::Options::parse).unwrap_or_default();
-        Self { theme, options }
+        Self { game, options }
     }
 
     pub fn save(&self) {
         let dir = root();
         let _ = std::fs::create_dir_all(&dir);
-        let text = self.theme.map_or(String::new(), |t| format!("theme {}\n", t.key())) + &format!("options {}\n", self.options.to_text());
+        let text = self.game.map_or(String::new(), |t| format!("game {}\n", t.key())) + &format!("options {}\n", self.options.to_text());
         let _ = std::fs::write(dir.join("settings.txt"), text);
     }
 
-    /// The theme in force: the one chosen if imported, else the first
+    /// The game in force: the one selected if imported, else the first
     /// title imported.
-    pub fn theme_in_force(&self, imported: &[Title]) -> Option<Title> {
-        self.theme.filter(|t| imported.contains(t)).or_else(|| imported.first().copied())
+    pub fn game_in_force(&self, imported: &[Title]) -> Option<Title> {
+        self.game.filter(|t| imported.contains(t)).or_else(|| imported.first().copied())
     }
 }
 
@@ -232,7 +234,7 @@ mod tests {
         assert!(detect(data, Title::Alexander).is_ok());
         let wrong = detect(top, Title::Caesar).unwrap_err();
         assert!(wrong.contains("Alexander"), "{wrong}");
-        assert_eq!(Settings { theme: Some(Title::Caesar), options: Default::default() }.theme_in_force(&[Title::Alexander]), Some(Title::Alexander));
+        assert_eq!(Settings { game: Some(Title::Caesar), options: Default::default() }.game_in_force(&[Title::Alexander]), Some(Title::Alexander));
     }
 
     /// Hannibal's and Caesar's folders (theirs beside Alexander's, as in the
@@ -265,6 +267,7 @@ mod tests {
         std::fs::copy(crate::find_ci(data.parent().unwrap(), "ALEX.EXE").unwrap(), src.join("ALEX.EXE")).unwrap();
         let found = detect(&src, Title::Alexander).unwrap();
         // the library lives where GBOH_SAVES points (its parent)
+        let _var = crate::SAVES_VAR.lock().unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::set_var("GBOH_SAVES", tmp.join("lib/saves")) };
         let p = import(found);
         let result = loop {

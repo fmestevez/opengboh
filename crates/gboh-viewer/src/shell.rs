@@ -180,7 +180,7 @@ pub const IMPORT: u16 = 100; // + title index
 pub const CONTINUE: u16 = 1;
 pub const QUIT: u16 = 2;
 pub const BACK: u16 = 3;
-pub const THEME: u16 = 200; // + title index
+pub const SELECT_GAME: u16 = 200; // + title index
 pub const RULES: u16 = 8;
 pub const OPTION: u16 = 300; // + option index
 pub const CONTENT: u16 = 4;
@@ -230,7 +230,7 @@ pub enum Screen {
 /// What the screens show besides their layout.
 pub struct View<'a> {
     pub imported: &'a [Title],
-    pub theme: Option<Title>,
+    pub game: Option<Title>,
     /// The rule options set.
     pub options: gboh_game::options::Options,
     /// A line of news (an import's progress, or what went wrong), and
@@ -317,11 +317,11 @@ pub fn draw(screen: &Screen, v: &View, w: usize, h: usize) -> (Canvas, Vec<Butto
         }
         Screen::Settings => {
             heading(&mut c, "Settings");
-            text(&mut c, "Theme: whose intro, start screen and art the menus take", left, panel.1 + 96, BODY, false, INK);
+            text(&mut c, "Select Game: whose battles, campaign, menus and art you play", left, panel.1 + 96, BODY, false, INK);
             for (k, &t) in Title::ALL.iter().enumerate() {
                 let y = panel.1 + 108 + k as i32 * 30;
                 let have = v.imported.contains(&t);
-                let on = v.theme == Some(t);
+                let on = v.game == Some(t);
                 let r = (left, y, inner, 26);
                 if on {
                     fill(&mut c, r, FACE);
@@ -337,7 +337,7 @@ pub fn draw(screen: &Screen, v: &View, w: usize, h: usize) -> (Canvas, Vec<Butto
                 if !have {
                     text(&mut c, "not imported", left + inner - width("not imported", BODY, false) - 6, y + 18, BODY, false, DIM);
                 } else {
-                    buttons.push((THEME + k as u16, r));
+                    buttons.push((SELECT_GAME + k as u16, r));
                 }
             }
             let y = panel.1 + 108 + 3 * 30 + 16;
@@ -492,7 +492,7 @@ mod tests {
     fn draws_the_screens() {
         let v = View {
             imported: &[Title::Alexander],
-            theme: Some(Title::Alexander),
+            game: Some(Title::Alexander),
             options: Default::default(),
             status: ("Importing: 40%".into(), false),
             busy: false,
@@ -509,11 +509,11 @@ mod tests {
         let none = View { imported: &[], ..v };
         let (_, buttons) = draw(&Screen::Content, &none, 1000, 700);
         assert!(!buttons.iter().any(|b| b.0 == CONTINUE));
-        let (_, buttons) = draw(
+        let (settings, buttons) = draw(
             &Screen::Settings,
             &View {
                 imported: &[Title::Alexander],
-                theme: Some(Title::Alexander),
+                game: Some(Title::Alexander),
                 options: Default::default(),
                 status: (String::new(), false),
                 busy: false,
@@ -522,12 +522,15 @@ mod tests {
             1000,
             700,
         );
-        assert!(buttons.iter().any(|b| b.0 == THEME) && !buttons.iter().any(|b| b.0 == THEME + 1));
+        assert!(buttons.iter().any(|b| b.0 == SELECT_GAME) && !buttons.iter().any(|b| b.0 == SELECT_GAME + 1));
+        if let Ok(out) = std::env::var("GBOH_SHOTS") {
+            crate::ui::write_ppm(&settings, &palette(), &std::path::Path::new(&out).join("settings.ppm")).unwrap();
+        }
         // the rules: a toggle per option, a tick on those set
         let opts = gboh_game::options::Options { roads: true, ..Default::default() };
         let (rules, buttons) = draw(
             &Screen::Rules,
-            &View { imported: &[Title::Alexander], theme: Some(Title::Alexander), options: opts, status: (String::new(), false), busy: false, pressed: None },
+            &View { imported: &[Title::Alexander], game: Some(Title::Alexander), options: opts, status: (String::new(), false), busy: false, pressed: None },
             1000,
             700,
         );
@@ -540,7 +543,7 @@ mod tests {
                 &Screen::Content,
                 &View {
                     imported: &[Title::Alexander],
-                    theme: None,
+                    game: None,
                     options: Default::default(),
                     status: ("Importing: 40%".into(), false),
                     busy: false,

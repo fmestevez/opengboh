@@ -59,6 +59,11 @@ const ROAD: u16 = 12;
 pub const STREAM: u16 = 6;
 pub const WALL: u16 = 9;
 
+/// The largest map side, in hexes. The original editor stops at 50, but
+/// the games' own maps reach 89 (Trasimene's width) and 85 (Ilipa's
+/// height), and play.
+pub const MAX_SIZE: usize = 89;
+
 /// A group's order: type (1 defend, 2 move, 3 attack), turns, hex.
 type Order = (u32, u16, u16);
 
@@ -79,7 +84,7 @@ impl Editor {
             layout: Layout::Editor,
             leaders: Vec::new(),
             unk: 0,
-            title: String::new(),
+            title: "New battle".into(),
             map_file: map_file.into(),
             unit_file: String::new(),
             home: side(1),
@@ -185,6 +190,67 @@ impl Editor {
         } else {
             cell.push(code);
         }
+    }
+
+    /// Whether side `side` of hex `(x, y)` has `code` (a stream, a wall).
+    pub fn has_side(&self, x: usize, y: usize, side: MapSide, code: u16) -> bool {
+        let (gx, gy) = Map::hex_cell(x, y);
+        let (dx, dy) = side.offset();
+        self.map.cell(gx + dx, gy + dy).contains(&code)
+    }
+
+    /// The ground of hex `(x, y)`: woods, rough ground, a road, or clear.
+    pub fn ground(&self, x: usize, y: usize) -> Paint {
+        let (gx, gy) = Map::hex_cell(x, y);
+        let cell = self.map.cell(gx, gy);
+        [(WOODS, Paint::Woods), (ROCKY, Paint::Rocky), (ROAD, Paint::Road)].into_iter().find(|(c, _)| cell.contains(c)).map_or(Paint::Clear, |(_, p)| p)
+    }
+
+    /// Clear hex `(x, y)`'s properties (the original's Clear Hex
+    /// Properties): its ground, and the streams and walls on its sides.
+    pub fn clear_hex(&mut self, x: usize, y: usize) {
+        if x >= self.map.width || y >= self.map.height {
+            return;
+        }
+        let _ = self.paint(x, y, Paint::Clear);
+        for side in MapSide::ALL {
+            for code in [STREAM, WALL] {
+                if self.has_side(x, y, side, code) {
+                    self.toggle_side(x, y, side, code);
+                }
+            }
+        }
+    }
+
+    /// Resize the map to `width` × `height` hexes, keeping its terrain
+    /// where the two overlap. Refused if a unit would fall off it (as the
+    /// original's "could not be resized, without removing units"), or an
+    /// odd size: the width must be odd (as the original's), and both at
+    /// most [`MAX_SIZE`].
+    pub fn resize(&mut self, width: usize, height: usize) -> Result<(), String> {
+        if width.is_multiple_of(2) || !(1..=MAX_SIZE).contains(&width) || !(1..=MAX_SIZE).contains(&height) {
+            return Err(format!("the width must be odd, and both sizes at most {MAX_SIZE}"));
+        }
+        if self.taken(None).iter().any(|h| h.x as usize >= width || h.y as usize >= height) {
+            return Err("the map can't be resized without removing units".into());
+        }
+        let mut map = Map::blank(&self.map.name, width, height);
+        map.hex_id_origin = self.map.hex_id_origin;
+        map.unk_b = self.map.unk_b;
+        for y in 0..height.min(self.map.height) {
+            for x in 0..width.min(self.map.width) {
+                map.elevation[y * width + x] = self.map.elevation_at(x, y);
+            }
+        }
+        // (the feature grid, cell by cell where both have it)
+        let (gw, gh) = (map.grid_width(), map.grid_height());
+        for gy in 0..gh.min(self.map.grid_height()) {
+            for gx in 0..gw.min(self.map.grid_width()) {
+                map.cells[gy * gw + gx] = self.map.cells[gy * self.map.grid_width() + gx].clone();
+            }
+        }
+        self.map = map;
+        Ok(())
     }
 
     /// Place a copy of `template` (a catalogue unit) on hex `(x, y)`,
@@ -572,6 +638,24 @@ mod tests {
     }
 
     /// What it saves reads back, and its plans parse.
+    #[test]
+    fn hex_properties_and_resizing() {
+        let mut e = editor();
+        e.paint(5, 5, Paint::Level(2)).unwrap();
+        e.paint(5, 5, Paint::Rocky).unwrap();
+        e.toggle_side(5, 5, MapSide::NE, STREAM);
+        assert_eq!(e.ground(5, 5), Paint::Rocky);
+        assert!(e.has_side(5, 5, MapSide::NE, STREAM) && !e.has_side(5, 5, MapSide::N, STREAM));
+        e.resize(9, 8).unwrap();
+        assert_eq!((e.map.width, e.map.height, e.map.elevation_at(5, 5)), (9, 8, 2));
+        assert!(e.has_side(5, 5, MapSide::NE, STREAM) && e.ground(5, 5) == Paint::Rocky);
+        e.clear_hex(5, 5);
+        assert!(!e.has_side(5, 5, MapSide::NE, STREAM) && e.ground(5, 5) == Paint::Clear);
+        assert!(e.resize(8, 8).is_err(), "an even width");
+        e.place(&leader("Alexander"), 7, 7, true, None).unwrap();
+        assert!(e.resize(7, 7).is_err(), "a unit would fall off");
+        Map::parse(&e.map.write(None)).unwrap();
+    }
     #[test]
     fn saves_and_reads_back() {
         let mut e = editor();

@@ -16,7 +16,7 @@ use crate::ui::Font;
 use gboh_formats::map::{Map, Side as MapSide};
 use gboh_formats::pal::Palette;
 use gboh_formats::scn::{Scenario, Unit};
-use gboh_game::editor::{Editor, KINDS, NATIONS, Paint, STREAM, WALL};
+use gboh_game::editor::{Editor, KINDS, MAX_SIZE, NATIONS, Paint, STREAM, WALL};
 use gboh_render::battlefield::Scene;
 use gboh_render::terrain::Zoom;
 use gboh_render::units::UnitView;
@@ -44,9 +44,13 @@ const TABS: [(Tab, &str); 5] = [(Tab::Map, "Map"), (Tab::Units, "Units"), (Tab::
 enum Brush {
     Hex(Paint),
     Side(u16),
+    /// Show a hex's properties (and set its sides there).
+    Inspect,
+    /// Clear a hex's properties: its ground, streams and walls.
+    ClearHex,
 }
 
-const BRUSHES: [(Brush, &str); 15] = [
+const BRUSHES: [(Brush, &str); 17] = [
     (Brush::Hex(Paint::Water), "Water"),
     (Brush::Hex(Paint::Level(1)), "Level 1"),
     (Brush::Hex(Paint::Level(2)), "Level 2"),
@@ -55,13 +59,15 @@ const BRUSHES: [(Brush, &str); 15] = [
     (Brush::Hex(Paint::Level(5)), "Level 5"),
     (Brush::Hex(Paint::Level(6)), "Level 6"),
     (Brush::Hex(Paint::Level(7)), "Level 7"),
+    (Brush::Hex(Paint::Level(8)), "Level 8"),
     (Brush::Hex(Paint::Clear), "Clear"),
     (Brush::Hex(Paint::Woods), "Woods"),
     (Brush::Hex(Paint::Rocky), "Rocky"),
     (Brush::Hex(Paint::Road), "Road"),
     (Brush::Side(STREAM), "Stream"),
     (Brush::Side(WALL), "Wall"),
-    (Brush::Hex(Paint::Level(8)), "Level 8"),
+    (Brush::Inspect, "Properties"),
+    (Brush::ClearHex, "Clear hex"),
 ];
 
 /// A text field being typed into.
@@ -102,6 +108,10 @@ pub(crate) enum Act {
     LimitTurns(i32),
     LimitSide,
     MapSize(i32, i32),
+    HexSide(usize, u16),
+    Resize(i32, i32),
+    ApplyResize,
+    Package,
     NewBlank,
     NewOn(usize),
     Open(usize),
@@ -143,6 +153,14 @@ pub struct EditorScreen {
     group: Option<i16>,
     /// An order whose hex the next map click sets.
     setting_hex: Option<usize>,
+    /// The hex last painted in a drag.
+    painted: Option<(usize, usize)>,
+    /// The hex whose properties are shown.
+    inspected: Option<(usize, usize)>,
+    /// The size the map would be resized to.
+    resize_to: (i32, i32),
+    /// A package whose unpacking would replace files, until clicked again.
+    replacing: Option<String>,
     focus: Option<Field>,
     file_name: String,
     new_size: (i32, i32),
@@ -196,6 +214,10 @@ impl EditorScreen {
             selected: None,
             group: None,
             setting_hex: None,
+            painted: None,
+            inspected: None,
+            resize_to: (31, 31),
+            replacing: None,
             focus: None,
             file_name: "MYBATTLE".into(),
             new_size: (31, 31),
@@ -228,6 +250,8 @@ impl EditorScreen {
         };
         self.maps = names(".map").into_iter().filter(|n| reads(n, true)).collect();
         self.scenarios = names(".scn").into_iter().filter(|n| reads(n, false)).collect();
+        let package = |n: &String| find(&dir, n).and_then(|p| std::fs::read(p).ok()).is_some_and(|d| gboh_formats::psf::unpack(&d).is_ok());
+        self.scenarios.extend(names(".psf").into_iter().filter(package));
     }
 
     /// Redraw the battlefield: its terrain too if `terrain`.
@@ -306,6 +330,45 @@ impl EditorScreen {
                     let r = (x0 + (k as i32 % 3) * (inner / 3), y + (k as i32 / 3) * (ROW + 4), inner / 3 - 4, ROW + 2);
                     self.button(&mut c, r, label, k == self.brush);
                     acts.push((Act::Brush(k), r));
+                }
+                y += (BRUSHES.len() as u32).div_ceil(3) as i32 * (ROW + 4) + 10;
+                line(&mut c, &format!("Map: {} x {} hexes", self.ed.map.width, self.ed.map.height), &mut y);
+                let mut bx = x0;
+                for (act, label) in [(Act::Resize(-2, 0), "w-"), (Act::Resize(2, 0), "w+"), (Act::Resize(0, -1), "h-"), (Act::Resize(0, 1), "h+")] {
+                    let r = (bx, y, 30, ROW);
+                    self.button(&mut c, r, label, false);
+                    acts.push((act, r));
+                    bx += 32;
+                }
+                self.font.draw(&mut c, &format!("{} x {}", self.resize_to.0, self.resize_to.1), bx + 4, y + 3);
+                let r = (x0 + inner - 70, y, 70, ROW);
+                self.button(&mut c, r, "Resize", false);
+                acts.push((Act::ApplyResize, r));
+                y += ROW + 10;
+                match self.inspected {
+                    Some((hx, hy)) => {
+                        let level = self.ed.map.elevation_at(hx, hy);
+                        let ground = match self.ed.ground(hx, hy) {
+                            Paint::Woods => "woods",
+                            Paint::Rocky => "rough ground",
+                            Paint::Road => "a road",
+                            _ => "clear",
+                        };
+                        let level = if level == 0 { "water".to_string() } else { format!("level {level}") };
+                        line(&mut c, &format!("Hex {hx:02}{hy:02}: {level}, {ground}"), &mut y);
+                        for (code, label) in [(STREAM, "Stream"), (WALL, "Wall")] {
+                            self.font.draw(&mut c, label, x0, y + 3);
+                            let mut bx = x0 + 56;
+                            for (k, (side, name)) in MapSide::ALL.into_iter().zip(["N", "NE", "SE", "S", "SW", "NW"]).enumerate() {
+                                let r = (bx, y, 36, ROW);
+                                self.button(&mut c, r, name, self.ed.has_side(hx, hy, side, code));
+                                acts.push((Act::HexSide(k, code), r));
+                                bx += 38;
+                            }
+                            y += ROW + 4;
+                        }
+                    }
+                    None => line(&mut c, "Properties: click a hex to see and set its sides.", &mut y),
                 }
             }
             Tab::Units => {
@@ -506,6 +569,10 @@ impl EditorScreen {
                 let r = (x0 + inner - 56, y, 56, ROW + 2);
                 self.button(&mut c, r, "Save", false);
                 acts.push((Act::Save, r));
+                y += ROW + 6;
+                let r = (x0, y, inner, ROW + 2);
+                self.button(&mut c, r, "Save as a package (.psf)", false);
+                acts.push((Act::Package, r));
                 y += ROW + 8;
                 for (k, (act, label)) in [(Act::Play, "Save and play"), (Act::Quit, "Leave the editor")].into_iter().enumerate() {
                     let r = (x0 + k as i32 * (inner / 2), y, inner / 2 - 4, ROW + 4);
@@ -570,6 +637,14 @@ impl EditorScreen {
                     }
                     None => Err("click nearer the hex side".into()),
                 },
+                Brush::Inspect => {
+                    self.inspected = Some((hx, hy));
+                    Ok(false)
+                }
+                Brush::ClearHex => {
+                    self.ed.clear_hex(hx, hy);
+                    Ok(true)
+                }
             },
             Tab::Units => self.unit_click(hx, hy).map(|_| false),
             Tab::Groups => match self.setting_hex.take() {
@@ -625,6 +700,7 @@ impl EditorScreen {
 
     fn act(&mut self, act: Act) -> Outcome {
         let mut redraw_units = false;
+        let mut redraw_terrain = false;
         match act {
             Act::Tab(t) => self.tab = t,
             Act::Brush(k) => self.brush = k,
@@ -711,8 +787,9 @@ impl EditorScreen {
                 }
             }
             Act::MapSize(dw, dh) => {
-                // (the first dimension odd, both at most 50)
-                self.new_size = ((self.new_size.0 + dw).clamp(11, 49) | 1, (self.new_size.1 + dh).clamp(10, 50));
+                // (the first dimension odd)
+                let max = MAX_SIZE as i32;
+                self.new_size = ((self.new_size.0 + dw).clamp(11, max) | 1, (self.new_size.1 + dh).clamp(10, max));
             }
             Act::NewBlank => {
                 let name = format!("{}.MAP", self.file_name);
@@ -737,6 +814,31 @@ impl EditorScreen {
                     Err(e) => self.message = e,
                 }
             }
+            Act::HexSide(k, code) => {
+                if let Some((x, y)) = self.inspected {
+                    self.ed.toggle_side(x, y, MapSide::ALL[k], code);
+                    redraw_terrain = true;
+                }
+            }
+            Act::Resize(dw, dh) => {
+                let max = MAX_SIZE as i32;
+                self.resize_to = ((self.resize_to.0 + dw).clamp(1, max) | 1, (self.resize_to.1 + dh).clamp(1, max));
+            }
+            Act::ApplyResize => match self.ed.resize(self.resize_to.0 as usize, self.resize_to.1 as usize) {
+                Ok(()) => {
+                    // (a new size: the battlefield drawn afresh)
+                    self.scene = None;
+                    self.scroll = (0, 0);
+                    self.inspected = None;
+                    self.rebuild(true);
+                    self.message = "Resized.".into();
+                }
+                Err(e) => self.message = e,
+            },
+            Act::Package => match self.package() {
+                Ok(p) => self.message = format!("Saved {}.", p.display()),
+                Err(e) => self.message = e,
+            },
             Act::Save => match self.save() {
                 Ok(p) => self.message = format!("Saved {}.", p.display()),
                 Err(e) => self.message = e,
@@ -747,8 +849,8 @@ impl EditorScreen {
             },
             Act::Quit => return Outcome::Quit,
         }
-        if redraw_units {
-            self.rebuild(false);
+        if redraw_units || redraw_terrain {
+            self.rebuild(redraw_terrain);
         }
         Outcome::Redraw
     }
@@ -760,11 +862,17 @@ impl EditorScreen {
         self.selected = None;
         self.group = None;
         self.scroll = (0, 0);
+        self.inspected = None;
+        self.resize_to = (self.ed.map.width as i32, self.ed.map.height as i32);
         self.rebuild(true);
         self.tab = Tab::Scenario;
     }
 
     fn open(&mut self, name: &str) -> Result<(), String> {
+        if name.to_ascii_lowercase().ends_with(".psf") {
+            let scn = self.unpack(name)?;
+            return self.open(&scn);
+        }
         let read = |n: &str| find(&self.data_dir, n).and_then(|p| std::fs::read(p).ok()).ok_or(format!("{n} not found"));
         let scn = Scenario::parse(&read(name)?).map_err(|e| e.to_string())?;
         let map = Map::parse(&read(&scn.map_file)?).map_err(|e| e.to_string())?;
@@ -773,8 +881,48 @@ impl EditorScreen {
         Ok(())
     }
 
+    /// Unpack package `name` into the scenarios folder; returns its
+    /// scenario's name. A file it would replace with different contents
+    /// is replaced only on a second try.
+    fn unpack(&mut self, name: &str) -> Result<String, String> {
+        let data = find(&self.data_dir, name).and_then(|p| std::fs::read(p).ok()).ok_or(format!("{name} not found"))?;
+        let files = gboh_formats::psf::unpack(&data).map_err(|e| e.to_string())?;
+        let scn = files.iter().find(|(n, _)| n.to_ascii_lowercase().ends_with(".scn")).ok_or("the package has no scenario")?.0.clone();
+        let dir = scenarios_dir();
+        let replaced: Vec<&str> = files.iter().filter(|(n, d)| std::fs::read(dir.join(n)).is_ok_and(|old| old != *d)).map(|(n, _)| n.as_str()).collect();
+        if !replaced.is_empty() && self.replacing.as_deref() != Some(name) {
+            self.replacing = Some(name.into());
+            return Err(format!("It would replace {}: click again to.", replaced.join(", ")));
+        }
+        self.replacing = None;
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        for (n, d) in &files {
+            std::fs::write(dir.join(n), d).map_err(|e| e.to_string())?;
+        }
+        Ok(scn)
+    }
+
+    /// Save, and pack the files saved into `<name>.psf` beside them (in
+    /// the original's order: map, scenario, home plan, visitor plan).
+    fn package(&mut self) -> Result<PathBuf, String> {
+        let mut files = self.write()?;
+        files.swap(0, 1);
+        let base = files[1].0.rsplit_once('.').map_or(files[1].0.clone(), |(b, _)| b.to_string());
+        let path = scenarios_dir().join(format!("{base}.psf"));
+        std::fs::write(&path, gboh_formats::psf::pack(&files)).map_err(|e| e.to_string())?;
+        self.list_files();
+        Ok(path)
+    }
+
     /// Save to the scenarios folder: the scenario, its map, its plans.
     fn save(&mut self) -> Result<PathBuf, String> {
+        let files = self.write()?;
+        Ok(scenarios_dir().join(&files[0].0))
+    }
+
+    /// Write the scenario, its map and its plans to the scenarios folder;
+    /// returns them (name, bytes).
+    fn write(&mut self) -> Result<Vec<(String, Vec<u8>)>, String> {
         let problems = self.ed.problems();
         if let Some(p) = problems.first() {
             return Err(p.clone());
@@ -789,11 +937,38 @@ impl EditorScreen {
         }
         let dir = scenarios_dir();
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        for (name, data) in self.ed.files(&base, guid(), guid()) {
+        let files = self.ed.files(&base, guid(), guid());
+        for (name, data) in &files {
             std::fs::write(dir.join(name), data).map_err(|e| e.to_string())?;
         }
         self.list_files();
-        Ok(dir.join(format!("{base}.scn")))
+        Ok(files)
+    }
+
+    /// A drag over the battlefield from `from` to `to` (window pixels):
+    /// paints with a hex brush on the Map tab, else pans the battlefield.
+    pub fn drag(&mut self, from: (i32, i32), to: (i32, i32), w: usize, h: usize) {
+        if Self::on_panel(from.0, w) {
+            return;
+        }
+        let Brush::Hex(paint) = BRUSHES[self.brush].0 else { return self.scroll_by(from.0 - to.0, from.1 - to.1, w, h) };
+        if self.tab != Tab::Map {
+            return self.scroll_by(from.0 - to.0, from.1 - to.1, w, h);
+        }
+        let Some((hex, _)) = self.hex_at(to.0, to.1).filter(|_| !Self::on_panel(to.0, w)) else { return };
+        if self.painted == Some(hex) {
+            return;
+        }
+        self.painted = Some(hex);
+        match self.ed.paint(hex.0, hex.1, paint) {
+            Ok(()) => self.rebuild(true),
+            Err(e) => self.message = e,
+        }
+    }
+
+    /// The end of a drag.
+    pub fn drag_end(&mut self) {
+        self.painted = None;
     }
 
     /// Typing into the field in focus: returns whether it took the key.
@@ -873,13 +1048,14 @@ mod tests {
     use super::*;
 
     /// The editor opens on Caesar's data with its catalogue, starts on a
-    /// map, places a leader and a unit, saves and reads it back; runs only
-    /// with `GBOH_CAESAR`.
+    /// map, places a leader and a unit, saves, reads it back and plays it;
+    /// runs only with `GBOH_CAESAR`.
     #[test]
     fn edits_and_saves_a_scenario() {
         let Ok(dir) = std::env::var("GBOH_CAESAR") else { return };
         let saves = std::env::temp_dir().join(format!("gboh-editor-{}", std::process::id()));
         // (the scenarios folder beside a test saves folder)
+        let _var = crate::SAVES_VAR.lock().unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::set_var("GBOH_SAVES", saves.join("saves")) };
         let mut e = EditorScreen::new(Path::new(&dir));
         assert!(e.catalogue.len() > 2000);
@@ -895,17 +1071,48 @@ mod tests {
         e.template = Some(foot);
         e.selected = None;
         e.unit_click(11, 10).unwrap();
-        assert_eq!(e.ed.scn.units.len(), 2);
+        // and the visitor's, across the field
+        e.home = false;
+        e.group = None;
+        e.template = Some(leader);
+        e.unit_click(10, 14).unwrap();
+        e.template = Some(foot);
+        e.selected = None;
+        e.unit_click(11, 14).unwrap();
+        assert_eq!(e.ed.scn.units.len(), 4);
         e.file_name = "TESTED".into();
         let path = e.save().unwrap();
         let scn = Scenario::parse(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(scn.units.len(), 2);
+        assert_eq!(scn.units.len(), 4);
+        // it plays as Save and play starts it: from the scenarios folder,
+        // with its map and plans, the computer on both sides
+        let mut b = crate::load_battle(Path::new(&dir), "TESTED.scn", [true, true], false).unwrap();
+        let play = b.play.as_mut().unwrap();
+        let mut steps = 0;
+        while steps < 60 && play.step_computer() {
+            steps += 1;
+        }
+        assert!(steps > 1, "{steps}");
+        // packed, and opened from the package (nothing to replace)
+        e.act(Act::Package);
+        assert!(e.scenarios.iter().any(|n| n == "TESTED.psf"), "{}", e.message);
+        e.open("TESTED.psf").unwrap();
+        assert_eq!(e.ed.scn.units.len(), 4);
+        // resized, keeping its units
+        let w = e.ed.map.width;
+        e.act(Act::Resize(-2, 0));
+        e.act(Act::ApplyResize);
+        assert_eq!(e.ed.map.width, w - 2, "{}", e.message);
+        e.tab = Tab::Map;
+        e.brush = BRUSHES.iter().position(|b| b.0 == Brush::Inspect).unwrap();
+        e.inspected = Some((10, 10));
         let (canvas, acts) = e.canvas(1200, 800);
         assert_eq!((canvas.width, canvas.height), (1200, 800));
         assert!(!acts.is_empty());
         if let Ok(out) = std::env::var("GBOH_SHOTS") {
             crate::ui::write_ppm(&canvas, &e.palette, &Path::new(&out).join("editor.ppm")).unwrap();
         }
+        unsafe { std::env::remove_var("GBOH_SAVES") };
         let _ = std::fs::remove_dir_all(&saves);
     }
 }

@@ -2227,7 +2227,7 @@ impl Viewer {
         let imported = library::imported();
         let view = shell::View {
             imported: &imported,
-            theme: self.settings.theme_in_force(&imported),
+            game: self.settings.game_in_force(&imported),
             options: self.settings.options,
             status: self.news.clone(),
             busy: self.importing.is_some(),
@@ -2264,8 +2264,7 @@ impl Viewer {
                 self.show_shell();
             }
             (shell::CONTINUE | shell::BACK, _) => {
-                let theme = self.settings.theme_in_force(&imported);
-                if let Some(t) = theme {
+                if let Some(t) = self.settings.game_in_force(&imported) {
                     self.shell = None;
                     self.switch_game(t);
                 }
@@ -2273,7 +2272,7 @@ impl Viewer {
             (shell::CONTENT, _) => self.open_shell(shell::Screen::Content),
             // the game's own Preferences, over its start screen
             (shell::PREFERENCES, _) => {
-                if let Some(t) = self.settings.theme_in_force(&imported) {
+                if let Some(t) = self.settings.game_in_force(&imported) {
                     self.shell = None;
                     self.switch_game(t);
                     self.open_preferences();
@@ -2285,8 +2284,8 @@ impl Viewer {
                 let t = Title::ALL[(id - shell::IMPORT) as usize];
                 self.start_import(t);
             }
-            (id, _) if (shell::THEME..shell::THEME + 3).contains(&id) => {
-                self.settings.theme = Some(Title::ALL[(id - shell::THEME) as usize]);
+            (id, _) if (shell::SELECT_GAME..shell::SELECT_GAME + 3).contains(&id) => {
+                self.settings.game = Some(Title::ALL[(id - shell::SELECT_GAME) as usize]);
                 self.settings.save();
                 self.show_shell();
             }
@@ -2344,9 +2343,9 @@ impl Viewer {
             Some(Ok(())) => {
                 self.importing = None;
                 self.news = (format!("{} imported.", t.name()), false);
-                // a first title imported becomes the theme
-                if self.settings.theme.is_none() {
-                    self.settings.theme = Some(t);
+                // a first title imported becomes the game selected
+                if self.settings.game.is_none() {
+                    self.settings.game = Some(t);
                     self.settings.save();
                 }
             }
@@ -3640,6 +3639,9 @@ impl ApplicationHandler for Viewer {
             WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
                 if state == ElementState::Released {
                     self.sliding = None;
+                    if let Some(e) = &mut self.editor {
+                        e.drag_end();
+                    }
                 }
                 // no dragging the battlefield from under a dialog or a menu
                 self.drag = (state == ElementState::Pressed && !self.modal() && self.menu_open.is_none()).then_some(self.cursor);
@@ -3677,6 +3679,18 @@ impl ApplicationHandler for Viewer {
                 }
                 self.update_hud();
                 self.redraw();
+            }
+            // the editor paints, or pans its battlefield, under a drag
+            WindowEvent::CursorMoved { position, .. } if self.editor.is_some() && self.drag.is_some() => {
+                let (w, h) = self.window_px();
+                let at = |p: PhysicalPosition<f64>| ((p.x as f32 / self.scale) as i32, (p.y as f32 / self.scale) as i32);
+                let (from, to) = (at(self.drag.unwrap_or(position)), at(position));
+                if let Some(e) = &mut self.editor {
+                    e.drag(from, to, w, h);
+                }
+                self.drag = Some(position);
+                self.cursor = position;
+                self.show_editor();
             }
             WindowEvent::CursorMoved { position, .. } => {
                 if let Some(from) = self.drag {
@@ -3992,12 +4006,12 @@ fn main() -> Result<()> {
     if args.get(1).is_some_and(|a| a == "-h" || a == "--help") {
         bail!("usage: opengboh  (the content manager, or the imported game's start screen)\n       opengboh <DATA dir> [MAP or SCN file] [ai|demo]");
     }
-    // no folder given: the library's games, the theme's start screen (or
+    // no folder given: the library's games, the selected game's start screen (or
     // the content manager while none is imported)
     let settings = library::Settings::load();
-    let theme = if args.get(1).is_none() { settings.theme_in_force(&library::imported()) } else { None };
+    let selected = if args.get(1).is_none() { settings.game_in_force(&library::imported()) } else { None };
     let launcher = args.get(1).is_none();
-    let data_dir = match (args.get(1), theme) {
+    let data_dir = match (args.get(1), selected) {
         (Some(d), _) => PathBuf::from(d),
         (None, Some(t)) => library::data_dir(t).unwrap_or_default(),
         (None, None) => PathBuf::new(),
@@ -4011,7 +4025,7 @@ fn main() -> Result<()> {
     // the computer plays the visitor army with its first plan; `demo`: it
     // plays both, paced by the viewer
     let (setup, battle, battle_info) = match args.get(2) {
-        None if launcher && theme.is_none() => (None, None, (String::new(), [false; 2])),
+        None if launcher && selected.is_none() => (None, None, (String::new(), [false; 2])),
         None => (Some(setup::Setup::new(&data_dir)), None, (String::new(), [false; 2])),
         Some(file) => {
             let computer = match args.get(3).map(String::as_str) {
@@ -4066,7 +4080,7 @@ fn main() -> Result<()> {
         options_next: None,
         net_options: None,
         net_start: None,
-        shell: (launcher && theme.is_none()).then_some(shell::Screen::Content),
+        shell: (launcher && selected.is_none()).then_some(shell::Screen::Content),
         editor: None,
         shell_buttons: Vec::new(),
         shell_pressed: None,
@@ -4075,7 +4089,7 @@ fn main() -> Result<()> {
         news: (String::new(), false),
         importing: None,
         settings,
-        game: theme,
+        game: selected,
         display_scale: 1.0,
         setup_offset: (0, 0),
         hover: None,
@@ -4193,6 +4207,12 @@ struct Battle {
 
 /// Load `file` (a scenario, or a bare map) from `data_dir`, the computer
 /// playing the sides marked (home, visitor) with their first plans.
+/// Taken by the tests that point `GBOH_SAVES` (the process's, not the
+/// test's) at a folder of their own, so they run one at a time and none
+/// writes into the real one.
+#[cfg(test)]
+static SAVES_VAR: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn load_battle(data_dir: &Path, file: &str, computer: [bool; 2], deploy: bool) -> Result<Battle> {
     // (the game's files, else the editor's scenarios, maps and plans)
     let load = |name: &str| find_ci(data_dir, name).or_else(|| find_ci(&editor::scenarios_dir(), name)).and_then(|p| std::fs::read(p).ok());

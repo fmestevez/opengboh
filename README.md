@@ -41,9 +41,8 @@ are still approximations; `docs/formats.md` marks them 🟡.
 
 In progress or missing:
 
-* the scenario editor is new: it makes and plays scenarios with every unit
-  and nation of the three games, but lacks some of the original's tools
-  (resizing maps, packages, hex property dialogs);
+* the scenario editor is new: it makes, packs and plays scenarios with
+  every unit and nation of the three games, but has had little use yet;
 * some rules the manuals describe without the numbers to implement them,
   and the manuals' printed combat tables as an option;
 * opengboh is developed and tested on macOS; it should build on Windows and
@@ -62,11 +61,12 @@ cargo run --release -p gboh-viewer
 executable and data into opengboh's own directory (**Re-import** copies
 it again). Nothing else is written anywhere, and opengboh carries no data
 of its own. Once a game is imported, **Continue** opens its start screen,
-with three buttons of opengboh's own:
+with four buttons of opengboh's own:
 
 * **Content Manager**;
-* **Settings**: the theme (whose intro, start screen and art the menus
-  use), the game's preferences, and the **Rules** (below);
+* **Settings**: **Select Game** (which of the imported games you play:
+  its start screen, battles, campaign, menus, intro and art), the game's
+  preferences, and the **Rules** (below);
 * **All Battles**: every imported game's battles and campaigns in one
   list;
 * **Scenario Editor**: make your own battles, after the *Collector's
