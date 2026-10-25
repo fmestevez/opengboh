@@ -61,7 +61,7 @@ To compare with the original games, see
 | `gboh-formats` | the games' file formats: EIF sprites, maps, scenarios, palettes, the executables' resources |
 | `gboh-render` | drawing the battlefield: terrain, objects, units, missiles |
 | `gboh-game` | the rules: battle state, activation, movement, combat, AI scripts, campaigns, rule options |
-| `gboh-viewer` | the program (`opengboh`): window, launcher, screens, battle interface, sound |
+| `gboh-viewer` | the program (`opengboh`): window, launcher, screens, battle interface, sound; `main.rs` holds the `Viewer` and its battle screen, `viewer/` its other methods by screen (setup, shell, campaign, editor, network, files, window events) |
 | `gboh-tools` | command-line tools |
 
 `docs/formats.md` documents the formats and rules as the games implement
@@ -78,7 +78,9 @@ them; keep it in step with the code.
   doc comments on public items. Keep the code game-agnostic where the
   three games share it; branch on the game or rules where they don't.
 - Before sending: `cargo fmt`, `cargo clippy --all-targets` (no
-  warnings), `cargo test` (with whatever game data you have).
+  warnings), `cargo test` (with whatever game data you have). CI runs the
+  same on macOS, Windows and Linux for every pull request (without game
+  data, so the data tests skip there: run them yourself).
 - Commit messages: a short summary line (`area - what changed`), then what
   and why.
 - For anything big, open an issue first to talk it over.
