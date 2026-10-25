@@ -77,6 +77,8 @@ pub(crate) enum Field {
     Author,
     Description,
     FileName,
+    /// The catalogue's search.
+    Search,
 }
 
 /// A place on the screen: left, top, width, height.
@@ -120,6 +122,8 @@ pub(crate) enum Act {
     Quit,
     Undo,
     Redo,
+    /// A unit of the group shown: selected, and the map centred on it.
+    Member(usize),
 }
 
 /// The most changes there are to undo.
@@ -154,6 +158,10 @@ pub struct EditorScreen {
     home: bool,
     catalogue: Vec<Unit>,
     kind: Option<u8>,
+    /// Shown only the catalogue's units whose name or nation has this.
+    search: String,
+    /// The window's size at the last click.
+    window: (usize, usize),
     list_top: usize,
     template: Option<usize>,
     selected: Option<usize>,
@@ -231,6 +239,8 @@ impl EditorScreen {
             home: true,
             catalogue,
             kind: None,
+            search: String::new(),
+            window: (0, 0),
             list_top: 0,
             template: None,
             selected: None,
@@ -327,7 +337,12 @@ impl EditorScreen {
     /// first.
     fn shown(&self) -> Vec<usize> {
         let nation = if self.home { self.ed.scn.home.nation } else { self.ed.scn.visitor.nation };
-        let mut v: Vec<usize> = (0..self.catalogue.len()).filter(|&i| self.kind.is_none_or(|k| self.catalogue[i].kind == k)).collect();
+        let search = self.search.trim().to_lowercase();
+        let found = |u: &Unit| {
+            search.is_empty() || u.name.to_lowercase().contains(&search) || NATIONS.get(u.nation as usize).is_some_and(|n| n.to_lowercase().contains(&search))
+        };
+        let mut v: Vec<usize> =
+            (0..self.catalogue.len()).filter(|&i| self.kind.is_none_or(|k| self.catalogue[i].kind == k) && found(&self.catalogue[i])).collect();
         v.sort_by_key(|&i| (self.catalogue[i].nation != nation, self.catalogue[i].nation, self.catalogue[i].name.clone()));
         v
     }
@@ -424,8 +439,18 @@ impl EditorScreen {
                     acts.push((Act::Kind(*kind), r));
                 }
                 y += (kinds.len() as u32).div_ceil(3) as i32 * (ROW + 2) + 6;
-                // the catalogue
+                // the catalogue, searched
+                self.font.draw(&mut c, "Search", x0, y + 4);
+                let r = (x0 + 50, y, inner - 50, ROW + 2);
+                fill(&mut c, r, if self.focus == Some(Field::Search) { white } else { paper });
+                frame(&mut c, r, ink);
+                self.font.draw(&mut c, &self.search, r.0 + 3, y + 4);
+                acts.push((Act::Focus(Field::Search), r));
+                y += ROW + 8;
                 let shown = self.shown();
+                if shown.is_empty() {
+                    self.font.draw(&mut c, "(no unit matches)", x0 + 3, y + 3);
+                }
                 let rows = ((h as i32 - y - 210) / ROW).max(3) as usize;
                 frame(&mut c, (x0 - 2, y - 2, inner + 4, rows as i32 * ROW + 4), ink);
                 for (k, &i) in shown.iter().skip(self.list_top).take(rows).enumerate() {
@@ -524,6 +549,24 @@ impl EditorScreen {
                     let r = (x0, y, inner, ROW + 2);
                     self.button(&mut c, r, if g.behaviour == 3 { "Then: attack" } else { "Then: defend" }, false);
                     acts.push((Act::Behaviour, r));
+                    y += ROW + 12;
+                    // its units (the original's Group Information)
+                    let members: Vec<usize> = (0..self.ed.scn.units.len()).filter(|&i| self.ed.scn.units[i].unk_b as i16 == g.id).collect();
+                    line(&mut c, &format!("Its units ({}): click one to find it", members.len()), &mut y);
+                    let rows = ((h as i32 - y - 70) / ROW).max(1) as usize;
+                    for (k, &i) in members.iter().take(rows).enumerate() {
+                        let r = (x0, y + k as i32 * ROW, inner, ROW);
+                        if Some(i) == self.selected {
+                            fill(&mut c, r, gold);
+                        }
+                        let u = &self.ed.scn.units[i];
+                        let at = self.ed.map.hex_from_id(u.hex).map_or(String::new(), |(x, y)| format!(" at {x:02}{y:02}"));
+                        self.font.draw(&mut c, &format!("{}{at}", u.name), x0 + 3, r.1 + 3);
+                        acts.push((Act::Member(i), r));
+                    }
+                    if members.len() > rows {
+                        self.font.draw(&mut c, &format!("and {} more", members.len() - rows), x0 + 3, y + rows as i32 * ROW + 3);
+                    }
                 }
             }
             Tab::Scenario => {
@@ -702,6 +745,7 @@ impl EditorScreen {
     pub fn click(&mut self, x: i32, y: i32, w: usize, h: usize) -> Outcome {
         // (what was typed before is a change of its own)
         self.commit();
+        self.window = (w, h);
         let view_w = w as i32 - PANEL;
         if x >= view_w {
             let (_, acts) = self.canvas(w, h);
@@ -941,6 +985,11 @@ impl EditorScreen {
                 Err(e) => self.message = e,
             },
             Act::Quit => return Outcome::Quit,
+            Act::Member(i) => {
+                self.selected = Some(i);
+                self.centre_on(i);
+                redraw_units = true;
+            }
             Act::Undo => self.undo(),
             Act::Redo => self.redo(),
         }
@@ -1174,6 +1223,10 @@ impl EditorScreen {
             Field::Author => &mut info.author,
             Field::Description => &mut info.description,
             Field::FileName => &mut self.file_name,
+            Field::Search => {
+                self.list_top = 0;
+                &mut self.search
+            }
         };
         if backspace {
             s.pop();
@@ -1181,6 +1234,16 @@ impl EditorScreen {
             s.extend(t.chars().filter(|c| !c.is_control()));
         }
         true
+    }
+
+    /// Scroll the battlefield to put unit `i` in the middle of the view.
+    fn centre_on(&mut self, i: usize) {
+        let (Some(scene), Some((x, y))) = (&self.scene, self.ed.scn.units.get(i).and_then(|u| self.ed.map.hex_from_id(u.hex))) else { return };
+        let (cx, cy) = play::centre(scene, x, y);
+        let (w, h) = self.window;
+        let (view_w, view_h) = ((w as i32 - PANEL).max(0), h as i32);
+        self.scroll = (0, 0);
+        self.scroll_by(cx - view_w / 2, cy - view_h / 2, w, h);
     }
 
     /// Scroll the battlefield by `(dx, dy)` pixels, kept on it.
@@ -1340,6 +1403,22 @@ mod tests {
             steps += 1;
         }
         assert!(steps > 1, "{steps}");
+        // the catalogue searched, by name or nation
+        e.focus = Some(Field::Search);
+        for c in ["h", "y", "p", "a", "s"] {
+            e.key(Some(c), false, false);
+        }
+        let found = e.shown();
+        assert!(!found.is_empty() && found.iter().all(|&i| e.catalogue[i].name.to_lowercase().contains("hypas")));
+        e.key(None, false, true);
+        e.search = "pompeian".into();
+        assert!(e.shown().iter().all(|&i| e.catalogue[i].nation == 10));
+        // a group's member found on the map
+        let member = e.ed.scn.units.iter().position(|u| u.kind != 0).unwrap();
+        e.group = Some(e.ed.scn.units[member].unk_b as i16);
+        e.window = (900, 600);
+        e.act(Act::Member(member));
+        assert_eq!(e.selected, Some(member));
         // packed, and opened from the package (nothing to replace)
         e.act(Act::Package);
         assert!(e.scenarios.iter().any(|n| n == "TESTED.psf"), "{}", e.message);
@@ -1363,6 +1442,11 @@ mod tests {
             e.template = e.catalogue.iter().position(|u| u.name.contains("Hypaspist")).or(Some(foot));
             let (units, _) = e.canvas(1200, 800);
             crate::ui::write_ppm(&units, &e.palette, &Path::new(&out).join("editor-units.ppm")).unwrap();
+            e.tab = Tab::Groups;
+            e.group = e.ed.scn.units.iter().find(|u| u.kind != 0).map(|u| u.unk_b as i16);
+            e.selected = e.ed.scn.units.iter().position(|u| u.kind != 0);
+            let (groups, _) = e.canvas(1200, 800);
+            crate::ui::write_ppm(&groups, &e.palette, &Path::new(&out).join("editor-groups.ppm")).unwrap();
         }
         unsafe { std::env::remove_var("GBOH_SAVES") };
         let _ = std::fs::remove_dir_all(&saves);
