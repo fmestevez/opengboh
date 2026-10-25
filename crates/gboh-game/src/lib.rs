@@ -8,6 +8,7 @@ pub mod battle;
 pub mod campaign;
 pub mod combat;
 pub mod command;
+pub mod editor;
 pub mod game;
 pub mod hex;
 pub mod missile;

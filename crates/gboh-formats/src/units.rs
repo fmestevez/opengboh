@@ -836,6 +836,13 @@ mod tests {
         let raw = std::fs::read(path("Last.scn")).unwrap();
         let scn = crate::scn::Scenario::parse(&raw).unwrap();
         assert_eq!(scn.write_editor(), raw);
+        // the editor's unit catalogue: every unit with art
+        let cat = std::path::Path::new(&dir).join("Scenario Editor").join("MainUnits.unt");
+        if let Ok(d) = std::fs::read(&cat) {
+            let units = crate::scn::parse_catalogue(&d).unwrap();
+            assert_eq!(units.len(), 2632);
+            assert!(units.iter().all(|u| EDITOR_ART.get(u.artwork as usize).is_some()), "artwork out of range");
+        }
     }
 
     /// Every unit of Hannibal's scenarios gets a type whose sprite set is

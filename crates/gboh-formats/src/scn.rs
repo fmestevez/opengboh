@@ -447,61 +447,7 @@ impl Scenario {
             let orders = (0..20).map(|_| Ok((r.u32()?, r.u16()?, r.u16()?))).collect::<Result<_>>()?;
             groups.push(Group { id, name, orders, behaviour: r.u32()? });
         }
-        let mut units = Vec::new();
-        for _ in 0..r.u32()? {
-            let at = r.pos;
-            let kind = r.u32()?;
-            let name = str8(&mut r)?;
-            let facing = match r.u32()? {
-                0 => 3,
-                f => f as u8,
-            };
-            let movement = r.u16()?;
-            let nation = r.u32()? as u8;
-            let hex = r.u16()?;
-            r.u16()?;
-            let artwork = r.u16()? as i16;
-            let catalogue = r.u32()? as i32;
-            let group = r.u16()?;
-            let (mut elite, kind_u8) = (0, kind as u8);
-            let extra = match kind {
-                0 => {
-                    let (initiative, range, charisma) = (r.u16()?, r.u16()?, r.u16()?);
-                    elite = u8(&mut r)?;
-                    UnitExtra::Leader([charisma, range, initiative, 0])
-                }
-                1..=17 => {
-                    let (tq, size, double) = (r.u16()?, r.u16()?, u8(&mut r)?);
-                    match kind {
-                        6 | 9 | 12 => UnitExtra::Combat { a: size, b: tq, c: double, more: None },
-                        2 | 14 | 16 => UnitExtra::Combat { a: size, b: tq, c: double, more: Some(u8(&mut r)?) },
-                        _ => {
-                            let (missile, range, supply) = (r.u32()? as u8, r.u16()?, r.u16()?);
-                            let legion = if matches!(kind, 13 | 17) { Some(u8(&mut r)? as i16 + 1) } else { None };
-                            UnitExtra::Missile { a: size, b: tq, c: double, missile, m1: range, m2: supply, more: None, legion }
-                        }
-                    }
-                }
-                _ => return Err(Error::Invalid { offset: at, msg: format!("unknown editor unit kind {kind}") }),
-            };
-            units.push(Unit {
-                kind: kind_u8,
-                name,
-                nation,
-                unk_a: movement,
-                unk_b: group,
-                hex,
-                facing,
-                extra,
-                arrival: 0,
-                elite,
-                link: -1,
-                layout: Layout::Editor,
-                art_nation: nation,
-                artwork,
-                catalogue,
-            });
-        }
+        let units = (0..r.u32()?).map(|_| editor_unit(&mut r)).collect::<Result<_>>()?;
         let leaders = groups.iter().map(|g| (g.id as u16, g.name.clone())).collect();
         let next = groups.iter().map(|g| g.id as u16 + 1).max().unwrap_or(0);
         Ok(Self {
@@ -520,6 +466,71 @@ impl Scenario {
             editor: Some(EditorInfo { guid, author, description, turn_limit, groups }),
         })
     }
+}
+
+/// One unit record of the *Collector's Edition* editor's (its scenarios'
+/// and its unit catalogues').
+fn editor_unit(r: &mut Reader) -> Result<Unit> {
+    let at = r.pos;
+    let kind = r.u32()?;
+    let name = str8(r)?;
+    let facing = match r.u32()? {
+        0 => 3,
+        f => f as u8,
+    };
+    let movement = r.u16()?;
+    let nation = r.u32()? as u8;
+    let hex = r.u16()?;
+    r.u16()?;
+    let artwork = r.u16()? as i16;
+    let catalogue = r.u32()? as i32;
+    let group = r.u16()?;
+    let (mut elite, kind_u8) = (0, kind as u8);
+    let extra = match kind {
+        0 => {
+            let (initiative, range, charisma) = (r.u16()?, r.u16()?, r.u16()?);
+            elite = u8(r)?;
+            UnitExtra::Leader([charisma, range, initiative, 0])
+        }
+        1..=17 => {
+            let (tq, size, double) = (r.u16()?, r.u16()?, u8(r)?);
+            match kind {
+                6 | 9 | 12 => UnitExtra::Combat { a: size, b: tq, c: double, more: None },
+                2 | 14 | 16 => UnitExtra::Combat { a: size, b: tq, c: double, more: Some(u8(r)?) },
+                _ => {
+                    let (missile, range, supply) = (r.u32()? as u8, r.u16()?, r.u16()?);
+                    let legion = if matches!(kind, 13 | 17) { Some(u8(r)? as i16 + 1) } else { None };
+                    UnitExtra::Missile { a: size, b: tq, c: double, missile, m1: range, m2: supply, more: None, legion }
+                }
+            }
+        }
+        _ => return Err(Error::Invalid { offset: at, msg: format!("unknown editor unit kind {kind}") }),
+    };
+    Ok(Unit {
+        kind: kind_u8,
+        name,
+        nation,
+        unk_a: movement,
+        unk_b: group,
+        hex,
+        facing,
+        extra,
+        arrival: 0,
+        elite,
+        link: -1,
+        layout: Layout::Editor,
+        art_nation: nation,
+        artwork,
+        catalogue,
+    })
+}
+
+/// The *Collector's Edition* editor's unit catalogue (`MainUnits.unt`: a
+/// u32 count and that many unit records): units of every nation of the
+/// three games, to draw from.
+pub fn parse_catalogue(data: &[u8]) -> Result<Vec<Unit>> {
+    let mut r = Reader::new(data);
+    (0..r.u32()?).map(|_| editor_unit(&mut r)).collect()
 }
 
 /// Map files in the order of the original's battle table (`0x5e4394`); many
