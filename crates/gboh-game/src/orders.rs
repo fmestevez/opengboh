@@ -21,6 +21,9 @@ pub enum Refused {
     Blocked,
     /// Routed units take no order but a rally.
     Routed,
+    /// The active leader may give no orders (but designate shocks): by
+    /// Alexander's manual, a rule option, he began in an enemy's zone.
+    Held,
 }
 
 /// Facing after one 60° turn: left is anticlockwise (3 → 2 → 8 → 7 → 6 →

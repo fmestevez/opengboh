@@ -279,9 +279,8 @@ impl<'a> AiHost<'a> {
         if n == 0 || !self.charge(u) {
             return 0;
         }
-        let map = self.game.map.clone();
         for _ in 0..n {
-            if orders::turn(&mut self.game.battle, &map, u, left).is_err() {
+            if self.game.order_turn(u, left).is_err() {
                 break;
             }
         }
@@ -610,7 +609,7 @@ impl Host for AiHost<'_> {
             }
             "attempttorally" => {
                 let Some(u) = self.unit(arg(0)) else { return Some(0) };
-                if !self.game.may_rally(u) {
+                if self.game.held || !self.game.may_rally(u) {
                     return Some(0);
                 }
                 // the original counts the order before trying
@@ -621,7 +620,7 @@ impl Host for AiHost<'_> {
             }
             "recover" => {
                 let Some(u) = self.unit(arg(0)) else { return Some(0) };
-                if !self.charge(u) {
+                if self.game.held || !self.charge(u) {
                     return Some(0);
                 }
                 self.game.recover(u);

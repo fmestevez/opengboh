@@ -132,6 +132,11 @@ pub struct Game {
     pub points: Option<CommandPoints>,
     /// Units resupplied at this activation (they may not be ordered).
     pub resupplied: Vec<usize>,
+    /// Whether the active leader may give no orders but shocks: by
+    /// Alexander's manual (a rule option), "a leader who starts an orders
+    /// phase in an enemy zone of control cannot issue orders", though his
+    /// range still serves to designate shocks.
+    pub held: bool,
     /// Units the active leader may still order, fixed at activation.
     orderable_now: Vec<usize>,
     /// Whether the active leader has moved (once per activation).
@@ -270,6 +275,7 @@ impl Game {
             armies: [(scn.home.nation, scn.home.rout_level), (scn.visitor.nation, scn.visitor.rout_level)],
             points: None,
             resupplied: Vec::new(),
+            held: false,
             orderable_now: Vec::new(),
             leader_moved: false,
             log: Vec::new(),
@@ -349,6 +355,10 @@ impl Game {
             self.group_streak.insert(l, streak);
         }
         self.shocks.clear();
+        self.held = leader.is_some_and(|l| {
+            let u = &self.battle.units[l];
+            self.battle.options.manual_command && self.rules == Rules::Alexander && crate::movement::in_enemy_zoc(&self.battle, &self.map, u.side, u.hex)
+        });
         // every activation, a successful momentum too (`FUN_0054b4eb`
         // broadcasting `BeginLeaderOrdersPhase`): every unit gets its
         // movement back and may take orders again (`FUN_0052b2e2`,
@@ -460,6 +470,9 @@ impl Game {
 
     /// Step `unit` back to `to` (see [`Game::backward_options`]).
     pub fn order_backward(&mut self, unit: usize, to: crate::hex::Hex) -> Result<Vec<(usize, i32)>, orders::Refused> {
+        if self.held {
+            return Err(orders::Refused::Held);
+        }
         if !self.backward_options(unit).contains(&to) {
             return Err(orders::Refused::Unreachable);
         }
@@ -502,6 +515,9 @@ impl Game {
     }
 
     pub fn order_move(&mut self, unit: usize, to: crate::hex::Hex) -> Result<Vec<(usize, i32)>, orders::Refused> {
+        if self.held {
+            return Err(orders::Refused::Held);
+        }
         self.reliable(unit)?;
         let start = self.battle.units[unit].hex;
         let mp = self.battle.units[unit].mp;
@@ -550,6 +566,9 @@ impl Game {
 
     /// `shooter` volleys at `target` (see `orders::volley`), logged.
     pub fn order_volley(&mut self, shooter: usize, target: usize) -> Result<i32, orders::Refused> {
+        if self.held {
+            return Err(orders::Refused::Held);
+        }
         let weapon = self.battle.units[shooter].missile.map(|m| m.0);
         let cover = self.cover(target);
         let hits = orders::volley(&mut self.battle, shooter, target, cover, &mut self.rng)?;
@@ -631,7 +650,7 @@ impl Game {
     /// be paid for): on success its hits drop and it fights again; on
     /// failure it routs terminally (out of the battle). Returns success.
     pub fn rally(&mut self, unit: usize) -> bool {
-        let Some(l) = self.activation.active() else { return false };
+        let Some(l) = self.activation.active().filter(|_| !self.held) else { return false };
         let u = &self.battle.units[unit];
         if u.state != UnitState::Routed {
             return false;
@@ -664,7 +683,7 @@ impl Game {
     /// Recover cohesion for `unit` with the active leader (the order must
     /// already be paid for); returns the hits removed.
     pub fn recover(&mut self, unit: usize) -> i32 {
-        let Some(l) = self.activation.active() else { return 0 };
+        let Some(l) = self.activation.active().filter(|_| !self.held) else { return 0 };
         let ini = self.battle.units[l].leader.map_or(0, |r| r.initiative);
         let n = orders::recover(&mut self.battle, &self.map, unit, ini, &mut self.rng);
         self.spend(unit, true);
@@ -689,6 +708,9 @@ impl Game {
     /// of an enemy.
     pub fn group_move_refused(&self) -> Option<&'static str> {
         let l = self.activation.active()?;
+        if self.held {
+            return Some("the leader is in an enemy's zone");
+        }
         if self.points.as_ref().is_some_and(|p| p.used > 0) || self.leader_moved {
             return Some("orders already given");
         }
@@ -725,7 +747,7 @@ impl Game {
     /// tried one in his previous activation too rolls 30 lower; after two or
     /// more such activations running he cannot fail.
     pub fn try_group_move(&mut self) -> Option<GroupMove> {
-        let l = self.activation.active()?;
+        let l = self.activation.active().filter(|_| !self.held)?;
         if self.group_move_refused().is_some() {
             return None;
         }
@@ -825,7 +847,7 @@ impl Game {
     /// Hannibal's group retreat (`FUN_005704f0`): on a good roll every unit
     /// of the leader's group makes for his army's retreat edge.
     pub fn group_retreat(&mut self) -> bool {
-        let Some(l) = self.activation.active() else { return false };
+        let Some(l) = self.activation.active().filter(|_| !self.held) else { return false };
         if !self.group_order_roll() {
             return false;
         }
@@ -851,7 +873,7 @@ impl Game {
     /// of the group closes on its nearest enemy, and those that reach one
     /// attack it (🟡 the original also fires missiles where it can't).
     pub fn group_attack(&mut self) -> bool {
-        let Some(l) = self.activation.active() else { return false };
+        let Some(l) = self.activation.active().filter(|_| !self.held) else { return false };
         if !self.group_order_roll() {
             return false;
         }
@@ -873,7 +895,7 @@ impl Game {
     /// Hannibal's group restore cohesion (`FUN_005715f6`): on a good roll
     /// every unit of the group with hits tries to recover.
     pub fn group_restore(&mut self) -> bool {
-        let Some(l) = self.activation.active() else { return false };
+        let Some(l) = self.activation.active().filter(|_| !self.held) else { return false };
         if !self.group_order_roll() {
             return false;
         }
@@ -910,7 +932,7 @@ impl Game {
     /// the line extends to the left. Facings are kept; each step is made
     /// before the next unit is looked at. Returns how many stepped.
     pub fn extend_line(&mut self) -> usize {
-        if !self.can_extend_line() {
+        if self.held || !self.can_extend_line() {
             return 0;
         }
         let Some(l) = self.activation.active() else { return 0 };
@@ -1053,8 +1075,16 @@ impl Game {
 
     /// Move the active leader to `to` (one of `leader_options`, the order
     /// already paid for); false if he cannot.
+    /// Turn `unit` a vertex (see `orders::turn`).
+    pub fn order_turn(&mut self, unit: usize, left: bool) -> Result<(), orders::Refused> {
+        if self.held {
+            return Err(orders::Refused::Held);
+        }
+        orders::turn(&mut self.battle, &self.map, unit, left)
+    }
+
     pub fn move_leader(&mut self, to: crate::hex::Hex) -> bool {
-        let Some(l) = self.activation.active() else { return false };
+        let Some(l) = self.activation.active().filter(|_| !self.held) else { return false };
         if !self.leader_options().contains(&to) || to == self.battle.units[l].hex {
             return false;
         }
@@ -1943,6 +1973,7 @@ mod tests {
             armies: [(2, 10), (1, 6)],
             points: None,
             resupplied: Vec::new(),
+            held: false,
             orderable_now: Vec::new(),
             leader_moved: false,
             group_move: None,
@@ -1990,6 +2021,36 @@ mod tests {
         let to = back[0];
         g.order_backward(0, to).unwrap();
         assert_eq!((g.battle.units[0].hex, g.battle.units[0].facing), (to, 3));
+    }
+
+    /// Alexander's manual: a leader who starts in an enemy's zone gives no
+    /// orders, but shocks may be designated (an option).
+    #[test]
+    fn leaders_in_enemy_zones_give_no_orders() {
+        let r = LeaderRatings { charisma: 1, command_range: 6, initiative: 3, personal_combat: 1 };
+        let enemy = Hex::new(6, 5);
+        let mut g = game(vec![unit(4, 2, Hex::new(2, 2), Some(r)), unit(31, 2, Hex::new(2, 3), None), unit(31, 1, enemy, None)]);
+        // the leader on a hex in the enemy's zone, the hoplites in front of it
+        let zone = enemy.neighbours().into_iter().filter(|&h| crate::movement::in_enemy_zoc(&g.battle, &g.map, 2, h)).collect::<Vec<_>>();
+        assert!(zone.len() >= 2, "{zone:?}");
+        g.battle.units[0].hex = zone[0];
+        g.battle.units[1].hex = zone[1];
+        g.battle.units[1].facing = g.battle.units[2].facing;
+        let face_enemy = (0..6).find_map(|_| {
+            let f = g.battle.units[1].facing;
+            if g.can_shock(1, 2) {
+                return Some(f);
+            }
+            g.battle.units[1].facing = orders::turned(f, true);
+            None
+        });
+        g.battle.options.manual_command = true;
+        assert_eq!(g.begin_turn(), Some(0));
+        assert!(g.held);
+        assert_eq!(g.order_turn(1, true), Err(orders::Refused::Held));
+        assert!(g.group_move_refused().is_some() && !g.move_leader(Hex::new(1, 1)));
+        assert!(face_enemy.is_some());
+        assert!(g.designate_shock(1, 2), "shocks still");
     }
 
     /// Caesar's manual: Gallic leaders rally only within two hexes (an

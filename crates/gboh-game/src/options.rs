@@ -9,7 +9,7 @@ pub const ALL: [(&str, &str); 15] = [
     ("manual_shock", "Manual: shock with terrain shifts, its charge, size ratio and leader rules"),
     ("manual_missiles", "Manual: woods protect, replenishment, 15% leader hits"),
     ("manual_movement", "Manual: leaving zones of control, skirmishers' flank zone, slopes"),
-    ("manual_command", "Manual: group order odds, leaders' withdrawal risk, Gallic rallies"),
+    ("manual_command", "Manual: group order odds, leaders' withdrawal risk and zones, Gallic rallies"),
     ("manual_victory", "Manual: rout points, turn limits and battles' special rules"),
     ("printed_clash", "Manual: clash values as Hannibal's and Caesar's manuals print them"),
     ("pursuit", "Alexander: cavalry pursue broken units (from Hannibal)"),

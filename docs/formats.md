@@ -2070,11 +2070,12 @@ to the other player):
   easier after a failure; every leader's group move succeeds in Caesar; a
   leader stepping away from an enemy is hurt 5 times in 100 (the games 90
   from cavalry, 60 from others); Caesar's Gallic leaders rally units only
-  within two hexes. (Not done: Alexander's manual has a leader who starts
-  in an enemy's zone give no orders but shocks; Caesar's Numidians at
-  Ruspina better at momentum on the first turn, and Hannibal's and
-  Caesar's reinforcements arriving by chance, for which the manuals give
-  no figures.)
+  within two hexes; an Alexander leader who begins his activation in an
+  enemy's zone gives no orders (moves, turns, volleys, rallies, recoveries,
+  group orders, his own move), though shocks may still be designated. (Not
+  done: Caesar's Numidians at Ruspina better at momentum on the first
+  turn, and Hannibal's and Caesar's reinforcements arriving by chance, for
+  which the manuals give no figures.)
 - **Manual victory:** Alexander's Agrianians 2 rout points, "Alexander
   (CH)" at Chaeronea a leader's 5 × initiative, and no turn limit at
   Hydaspes; Hannibal × 10 and his death no end of the battle;

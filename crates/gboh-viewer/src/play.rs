@@ -1085,6 +1085,9 @@ impl Play {
                 return true;
             }
             if self.selected == Some(l) && self.lit().contains(&hex) {
+                if self.held() {
+                    return false;
+                }
                 let before = self.game.clone();
                 if !self.charge(l) {
                     self.say("no command points");
@@ -1157,8 +1160,20 @@ impl Play {
     /// granted, he is selected with his group's destinations lit.
     /// One of Hannibal's group orders (or a line extension) for the active
     /// leader; returns whether anything changed.
+    /// Whether the active leader may give no orders but shocks (by
+    /// Alexander's manual, a rule option): if so, says so.
+    fn held(&mut self) -> bool {
+        if self.game.held {
+            self.say("the leader began in an enemy's zone: shocks only");
+        }
+        self.game.held
+    }
+
     pub fn group_order(&mut self, order: GroupOrder) -> bool {
         self.orders.push(Order::Group(order));
+        if self.held() {
+            return false;
+        }
         self.undo.clear();
         let done = match order {
             GroupOrder::Retreat => self.game.group_retreat(),
@@ -1187,6 +1202,9 @@ impl Play {
     pub fn rally(&mut self) -> bool {
         self.orders.push(Order::Rally);
         let Some(s) = self.selected else { return false };
+        if self.held() {
+            return false;
+        }
         if self.game.battle.units[s].state != UnitState::Routed {
             self.say("only routed units rally");
             return false;
@@ -1212,6 +1230,9 @@ impl Play {
     pub fn recover(&mut self) -> bool {
         self.orders.push(Order::Recover);
         let Some(s) = self.selected else { return false };
+        if self.held() {
+            return false;
+        }
         if self.game.battle.units[s].state != UnitState::Fighting || self.game.battle.units[s].hits == 0 {
             self.say("nothing to recover");
             return false;
@@ -1231,13 +1252,15 @@ impl Play {
     pub fn turn(&mut self, left: bool) -> bool {
         self.orders.push(Order::Turn { left });
         let Some(s) = self.selected else { return false };
+        if self.held() {
+            return false;
+        }
         let before = self.game.clone();
         if !self.charge(s) {
             self.say("no command points");
             return false;
         }
-        let map = self.game.map.clone();
-        match orders::turn(&mut self.game.battle, &map, s, left) {
+        match self.game.order_turn(s, left) {
             Ok(()) => {
                 self.keep_undo(s, before);
                 self.say("turned")
@@ -1251,6 +1274,9 @@ impl Play {
     pub fn about_face(&mut self) -> bool {
         self.orders.push(Order::AboutFace);
         let Some(s) = self.selected else { return false };
+        if self.held() {
+            return false;
+        }
         let u = &self.game.battle.units[s];
         if u.mp < 3 || u.state != UnitState::Fighting {
             self.say("cannot about face");

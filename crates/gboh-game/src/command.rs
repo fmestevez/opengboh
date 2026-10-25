@@ -11,7 +11,7 @@
 //! a steeper climb, enemy units, or an empty hex in an enemy zone of
 //! control (it is reached, but the trace goes no further). The manual's
 //! rule that a leader in an enemy zone cannot give orders is not in the
-//! original.
+//! original (a rule option: see `Game::held`).
 
 use crate::activation::Activation;
 use crate::battle::Battle;
