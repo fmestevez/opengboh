@@ -45,6 +45,8 @@ pub enum Message {
     Game { scenario: String, levels: [u16; 2], joiner: [bool; 2], host: String },
     Order(crate::play::Order),
     Chat(String),
+    /// The rule options the next game is played by (sent before it).
+    Options(gboh_game::options::Options),
     /// The connection is gone.
     Closed,
 }
@@ -58,6 +60,7 @@ impl Message {
             }
             Message::Order(o) => format!("o {}", crate::saves::order_line(o)),
             Message::Chat(t) => format!("chat {t}"),
+            Message::Options(o) => format!("options {}", o.to_text()),
             Message::Closed => String::new(),
         }
     }
@@ -75,6 +78,7 @@ impl Message {
             }
             "o" => Message::Order(crate::saves::parse_order(rest).ok()?),
             "chat" => Message::Chat(rest.to_string()),
+            "options" => Message::Options(gboh_game::options::Options::parse(rest)),
             _ => return None,
         })
     }
@@ -162,6 +166,7 @@ mod tests {
             Message::Game { scenario: "HYDASPES.SCN".into(), levels: [80, 70], joiner: [false, true], host: "Alexander the Great".into() },
             Message::Order(Order::Click { hex: Hex::new(3, 4), right: true }),
             Message::Chat("ready when you are".into()),
+            Message::Options(gboh_game::options::Options { pursuit: true, ..Default::default() }),
         ] {
             assert_eq!(Message::parse(&m.to_line()), Some(m.clone()));
         }

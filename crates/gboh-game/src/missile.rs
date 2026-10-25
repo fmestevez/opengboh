@@ -69,11 +69,12 @@ const HIT_ON: [[u8; 7]; 9] = [
     [0, 7, 5, 5, 3, 2, 1],
 ];
 
-/// The table entry the original reads, including its overrun: a bolt at
-/// range 7 reads the byte after the table, 85, so it always hits.
+/// The table entry. (A bolt at range 7 reads past the original's table,
+/// the byte after it, 85, so it always hit there; fixed: it hits on 0, the
+/// row's 3, 2, 1 going on down.)
 fn hit_on(weapon: Weapon, range: i32) -> i32 {
     match (weapon, range) {
-        (Weapon::Bolt, 7) => 85,
+        (Weapon::Bolt, 7) => 0,
         // (Caesar's axes: its table's new row)
         (Weapon::Axe, 1) => 7,
         (Weapon::Axe, _) => 0,
@@ -193,8 +194,9 @@ mod tests {
     }
 
     #[test]
-    fn bolts_at_range_seven_always_hit() {
-        let v = Volley { weapon: Weapon::Bolt, range: 7, target: HeavyInfantry, from_front: false, moved: true, target_cataphract: false, ballista: false, bonus: 0 };
-        assert_eq!(v.resolve(9).hits, 1);
+    fn bolts_at_range_seven_hit_only_on_zero() {
+        let v = Volley { weapon: Weapon::Bolt, range: 7, target: Skirmisher, from_front: false, moved: false, target_cataphract: false, ballista: false, bonus: 0 };
+        assert_eq!(v.resolve(9).hits, 0);
+        assert_eq!(v.resolve(0).hits, 1);
     }
 }

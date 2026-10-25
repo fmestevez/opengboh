@@ -72,6 +72,20 @@ impl MenuBar {
         Self { menus, font, black }
     }
 
+    /// Add command `id` worded `text` after command `after`, in its menu,
+    /// if the menus don't have it (the rewrite's commands for options the
+    /// game's own menus lack).
+    pub fn add_after(&mut self, after: u16, id: u16, text: &str) {
+        let has = |items: &[MenuItem]| items.iter().any(|i| i.id == id);
+        if self.menus.iter().any(|m| has(&m.items)) {
+            return;
+        }
+        if let Some(m) = self.menus.iter_mut().find(|m| m.items.iter().any(|i| i.id == after)) {
+            let k = m.items.iter().position(|i| i.id == after).unwrap_or(0);
+            m.items.insert(k + 1, MenuItem { text: text.to_string(), id, items: Vec::new() });
+        }
+    }
+
     /// Each top-level menu's x and width on the bar.
     fn bar_places(&self) -> Vec<(i32, i32)> {
         let mut x = 4;

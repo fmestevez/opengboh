@@ -181,6 +181,8 @@ pub const CONTINUE: u16 = 1;
 pub const QUIT: u16 = 2;
 pub const BACK: u16 = 3;
 pub const THEME: u16 = 200; // + title index
+pub const RULES: u16 = 8;
+pub const OPTION: u16 = 300; // + option index
 pub const CONTENT: u16 = 4;
 pub const ENTRY: u16 = 1000; // + entry index
 pub const SCROLL_UP: u16 = 5;
@@ -217,6 +219,8 @@ const ROW: i32 = 22;
 pub enum Screen {
     Content,
     Settings,
+    /// The rule options.
+    Rules,
     Selector { entries: Vec<Entry>, scroll: usize },
 }
 
@@ -224,6 +228,8 @@ pub enum Screen {
 pub struct View<'a> {
     pub imported: &'a [Title],
     pub theme: Option<Title>,
+    /// The rule options set.
+    pub options: gboh_game::options::Options,
     /// A line of news (an import's progress, or what went wrong), and
     /// whether it is bad news.
     pub status: (String, bool),
@@ -239,12 +245,13 @@ pub fn draw(screen: &Screen, v: &View, w: usize, h: usize) -> (Canvas, Vec<Butto
     let mut buttons = Vec::new();
     let (w, h) = (w as i32, h as i32);
     // the parchment panel, framed twice in dark brown
-    let panel_w = (w - 40).min(520);
+    let panel_w = (w - 40).min(if *screen == Screen::Rules { 720 } else { 520 });
     // as tall as the screen's contents (the selector: the whole window),
     // in the middle of the window
     let panel_h = match screen {
         Screen::Content => 370,
         Screen::Settings => 300,
+        Screen::Rules => 130 + 28 * gboh_game::options::ALL.len() as i32 + 40,
         // the heading, a row per entry and the buttons
         // a fixed height: the list scrolls
         Screen::Selector { .. } => SELECTOR_HEIGHT,
@@ -333,7 +340,25 @@ pub fn draw(screen: &Screen, v: &View, w: usize, h: usize) -> (Canvas, Vec<Butto
             let y = panel.1 + 108 + 3 * 30 + 16;
             let x = button(&mut c, &mut buttons, BACK, "Back", left, y, true);
             let x = button(&mut c, &mut buttons, PREFERENCES, "Game preferences", x + 12, y, !v.imported.is_empty());
+            let x = button(&mut c, &mut buttons, RULES, "Rules", x + 12, y, true);
             button(&mut c, &mut buttons, CONTENT, "Content manager", x + 12, y, true);
+        }
+        Screen::Rules => {
+            heading(&mut c, "Rules");
+            text(&mut c, "Off: the games as they shipped (their plain bugs fixed). New battles use these.", left, panel.1 + 96, BODY, false, INK);
+            for (k, (key, label)) in gboh_game::options::ALL.iter().enumerate() {
+                let y = panel.1 + 108 + k as i32 * 28;
+                let r = (left, y, inner, 24);
+                let on = v.options.get(key);
+                frame(&mut c, (left + 3, y + 5, 14, 14), FRAME);
+                if on {
+                    tick(&mut c, left + 2, y + 3, 16, GREEN);
+                }
+                text(&mut c, label, left + 28, y + 17, BODY, false, INK);
+                buttons.push((OPTION + k as u16, r));
+            }
+            let y = panel.1 + 108 + gboh_game::options::ALL.len() as i32 * 28 + 12;
+            button(&mut c, &mut buttons, BACK, "Back", left, y, true);
         }
         Screen::Selector { entries, scroll } => {
             heading(&mut c, "Choose a battle or a campaign");
@@ -458,7 +483,7 @@ mod tests {
 
     #[test]
     fn draws_the_screens() {
-        let v = View { imported: &[Title::Alexander], theme: Some(Title::Alexander), status: ("Importing: 40%".into(), false), busy: false, pressed: None };
+        let v = View { imported: &[Title::Alexander], theme: Some(Title::Alexander), options: Default::default(), status: ("Importing: 40%".into(), false), busy: false, pressed: None };
         let (c, buttons) = draw(&Screen::Content, &v, 1000, 700);
         // Re-import for Alexander, Import for the others, Continue and Quit
         assert!(buttons.iter().any(|b| b.0 == IMPORT) && buttons.iter().any(|b| b.0 == IMPORT + 2));
@@ -470,10 +495,17 @@ mod tests {
         let none = View { imported: &[], ..v };
         let (_, buttons) = draw(&Screen::Content, &none, 1000, 700);
         assert!(!buttons.iter().any(|b| b.0 == CONTINUE));
-        let (_, buttons) = draw(&Screen::Settings, &View { imported: &[Title::Alexander], theme: Some(Title::Alexander), status: (String::new(), false), busy: false, pressed: None }, 1000, 700);
+        let (_, buttons) = draw(&Screen::Settings, &View { imported: &[Title::Alexander], theme: Some(Title::Alexander), options: Default::default(), status: (String::new(), false), busy: false, pressed: None }, 1000, 700);
         assert!(buttons.iter().any(|b| b.0 == THEME) && !buttons.iter().any(|b| b.0 == THEME + 1));
+        // the rules: a toggle per option, a tick on those set
+        let opts = gboh_game::options::Options { roads: true, ..Default::default() };
+        let (rules, buttons) = draw(&Screen::Rules, &View { imported: &[Title::Alexander], theme: Some(Title::Alexander), options: opts, status: (String::new(), false), busy: false, pressed: None }, 1000, 700);
+        assert_eq!(buttons.iter().filter(|b| b.0 >= OPTION).count(), gboh_game::options::ALL.len());
         if let Ok(out) = std::env::var("GBOH_SHOTS") {
-            let (c, _) = draw(&Screen::Content, &View { imported: &[Title::Alexander], theme: None, status: ("Importing: 40%".into(), false), busy: false, pressed: None }, 1000, 700);
+            crate::ui::write_ppm(&rules, &palette(), &std::path::Path::new(&out).join("rules.ppm")).unwrap();
+        }
+        if let Ok(out) = std::env::var("GBOH_SHOTS") {
+            let (c, _) = draw(&Screen::Content, &View { imported: &[Title::Alexander], theme: None, options: Default::default(), status: ("Importing: 40%".into(), false), busy: false, pressed: None }, 1000, 700);
             crate::ui::write_ppm(&c, &palette(), &std::path::Path::new(&out).join("content.ppm")).unwrap();
         }
     }

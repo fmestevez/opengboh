@@ -240,10 +240,6 @@ pub struct Setup {
     dark: u8,
     button: Vec<Sprite>,
     big_button: Vec<Sprite>,
-    /// Caesar's start screen's buttons (`Big Stone Pushbutton`): up, its
-    /// `Up` cel is a 1 × 1 placeholder, so only the caption shows on the
-    /// painting (as the original, seen running); pressed, the stone.
-    stone_button: Vec<Sprite>,
     radio: Vec<Sprite>,
     checkbox: Vec<Sprite>,
     /// Hannibal's rout dialog options: the battles' turn limits, and the
@@ -410,12 +406,6 @@ impl Setup {
             yellow,
             button: cels(&buttons, "Pushbutton"),
             big_button: cels(&buttons, "Big Pushbutton"),
-            stone_button: if game == Game::Caesar {
-                let stone = cels(&buttons, "Big Stone Pushbutton");
-                [Sprite { width: 1, height: 1, pixels: vec![0] }].into_iter().chain(stone.into_iter().skip(1).take(1)).collect()
-            } else {
-                Vec::new()
-            },
             radio: cels(&buttons, "Radio"),
             checkbox: cels(&buttons, "CheckBox"),
             turn_limits: false,
@@ -514,10 +504,10 @@ impl Setup {
     fn button(&self, canvas: &mut Canvas, rect: (i16, i16, i16, i16), caption: &str) {
         let (x, y) = px((rect.0, rect.1));
         let (w, h) = px((rect.2, rect.3));
-        // (the stone for the game's own buttons, not ours: 115 units wide)
-        let art = if self.screen == Screen::Start && !self.stone_button.is_empty() && rect.2 > 100 {
-            &self.stone_button
-        } else if w > 120 {
+        // (Caesar's start screen draws bare captions on its painting, its
+        // `Big Stone Pushbutton`'s up cel an empty placeholder: hard to
+        // read, so its buttons take the `Big Pushbutton` its data has too)
+        let art = if w > 120 {
             &self.big_button
         } else {
             &self.button
@@ -529,14 +519,7 @@ impl Setup {
         }
         let caption: String = caption.chars().filter(|&c| c != '&').collect();
         let (tx, ty) = (x + (w - self.text_width(&caption)) / 2 + down, y + (h - 11) / 2 + down);
-        if std::ptr::eq(art, &self.stone_button) && down == 1 {
-            // (on the stone's dark middle: light, shadowed; 🟡 the
-            // original's ink when pressed not checked)
-            self.font.draw_in(canvas, &caption, tx + 1, ty + 1, self.dark);
-            self.font.draw_in(canvas, &caption, tx, ty, self.white);
-        } else {
-            self.text(canvas, &caption, tx, ty);
-        }
+        self.text(canvas, &caption, tx, ty);
     }
 
     /// The control of `dialog` under pixel `(x, y)`, by id.

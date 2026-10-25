@@ -12,6 +12,7 @@ pub mod game;
 pub mod hex;
 pub mod missile;
 pub mod movement;
+pub mod options;
 pub mod orders;
 pub mod rout;
 pub mod save;

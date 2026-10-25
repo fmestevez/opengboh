@@ -722,13 +722,12 @@ impl Machine {
         Ok(false)
     }
 
-    /// Name each command group after its leader, where the scripts haven't
-    /// a constant of that name: `Tribune III (Caesarian)` is
-    /// `TRIBUNE_III_CAESARIAN`, its value the group's id. The original
-    /// defines none (Caesar's scripts that use them fail to compile there;
-    /// Hannibal's `constant.ai` lists its leaders under numbers no
-    /// scenario's groups have, and those stand); the rewrite lets Caesar's
-    /// plans run as their authors meant.
+    /// Name each command group after its leader: `Tribune III
+    /// (Caesarian)` is `TRIBUNE_III_CAESARIAN`, its value the group's id.
+    /// The original defines none: Caesar's scripts that use them fail to
+    /// compile there, and Hannibal's `constant.ai` lists its leaders under
+    /// numbers no scenario's groups have, so its plans address the wrong
+    /// groups. Fixed: these replace those.
     pub fn define_groups(&mut self, leaders: impl IntoIterator<Item = (String, i32)>) {
         for (name, group) in leaders {
             let mut key = String::new();
@@ -738,7 +737,7 @@ impl Machine {
                 }
                 key.push_str(&word.to_ascii_uppercase());
             }
-            self.script.consts.entry(key).or_insert(group);
+            self.script.consts.insert(key, group);
         }
     }
 

@@ -281,6 +281,10 @@ fn ai(data_dir: &Path, scn_file: &str, n: u32, opts: &[String]) -> Result<()> {
     let mut machines = [plan(&scn.home_ai, &mut load)?, plan(&scn.visitor_ai, &mut load)?];
     let seed: u32 = opts.iter().find_map(|o| o.strip_prefix("seed=")?.parse().ok()).unwrap_or(1);
     let mut game = Game::new(&scn, map, seed);
+    // `options=a,b`: rule options (see `gboh_game::options`)
+    if let Some(o) = opts.iter().find_map(|o| o.strip_prefix("options=")) {
+        game.set_options(gboh_game::options::Options::parse(&o.replace(',', " ")));
+    }
     let mut first = 1;
     let mut resume: Option<Vec<usize>> = None;
     if let Some(path) = opts.iter().find_map(|o| o.strip_prefix("save=")) {

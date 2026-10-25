@@ -495,7 +495,19 @@ impl Hud {
             .iter()
             .map(|&(_, file, strip, _)| {
                 files.iter().find(|(f, _)| *f == file).map_or_else(Vec::new, |(_, e)| {
-                    cels(e, strip)
+                    // up, down, then disabled, by the cels' names where they
+                    // have them (Caesar's files put the down cel first)
+                    let mut art = cels(e, strip);
+                    if let Some(st) = e.as_ref().and_then(|e| e.strips.iter().find(|s| s.name == strip)) {
+                        let at = |name: &str| st.cels.iter().position(|c| c.name == name);
+                        if let (Some(up), Some(down)) = (at("UpEnabled"), at("DownEnabled")) {
+                            let mut order = vec![up, down];
+                            order.extend(at("UpDisabled"));
+                            order.extend(at("DownDisabled"));
+                            art = order.into_iter().filter_map(|k| art.get(k).cloned()).collect();
+                        }
+                    }
+                    art
                 })
             })
             .collect();
@@ -1520,6 +1532,12 @@ mod tests {
         assert!(hud.buttons.iter().all(|b| b.len() >= 2));
         assert!(hud.tips.iter().all(|(_, short, long)| !short.is_empty() && !long.is_empty()), "{:?}", hud.tips);
         assert!(hud.tips.iter().any(|(t, _, _)| *t == Tool::GroupAttack));
+        // up cels first (Caesar's files list the down one first)
+        let c = hud.canvas(640, 120, |_| true, ["", "", ""], None, None, None, None, &[], None, None, None, None);
+        if let Ok(out) = std::env::var("GBOH_SHOTS") {
+            let pal = gboh_formats::pal::Palette::parse(&std::fs::read(crate::palette_path(Path::new(&dir)).unwrap()).unwrap()).unwrap();
+            crate::ui::write_ppm(&c, &pal, &Path::new(&out).join("cae_toolbar.ppm")).unwrap();
+        }
     }
 
     /// Draws the bars with an overview map; runs only with `GBOH_DATA` set

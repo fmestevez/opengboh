@@ -346,7 +346,7 @@ mod tests {
 
     #[test]
     fn every_leader_goes_once_per_turn() {
-        let battle = Battle { units: vec![leader("A", 2), leader("B", 5), leader("C", 0), leader("D", 3)], wind: false };
+        let battle = Battle { units: vec![leader("A", 2), leader("B", 5), leader("C", 0), leader("D", 3)], ..Default::default() };
         let mut act = Activation::new(&battle, None);
         let mut rng = BorlandRand::new(7);
         let mut seen = vec![act.begin_turn(&battle, &mut rng).unwrap()];
@@ -368,7 +368,7 @@ mod tests {
         };
         let mut free = hannibal(leader("Celts", 0));
         (free.leader, free.group) = (None, 0xffff);
-        let battle = Battle { units: vec![hannibal(leader("A", 2)), hannibal(leader("B", 5)), free], wind: false };
+        let battle = Battle { units: vec![hannibal(leader("A", 2)), hannibal(leader("B", 5)), free], ..Default::default() };
         let mut act = Activation::new(&battle, None);
         let mut rng = BorlandRand::new(3);
         let mut drawn = 0;
@@ -388,7 +388,7 @@ mod tests {
 
     #[test]
     fn elite_initiative_on_first_turn() {
-        let battle = Battle { units: vec![leader("Coenus", 5), leader("Alexander III", 7)], wind: false };
+        let battle = Battle { units: vec![leader("Coenus", 5), leader("Alexander III", 7)], ..Default::default() };
         let mut act = Activation::new(&battle, Some(9));
         assert_eq!(act.begin_turn(&battle, &mut BorlandRand::new(1)), Some(1));
     }

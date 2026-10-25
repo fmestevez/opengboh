@@ -38,8 +38,19 @@ pub struct Shock {
     pub hannibal: bool,
     /// Caesar's rules (its cataphracts deny any defender superiority).
     pub caesar: bool,
+    /// Hannibal's superiority order (the table consulted even for an
+    /// attacker already superior, so both sides can be).
+    pub stack_superiority: bool,
     pub attacker_nation: u8,
     pub defender_nation: u8,
+    /// The manual's rules (an option): an attacker moved (size ratio
+    /// rounded its way; the phalanx's front only against a moving attack),
+    /// all attackers phalanxes, a defending heavy cavalry (2L; and no
+    /// cataphract attacker's +2, which no manual has).
+    pub manual: bool,
+    pub moved: bool,
+    pub all_phalanx: bool,
+    pub defender_heavy_cavalry: bool,
 }
 
 /// Hannibal's Roman and Carthaginian nations.
@@ -80,7 +91,7 @@ impl Shock {
         let mut def = false;
         // Alexander consults the table only for an attacker not already
         // superior; Hannibal always, last, so that both sides can be
-        if !att || self.hannibal {
+        if !att || self.stack_superiority {
             match SUPERIORITY[d][a] {
                 1 => att = true,
                 2 => {
@@ -113,7 +124,10 @@ impl Shock {
     pub fn column(&self) -> usize {
         let (a, d) = (self.attacker as usize, self.defender as usize);
         let (sa, sd) = (self.attacker_size.max(1), self.defender_size.max(1));
-        let size = if sa < sd {
+        let size = if self.manual && self.moved {
+            // (rounded in the attacker's favour)
+            if sa >= sd { (sa + sd - 1) / sd - 1 } else { 1 - sd / sa }
+        } else if sa < sd {
             1 - (sd as f32 / sa as f32).ceil() as i32
         } else if sd < sa {
             sa / sd - 1
@@ -121,14 +135,15 @@ impl Shock {
             0
         };
         let mut col = COLUMN[d][self.angle as usize][a] as i32 - 1 + size;
-        if d == 0 && self.angle == 0 {
-            // a phalanx attacked from the front
+        // a phalanx attacked from the front (the manual: by a moving attack,
+        // not all of phalanxes)
+        if d == 0 && self.angle == 0 && (!self.manual || (self.moved && !self.all_phalanx)) {
             col -= 3;
         }
-        if self.attacker_cataphract {
+        if self.attacker_cataphract && !self.manual {
             col += 2;
         }
-        if self.defender_cataphract {
+        if self.defender_cataphract || (self.manual && self.defender_heavy_cavalry) {
             col -= 2;
         }
         // Hannibal's: elephants other than the Carthaginians' against other
@@ -462,8 +477,13 @@ mod tests {
             column_shift: 0,
             hannibal: false,
             caesar: false,
+            stack_superiority: false,
             attacker_nation: 0,
             defender_nation: 0,
+            manual: false,
+            moved: false,
+            all_phalanx: false,
+            defender_heavy_cavalry: false,
         }
     }
 
@@ -482,6 +502,7 @@ mod tests {
         let mut s = shock(class(a), class(d), 1, 6, 6);
         assert_eq!(s.superiority(), (true, false));
         s.hannibal = true;
+        s.stack_superiority = true;
         assert_eq!(s.superiority(), (true, true));
     }
 

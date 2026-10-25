@@ -140,9 +140,14 @@ pub fn neighbour(hex: Hex, side: usize) -> Option<Hex> {
 }
 
 /// The state of a battle.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Battle {
     pub units: Vec<Unit>,
+    /// Caesar's Vercellae heat (an option): points added to the Gauls'
+    /// (nation 11, but horse) TQ checks.
+    pub heat: u32,
+    /// The rule options in force (see [`crate::options`]).
+    pub options: crate::options::Options,
     /// Hannibal's Cannae: the wind blowing this turn (from direction 2): a
     /// unit facing into it (6 or 7) moves a hex less and shoots a hex
     /// shorter (`FUN_0057c790`, `FUN_00578260`; leaders not).
@@ -223,7 +228,14 @@ impl Battle {
                 units[i].superior = (0..units.len()).find(|&k| k != i && units[k].leader.is_some() && units[k].side == side && units[k].group as i32 == link as i32);
             }
         }
-        Self { units, wind: false }
+        Self { units, wind: false, heat: 0, options: Default::default() }
+    }
+
+    /// What a unit adds to its TQ check rolls: a rally's mark, the heat.
+    pub fn tq_burden(&self, unit: usize) -> u32 {
+        let u = &self.units[unit];
+        let tired = u.nation == 11 && !crate::movement::MoveClass::of_type(u.type_id).is_some_and(|c| c.horse());
+        u.rallied as u32 + if tired { self.heat } else { 0 }
     }
 
     /// Whether `unit` faces into the wind.

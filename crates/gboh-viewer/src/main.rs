@@ -537,6 +537,13 @@ struct Viewer {
     shell: Option<shell::Screen>,
     /// The next battle begins with Hannibal's deployment phase.
     deploy_next: bool,
+    /// The rule options of the next battle started, if not the
+    /// settings' (a saved game's).
+    options_next: Option<gboh_game::options::Options>,
+    /// The options a network game's host sent for the next game.
+    net_options: Option<gboh_game::options::Options>,
+    /// Those for the network game being started.
+    net_start: Option<gboh_game::options::Options>,
     shell_buttons: Vec<shell::Button>,
     shell_pressed: Option<(i32, i32)>,
     /// For testing: clicks (or drags) to make, in the window's physical
@@ -1560,7 +1567,7 @@ impl Viewer {
                 Undo => p.can_undo(),
                 GroupMove => p.game.group_move_refused().is_none(),
                 LineExtension => p.game.can_extend_line(),
-                GroupAttack => p.game.rules.newer() && p.game.points.as_ref().is_some_and(|c| c.used == 0),
+                GroupAttack => p.game.group_orders_allowed() && p.game.points.as_ref().is_some_and(|c| c.used == 0),
                 BackwardMovement => p.can_back(),
                 _ => true,
             }
@@ -1574,7 +1581,7 @@ impl Viewer {
             209 | 224 => !p.over && p.leader().is_some(),
             212 => p.game.group_move_refused().is_none(),
             247 => p.game.can_extend_line(),
-            248 | 259 | 260 => p.game.rules.newer() && p.game.points.as_ref().is_some_and(|c| c.used == 0),
+            248 | 259 | 260 => p.game.group_orders_allowed() && p.game.points.as_ref().is_some_and(|c| c.used == 0),
             246 => p.can_back(),
             222 | 213 | 214 | 220 | 221 => selected,
             225 => tool(hud::Tool::UnitDetails),
@@ -1625,14 +1632,14 @@ impl Viewer {
             }
             // Hannibal's: line extension, group retreat, attack, restore
             // cohesion
-            246 if self.play.as_ref().is_some_and(|p| p.game.rules.newer()) => {
+            246 if self.play.as_ref().is_some_and(|p| p.game.rules.newer() || p.game.battle.options.backward) => {
                 if self.my_turn()
                     && let Some(p) = &mut self.play
                 {
                     p.arm_backward();
                 }
             }
-            247 | 248 | 259 | 260 if self.play.as_ref().is_some_and(|p| p.game.rules.newer()) => {
+            247 | 248 | 259 | 260 if self.play.as_ref().is_some_and(|p| p.game.group_orders_allowed()) => {
                 use play::GroupOrder::*;
                 let order = match id {
                     247 => LineExtension,
@@ -2131,6 +2138,7 @@ impl Viewer {
         let view = shell::View {
             imported: &imported,
             theme: self.settings.theme_in_force(&imported),
+            options: self.settings.options,
             status: self.news.clone(),
             busy: self.importing.is_some(),
             pressed: self.shell_pressed,
@@ -2154,6 +2162,17 @@ impl Viewer {
         let imported = library::imported();
         match (id, self.shell.clone()) {
             (shell::QUIT, _) => self.quit = true,
+            // the rules: back to the settings
+            (shell::BACK, Some(shell::Screen::Rules)) => self.open_shell(shell::Screen::Settings),
+            (shell::RULES, _) => self.open_shell(shell::Screen::Rules),
+            (id, _) if (shell::OPTION..shell::OPTION + gboh_game::options::ALL.len() as u16).contains(&id) => {
+                let key = gboh_game::options::ALL[(id - shell::OPTION) as usize].0;
+                if let Some(f) = self.settings.options.get_mut(key) {
+                    *f = !*f;
+                }
+                self.settings.save();
+                self.show_shell();
+            }
             (shell::CONTINUE | shell::BACK, _) => {
                 let theme = self.settings.theme_in_force(&imported);
                 if let Some(t) = theme {
@@ -2711,7 +2730,9 @@ impl Viewer {
                         n.other = name;
                     }
                 }
+                net::Message::Options(o) => self.net_options = Some(o),
                 net::Message::Game { scenario, levels, joiner, host } => {
+                    self.net_start = self.net_options.take();
                     if let Some(n) = &mut self.net {
                         n.other = host;
                         n.mine = joiner;
@@ -2754,6 +2775,8 @@ impl Viewer {
     fn host_start(&mut self) {
         let Some(n) = &mut self.net else { return };
         let (Some(link), Some((scenario, levels, joiner))) = (&mut n.link, n.chosen.clone()) else { return };
+        // (the host's rule options, both sides alike)
+        let _ = link.send(&net::Message::Options(self.settings.options));
         let _ = link.send(&net::Message::Game { scenario: scenario.clone(), levels, joiner, host: n.name.clone() });
         n.mine = joiner.map(|j| !j);
         n.sent = 0;
@@ -2889,6 +2912,7 @@ impl Viewer {
             computer: self.battle.1,
             levels: [p.game.armies[0].1, p.game.armies[1].1],
             deploy: p.deployed,
+            options: p.game.battle.options,
             orders: p.orders.clone(),
             campaign: self.campaign.as_ref().map(|c| c.to_text()),
         })
@@ -3022,6 +3046,7 @@ impl Viewer {
         self.campaign = save.campaign.as_deref().and_then(gboh_game::campaign::Campaign::parse);
         self.net = None;
         self.deploy_next = save.deploy;
+        self.options_next = Some(save.options);
         self.start_battle(&save.scenario, save.computer, save.levels)?;
         self.campaign_penalty();
         if let Some(p) = &mut self.play {
@@ -3236,9 +3261,27 @@ impl Viewer {
     /// Leave the setup screens for `scenario`, the computer playing the
     /// sides marked (home, visitor), with the armies' rout levels.
     fn start_battle(&mut self, scenario: &str, computer: [bool; 2], levels: [u16; 2]) -> Result<()> {
-        let deploy = std::mem::take(&mut self.deploy_next);
+        // a saved game's own options, else the settings' (with which an
+        // Alexander battle may begin with a deployment phase)
+        let saved = self.options_next.take();
+        let options = saved.or(self.net_start.take()).unwrap_or(self.settings.options);
+        let alexander = gboh_formats::game::Game::detect(&self.data_dir) == Some(gboh_formats::game::Game::Alexander);
+        let deploy = std::mem::take(&mut self.deploy_next) || (saved.is_none() && alexander && options.deployment);
         let mut b = load_battle(&self.data_dir, scenario, computer, deploy)?;
+        // (Alexander's menus lack the commands of options from Hannibal)
+        self.menu_bar = menu::MenuBar::load(&self.data_dir, "CHILDMENU");
+        if alexander {
+            if options.group_orders {
+                self.menu_bar.add_after(212, 260, "Group Restore &Cohesion");
+                self.menu_bar.add_after(212, 259, "Group &Attack");
+                self.menu_bar.add_after(212, 248, "Group &Retreat");
+            }
+            if options.backward {
+                self.menu_bar.add_after(235, 246, "&Backward Movement");
+            }
+        }
         if let Some(p) = &mut b.play {
+            p.game.set_options(options);
             p.game.armies[0].1 = levels[0];
             p.game.armies[1].1 = levels[1];
             // Hannibal's set-up option
@@ -3914,6 +3957,9 @@ fn main() -> Result<()> {
         edge: None,
         next_flag: Instant::now(),
         deploy_next: false,
+        options_next: None,
+        net_options: None,
+        net_start: None,
         shell: (launcher && theme.is_none()).then_some(shell::Screen::Content),
         shell_buttons: Vec::new(),
         shell_pressed: None,

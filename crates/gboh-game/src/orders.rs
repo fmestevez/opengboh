@@ -37,13 +37,26 @@ pub fn turned(facing: u8, left: bool) -> u8 {
 /// cataphracts is not in the game's code.) A two-hex unit pivots: on a
 /// left turn its main hex stays and the second hex swings, on a right turn
 /// the second hex stays and the main hex swings.
+/// Movement points a turn costs: 1, or by the manuals (an option) 2 for
+/// elephants and chariots, Alexander's cataphracts and Caesar's heavy
+/// cavalry too.
+fn turn_cost(battle: &Battle, unit: usize) -> i32 {
+    let ty = battle.units[unit].type_id;
+    let heavy = match MoveClass::of_type(ty) {
+        Some(MoveClass::Elephant | MoveClass::Chariot) => true,
+        Some(MoveClass::HeavyCavalry) if battle.caesar() => true,
+        _ => !battle.hannibal() && gboh_formats::units::cataphract(ty),
+    };
+    if battle.options.manual_turning && heavy { 2 } else { 1 }
+}
+
 pub fn turn(battle: &mut Battle, map: &Map, unit: usize, left: bool) -> Result<(), Refused> {
     if battle.units[unit].state == UnitState::Routed {
         return Err(Refused::Routed);
     }
     let u = &battle.units[unit];
     let free = u.turned && MoveClass::of_type(u.type_id) == Some(MoveClass::Skirmisher);
-    if !free && u.mp < 1 {
+    if !free && u.mp < turn_cost(battle, unit) {
         return Err(Refused::NoMovementPoints);
     }
     if ordered_again(battle, unit) {
@@ -69,9 +82,10 @@ pub fn turn(battle: &mut Battle, map: &Map, unit: usize, left: bool) -> Result<(
             }
         }
     }
+    let cost = turn_cost(battle, unit);
     let u = &mut battle.units[unit];
     if !free {
-        u.mp -= 1;
+        u.mp -= cost;
     }
     if MoveClass::of_type(u.type_id) == Some(MoveClass::Chariot) {
         u.hits += 2;
@@ -473,8 +487,10 @@ pub(crate) fn leader_withdraw(battle: &mut Battle, map: &Map, leader: usize, mov
         battle.units[leader].hex = to;
     }
     let risk = match MoveClass::of_type(battle.units[mover].type_id) {
-        Some(c) if c.horse() => 90,
+        // (the manuals: 5 in 100; an option)
         Some(MoveClass::Oxybeles) | None => 0,
+        Some(_) if battle.options.manual_command => 5,
+        Some(c) if c.horse() => 90,
         Some(_) => 60,
     };
     (rng.random() % 100) < risk
@@ -503,7 +519,9 @@ fn reacting(battle: &Battle, map: &Map, unit: usize) -> Vec<usize> {
 
 /// Order `shooter` to volley at `target`: once per leader's orders, needs a
 /// missile and the target in its arc within the weapon's range.
-pub fn volley(battle: &mut Battle, shooter: usize, target: usize, rng: &mut BorlandRand) -> Result<i32, Refused> {
+/// `cover`: a further modifier for the target's ground (the manual's woods,
+/// an option).
+pub fn volley(battle: &mut Battle, shooter: usize, target: usize, cover: i32, rng: &mut BorlandRand) -> Result<i32, Refused> {
     let s = &battle.units[shooter];
     let t = &battle.units[target];
     if s.state == UnitState::Routed {
@@ -530,7 +548,7 @@ pub fn volley(battle: &mut Battle, shooter: usize, target: usize, rng: &mut Borl
         // +1; the barbarians' bows −1, `FUN_00548d26` 🟡 its wiring of the
         // ballista and cataphract arguments read as meant)
         ballista: gboh_formats::units::title(s.type_id).is_some_and(|t| t.contains("Ballista")),
-        bonus: s.rallied as i32 - (s.nation == 11 && weapon == crate::missile::Weapon::Bow) as i32,
+        bonus: s.rallied as i32 - (s.nation == 11 && weapon == crate::missile::Weapon::Bow) as i32 + cover,
     };
     let hits = v.resolve(rng.next() % 10).hits;
     battle.units[shooter].missile = Some((weapon, left - 1));
@@ -599,7 +617,14 @@ pub fn resupply(battle: &mut Battle, units: &[usize], rng: &mut BorlandRand) -> 
             continue;
         }
         if let Some((w, 0)) = o.missile {
-            let n = if matches!(w, Weapon::Javelin | Weapon::MountedJavelin) { 2 } else { 5 };
+            // (the manual: up to half the supply, rounded up; an option)
+            let n = if battle.options.manual_missiles {
+                w.supply().div_ceil(2) as u32 + 1
+            } else if matches!(w, Weapon::Javelin | Weapon::MountedJavelin) {
+                2
+            } else {
+                5
+            };
             let o = &mut battle.units[u];
             o.missile = Some((w, (rng.random() % n) as u16));
             o.done = true;
@@ -661,7 +686,7 @@ impl CommandPoints {
         let own = battle.units[unit].group == l.group;
         // (Caesar's staff leaders, whose own group has no units, pay no
         // more for another's, `FUN_0056b057`)
-        let staff = battle.caesar() && !battle.units.iter().any(|u| u.leader.is_none() && u.group == l.group && u.side == l.side);
+        let staff = (battle.caesar() || battle.options.staff_leaders) && !battle.units.iter().any(|u| u.leader.is_none() && u.group == l.group && u.side == l.side);
         self.used = (self.used + if own || staff { 1 } else { 2 }).min(self.max);
     }
 
@@ -720,12 +745,40 @@ mod tests {
             elevation: vec![1; 144],
             cells: vec![Vec::new(); (2 * 12 + 2) * (4 * 12 + 1)],
             caesar: false,
+            fast_roads: false,
         }
+    }
+
+    /// The manual's turning (an option): chariots pay 2.
+    #[test]
+    fn manual_turning_costs_two() {
+        let mut b = Battle { units: vec![unit(22, Hex::new(5, 5), 3, 0, None)], ..Default::default() };
+        turn(&mut b, &map(), 0, true).unwrap();
+        assert_eq!(b.units[0].mp, 4);
+        b.options.manual_turning = true;
+        turn(&mut b, &map(), 0, true).unwrap();
+        assert_eq!(b.units[0].mp, 2);
+    }
+
+    /// Roads (an option for Alexander and Hannibal): road to road a point.
+    #[test]
+    fn roads_cost_one() {
+        let mut m = map();
+        let (a, b) = (Hex::new(4, 4), Hex::new(4, 5));
+        for h in [a, b] {
+            let (gx, gy) = Map::hex_cell(h.x as usize, h.y as usize);
+            let w = m.grid_width();
+            m.cells[gy as usize * w + gx as usize] = vec![12, 1];
+        }
+        let d = a.neighbours().iter().position(|&n| n == b).unwrap();
+        assert_eq!(crate::movement::step_cost(&m, MoveClass::HeavyInfantry, a, d), Some(2));
+        m.fast_roads = true;
+        assert_eq!(crate::movement::step_cost(&m, MoveClass::HeavyInfantry, a, d), Some(1));
     }
 
     #[test]
     fn about_face_reverses_and_swaps() {
-        let mut b = Battle { units: vec![unit(17, Hex::new(5, 5), 2, 0, None)], wind: false };
+        let mut b = Battle { units: vec![unit(17, Hex::new(5, 5), 2, 0, None)], ..Default::default() };
         b.units[0].mp = 4;
         let second = b.units[0].second_hex().unwrap();
         about_face(&mut b, 0).unwrap();
@@ -748,7 +801,7 @@ mod tests {
 
     #[test]
     fn turning_costs_a_point_but_skirmishers_only_once() {
-        let mut b = Battle { units: vec![unit(31, Hex::new(5, 5), 3, 0, None), unit(2, Hex::new(8, 8), 3, 0, None)], wind: false };
+        let mut b = Battle { units: vec![unit(31, Hex::new(5, 5), 3, 0, None), unit(2, Hex::new(8, 8), 3, 0, None)], ..Default::default() };
         let m = map();
         turn(&mut b, &m, 0, true).unwrap();
         turn(&mut b, &m, 0, true).unwrap();
@@ -761,7 +814,7 @@ mod tests {
     #[test]
     fn two_hex_units_pivot() {
         let m = map();
-        let mut b = Battle { units: vec![unit(17, Hex::new(5, 5), 3, 0, None)], wind: false };
+        let mut b = Battle { units: vec![unit(17, Hex::new(5, 5), 3, 0, None)], ..Default::default() };
         let second = b.units[0].second_hex().unwrap();
         // right turn: the second hex stays
         turn(&mut b, &m, 0, false).unwrap();
@@ -778,19 +831,19 @@ mod tests {
         use crate::missile::Weapon;
         let mut b = Battle {
             units: vec![unit(10, Hex::new(2, 4), 3, 0, None), unit(31, Hex::new(4, 4), 7, 0, None)],
-            wind: false,
+            ..Default::default()
         };
         b.units[1].side = 1;
         b.units[0].missile = Some((Weapon::Bow, 10));
         let mut rng = BorlandRand::new(3);
-        assert!(volley(&mut b, 0, 1, &mut rng).is_ok());
+        assert!(volley(&mut b, 0, 1, 0, &mut rng).is_ok());
         assert_eq!(b.units[0].missile, Some((Weapon::Bow, 9)));
         // once per leader's orders
-        assert!(volley(&mut b, 0, 1, &mut rng).is_err());
+        assert!(volley(&mut b, 0, 1, 0, &mut rng).is_err());
         // not behind
         b.units[0].fired = false;
         b.units[0].facing = 7;
-        assert!(volley(&mut b, 0, 1, &mut rng).is_err());
+        assert!(volley(&mut b, 0, 1, 0, &mut rng).is_err());
     }
 
     #[test]
@@ -800,7 +853,7 @@ mod tests {
         // the mover faces 3 and walks east past a javelin unit facing it
         let mut b = Battle {
             units: vec![unit(31, Hex::new(2, 5), 3, 0, None), unit(2, Hex::new(5, 5), 7, 0, None)],
-            wind: false,
+            ..Default::default()
         };
         b.units[1].side = 1;
         b.units[1].missile = Some((Weapon::Javelin, 3));
@@ -813,7 +866,7 @@ mod tests {
     #[test]
     fn resupply_only_empty_units() {
         use crate::missile::Weapon;
-        let mut b = Battle { units: vec![unit(2, Hex::new(2, 2), 3, 0, None), unit(2, Hex::new(3, 3), 3, 0, None)], wind: false };
+        let mut b = Battle { units: vec![unit(2, Hex::new(2, 2), 3, 0, None), unit(2, Hex::new(3, 3), 3, 0, None)], ..Default::default() };
         b.units[0].missile = Some((Weapon::Javelin, 0));
         b.units[1].missile = Some((Weapon::Javelin, 2));
         let r = resupply(&mut b, &[0, 1], &mut BorlandRand::new(5));
@@ -830,7 +883,7 @@ mod tests {
         let (gx, gy) = Map::hex_cell(target.x as usize, target.y as usize);
         let gw = m.grid_width();
         m.cells[gy as usize * gw + gx as usize] = vec![1];
-        let b = Battle { units: vec![unit(31, Hex::new(2, 5), 3, 0, None), unit(2, Hex::new(2, 5), 3, 0, None), unit(8, Hex::new(2, 5), 3, 0, None)], wind: false };
+        let b = Battle { units: vec![unit(31, Hex::new(2, 5), 3, 0, None), unit(2, Hex::new(2, 5), 3, 0, None), unit(8, Hex::new(2, 5), 3, 0, None)], ..Default::default() };
         assert_eq!(terrain_hits(&b, &m, 0, Hex::new(2, 5), target), 1);
         assert_eq!(terrain_hits(&b, &m, 1, Hex::new(2, 5), target), 0);
         // horses next to an enemy elephant: 2 more
@@ -852,7 +905,7 @@ mod tests {
         // always passes and backs away
         let mut b = Battle {
             units: vec![unit(31, Hex::new(2, 5), 3, 0, None), unit(8, Hex::new(5, 5), 7, 0, None)],
-            wind: false,
+            ..Default::default()
         };
         b.units[1].side = 1;
         b.units[1].tq = 9;
@@ -862,7 +915,7 @@ mod tests {
 
     #[test]
     fn recovery_chances_follow_the_leader() {
-        let mut b = Battle { units: vec![unit(31, Hex::new(2, 2), 3, 0, None)], wind: false };
+        let mut b = Battle { units: vec![unit(31, Hex::new(2, 2), 3, 0, None)], ..Default::default() };
         let mut removed = [0; 4];
         let mut rng = BorlandRand::new(9);
         for _ in 0..4000 {
@@ -884,7 +937,7 @@ mod tests {
                 unit(31, Hex::new(2, 1), 3, 1, None),
                 unit(31, Hex::new(3, 1), 3, 2, None),
             ],
-            wind: false,
+            ..Default::default()
         };
         let mut c = CommandPoints::new(&b, 0);
         c.unit_done(&b, 0, 1);

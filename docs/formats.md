@@ -1108,13 +1108,12 @@ and from the remaining two on the flank.
 
 **Leading attacker and angle.** Against the primary target (the clicked
 defender, else the first), each attacker is scored by its frontal base
-column against the target's class. An attacker in the target's flank or
-rear (either hex of a two-hex unit) takes the lead if its score is at least
-the best so far, and sets the angle to flank or rear; a frontal attacker
-takes the lead only while no flanker has, with the same test; ties go to
-the later unit. So a flanker scoring below an earlier frontal attacker
-brings no flank advantage. (The manual says the most advantageous angle is
-used.)
+column against the target's class. The original let an attacker in the
+target's flank or rear lead only if its score was at least the best so
+far, so a flanker scoring below an earlier frontal attacker brought no
+flank advantage. Fixed as the manual says: the most advantageous angle
+any attacker has (rear, flank, front; either hex of a two-hex unit) is
+used, and the attacker at it with the best score leads, ties to the later.
 
 **Sequence** of one shock (as implemented in `gboh_game::shock`): eliminate
 routed defenders; pre-contact TQ checks; pick the leading attacker and
@@ -1168,8 +1167,8 @@ at a leader's activation by a random amount up to half the original supply
 | mounted javelin | 3 | | | | | |
 | bolt | 7 | 5 | 5 | 3 | 2 | 1 |
 
-A bolt at range 7 reads past the table into the next byte (85), so it
-always hits. Modifiers: +1 against phalanx or heavy infantry, +3 more when
+A bolt at range 7 read past the original's table into the next byte (85),
+so it always hit; fixed: it hits on 0. Modifiers: +1 against phalanx or heavy infantry, +3 more when
 that target is shot from its front at range 1 by anything but javelins
 (shields); +1 if the shooter has moved this turn (not javelins); against
 cataphracts +2 for bows, +1 for slings and javelins. A hit is 1 cohesion hit,
@@ -1659,8 +1658,9 @@ Checked at the end of each turn, the Macedonian army being the original's
 first side:
 
 1. **Rout levels:** an army whose lost rout points reach its level loses;
-   if both have, the one less far past its level wins, and a tie goes
-   against the Macedonians (the manual says for them).
+   if both have, the one less far past its level wins, and a tie goes to
+   the Macedonians, as the manual says (the original gave it to the enemy:
+   fixed).
 2. **Leaders:** if neither has broken, a killed Alexander loses the battle
    for the Macedonians and a killed Darius for the Persians (`FUN_0054c265`
    matches leader names).
@@ -1818,9 +1818,10 @@ differently, as ported:
   failures; **Roman leaders never fail**; refused only with an enemy beside a
   unit; success takes the whole activation.
 - **Manipular line extension**: the whole activation, no roll. In the
-  group's order, a maniple whose right-front hex holds one of the same
-  nation, group and line steps into its left-front hex (by the leader's
-  facing) if empty: a rear maniple behind-left of a front one comes up on
+  group's order, a maniple (not routed) whose right-front hex holds one of
+  the same nation, group and line steps into its left-front hex (by the
+  leader's facing) if empty and not in an enemy's zone (the original tested
+  neither: fixed, as the manual says): a rear maniple behind-left of a front one comes up on
   its left, so the line extends to the left.
 - **Elite initiative**: any leader with the scenario's elite flag, three
   times a battle at most; on the first turn always (his chain of superiors
@@ -1828,14 +1829,19 @@ differently, as ported:
   is asked (Yes/No; a save records the answer). In the draw a leader's superior goes first if he
   hasn't yet.
 - **Victory**: one rout rule; Hannibal's death loses his army the battle;
-  turn limits only when the set-up's option is on.
+  turn limits only when the set-up's option is on (at the limit the
+  original's result 1 goes to the visitor, 0x10001 to the home army: the
+  Romans hold out at Bagradas and Trasimene, the home army wins elsewhere,
+  as the manual's victory conditions read).
 - Restore cohesion in an enemy's zone: −60 (Alexander −40). Reaction fire
   from a tower (hex code 14) all round. Rampaging elephants trample routed
   units out. Resupply skips legions and isn't an order. Units arrive at the
   start of their turn (the counter from 0) if their hex is empty and no
   enemy leader stands beside it; else they try again each turn.
 - Battles: wind at Cannae (70 % a turn; facing into it, 6 or 7, a hex off
-  the move's search and the missiles' range, leaders not);
+  the move's search and the missiles' range, leaders not; stepping back,
+  by the unit's own facing, where the original tested the reversed one:
+  fixed);
   Trasimene's Romans idle on the first turn; Metaurus' Ligurians and Gauls
   need a Roman within 7 hexes and a TQ check the first time.
 - **Backward movement**: a unit steps back through its rear, two movement
@@ -1933,10 +1939,11 @@ Caesar's engine is Hannibal's one version on. Where it differs:
   parameters, passed by reference, and overload on how many they take
   (`BASICMAN.AI` has two `FigurePriority`). Some of Caesar's plans use
   leader constants (`TRIBUNE_VI`, `J_CAESAR`) that nothing defines, so the
-  original can't compile them; opengboh names each group after its leader
-  (words in capitals joined by `_`, its group id the value) where a script
-  has no constant of that name. (Hannibal's `CONSTANT.AI` lists its leaders
-  under numbers no scenario's groups have; those stand, as in its game.) A
+  original can't compile them, and Hannibal's `CONSTANT.AI` lists its
+  leaders under numbers no scenario's groups have, so its plans address
+  the wrong groups. Fixed: opengboh names each group after its leader
+  (words in capitals joined by `_`, its group id the value), replacing
+  those. A
   plan's `Orders for` names a leader by the letters and digits of his name
   (`TribuneIIICaesarian`). `FindHurtingUnit` takes the hits to exceed.
 - **Rules** (`gboh_game::game::Rules::Caesar`): Hannibal's engine without
@@ -1951,7 +1958,9 @@ Caesar's engine is Hannibal's one version on. Where it differs:
     their own range table (9, 7, 6, 4, 3, 2, 1); a cohort's single pilum;
     barbarian bows −1; a cataphract denies any defender superiority;
   - rallying marks a unit for good (but first and tenth cohorts): a point
-    worse on TQ checks and later rallies, a point better at shooting;
+    worse on TQ checks, later rallies and shooting, and a
+    column worse attacking (better defending; the original tests the
+    attacker twice, so its shifts cancel: fixed);
   - terrain: road to road a flat point; ditches a point more (another onto
     a berm), walls impassable, elevation 0 counted as 1; chariots and
     elephants keep off the lowest ground and marsh, chariots off woods,
@@ -1963,15 +1972,17 @@ Caesar's engine is Hannibal's one version on. Where it differs:
     their own) pay no more to order another's group;
   - battles: Sabis' Caesarians sit out the first turn; turn limits
     (Pharsalus 7, Thapsus 5, Munda 11, Vercellae, Chaeronea, Bibracte and
-    Sabis 5, Rhine 4) go to the home army; at Ruspina the Pompeians win once
-    no Caesarian unit fights on.
+    Sabis 5, Rhine 4) go to the visitor (the Caesarians must win by then);
+    at Ruspina the Caesarians win once none of theirs is left on the field
+    (they broke out).
 - **Interface**: its battle table (ten battles, Rhine only where installed;
   each description two strings joined), the scenario screen's info box at
   (41, 200, 382, 145), its own side names, Group Attack in the toolbar's
   place of the line extension, CD tracks 2 start, 3 and 4 the battle, 5
   defeat, 6 victory. Its start screen's buttons are bare captions on the
   painting (`Big Stone Pushbutton`'s `Up` cel is an empty placeholder), the
-  stone showing only while one is pressed; the scenario screen opens on the
+  stone showing only while one is pressed (the rewrite draws them with the
+  `Big Pushbutton` its data also has, to be readable); the scenario screen opens on the
   first battle, the description running on under the picture at full
   width (as Hannibal's).
 - **Variants** (Hannibal's and Caesar's): OK on a battle that has `*.var`
@@ -1996,3 +2007,57 @@ destroyed within ten rounds wins; a battle lost, or an army (or Pompey after
 round 1) in Roma, loses. The rating is named by the armies destroyed. The
 map has no shading or garrisons: the flags (Caesar's, the Pompeians',
 Pompey's) and the two fleets.
+
+## Rule options (`gboh_game::options`)
+
+The games as they shipped, their plain bugs fixed (above), are the
+default. Where a fix or a later game's rule would change the balance, it is
+an option instead (Settings → Rules in the launcher; a save records the
+options its battle was fought by, and a network game's host sends its own
+to the other player):
+
+- **Manual turning:** elephants and chariots pay 2 movement points per
+  turn, and also Alexander's cataphracts and Caesar's heavy cavalry (the
+  games charge every class 1).
+- **Manual shock:** the manuals' terrain adjustment (Alexander's and
+  Hannibal's the best for the defender: a column left if all defenders
+  stand in a river, marsh or woods, or any stands higher than the attackers,
+  or any attacker attacks across a steep-banked stream; two if all do; else
+  a column right if all stand lower and none in a river or marsh; Caesar's
+  cumulative, with infantry in rough ground and attacks across rivers);
+  with a skirmisher on either side the others' hits halve; no size ratio
+  where elephants or chariots fight, and the ratio rounded in the attacker's
+  favour when one moved; a phalanx's front −3 only against a moving attack
+  not all of phalanxes; defending heavy cavalry 2L (Caesar: cataphracts)
+  and no +2 for a cataphract attacker; the charge only for the classes the
+  manuals list (heavy and medium infantry, phalanxes, lancers, elephants;
+  Alexander's chariots, Caesar's cohorts), none attacking skirmishers,
+  phalanxes and heavy infantry steady only against a frontal light
+  infantry charge, a charging elephant shaking defenders in the later
+  games; and no leader casualties in shock.
+- **Manual missiles:** shooting into woods a point harder; replenishment up
+  to half the supply, rounded up; a leader beside the target hit 15 times
+  in 100 (the games 16); Caesar's routed units cut down by a missile hit.
+- **Manual movement:** a unit that began its order in an enemy's zone
+  leaves it only outpacing every enemy holding it there (Alexander's also
+  through a free front hex; his light cavalry against cataphracts
+  regardless); Caesar's skirmishers move through zones; skirmishers with
+  missiles left hold their flank hexes too.
+- **Manual command:** group moves at most 90 % on a first try and 20 %
+  easier after a failure; every leader's group move succeeds in Caesar; a
+  leader stepping away from an enemy is hurt 5 times in 100 (the games 90
+  from cavalry, 60 from others).
+- **Manual victory:** Alexander's Agrianians 2 rout points, "Alexander
+  (CH)" at Chaeronea a leader's 5 × initiative, and no turn limit at
+  Hydaspes; Hannibal × 10 and his death no end of the battle;
+  Cynoscephalae's limit turn 10; Caesar's artillery its TQ; Vercellae's
+  heat (the Gauls, but their horse, a point worse on TQ checks from turn 3,
+  two from turn 5).
+- **From Hannibal to Alexander:** cavalry pursuit after a shock; a
+  deployment phase before battle; backward movement; group retreat,
+  attack and restore cohesion (the rewrite adds these to Alexander's
+  menus).
+- **From Caesar to Alexander and Hannibal:** road to road a flat movement
+  point; rallied units stay marked; staff leaders (no units of their own)
+  pay nothing extra to order another's group; and for Hannibal,
+  superiority in Alexander's order (no stacking).

@@ -39,22 +39,113 @@ pub fn angle(at: Hex, facing: u8, from: Hex) -> u8 {
 pub fn leading_attacker(battle: &Battle, attackers: &[usize], target: usize) -> (usize, u8) {
     let t = &battle.units[target];
     let t_class = class(battle, target);
-    let mut best = 0i32;
-    let mut lead = (attackers[0], 0u8);
-    let mut flanked = false;
-    for &a in attackers {
+    // the most advantageous angle any attacker has, as the manual says
+    // (the original let a flanker lead only if it scored at least as well
+    // as those before it, so a weaker flanker lost the flank: fixed), and
+    // among those at it the best score, ties to the later
+    let angle_of = |a: usize| battle.hexes(a).iter().map(|&h| angle(t.hex, t.facing, h)).max().unwrap_or(0);
+    let best_angle = attackers.iter().map(|&a| angle_of(a)).max().unwrap_or(0);
+    let mut best = i32::MIN;
+    let mut lead = (attackers[0], best_angle);
+    for &a in attackers.iter().filter(|&&a| angle_of(a) == best_angle) {
         let score = crate::combat::base_column(class(battle, a), t_class, 0);
-        let ang = battle.hexes(a).iter().map(|&h| angle(t.hex, t.facing, h)).max().unwrap_or(0);
-        if ang > 0 && score >= best {
+        if score >= best {
             best = score;
-            flanked = true;
-            lead = (a, ang);
-        } else if !flanked && best <= score {
-            best = score;
-            lead = (a, 0);
+            lead = (a, best_angle);
         }
     }
     lead
+}
+
+/// The manual's terrain adjustment (Alexander's manual, p. 85), the best
+/// for the defender: a column left if all defenders stand in a river,
+/// marsh or woods, or any stands higher than the attackers or any attacker
+/// attacks across a steep-banked stream; two if all do; else a column
+/// right if all defenders stand lower than the attacker, none in a river
+/// or marsh.
+fn manual_terrain_shift(battle: &Battle, map: &gboh_formats::map::Map, attackers: &[usize], defenders: &[usize]) -> i32 {
+    let on = |h: Hex| h.x >= 0 && h.y >= 0 && (h.x as usize) < map.width && (h.y as usize) < map.height;
+    let codes = |h: Hex| if on(h) { map.hex_features(h.x as usize, h.y as usize).to_vec() } else { Vec::new() };
+    let level = |h: Hex| if on(h) { map.elevation_at(h.x as usize, h.y as usize) as i32 } else { 1 };
+    let wet = |h: Hex| level(h) == 0 || codes(h).iter().any(|c| matches!(c, 3 | 4));
+    let rough = |h: Hex| wet(h) || codes(h).contains(&1);
+    let d_hexes: Vec<Hex> = defenders.iter().flat_map(|&d| battle.hexes(d)).collect();
+    let a_hexes: Vec<Hex> = attackers.iter().flat_map(|&a| battle.hexes(a)).collect();
+    let top = a_hexes.iter().map(|&h| level(h)).max().unwrap_or(1);
+    let higher: Vec<bool> = d_hexes.iter().map(|&h| level(h) > top).collect();
+    // an attacker across a steep-banked stream (side code 8) from a defender
+    let across = |a: usize| {
+        battle.hexes(a).iter().any(|&h| {
+            gboh_formats::map::Side::ALL.iter().enumerate().any(|(k, &s)| {
+                let n = h.neighbours()[k];
+                d_hexes.contains(&n) && on(h) && map.side_features(h.x as usize, h.y as usize, s).contains(&8)
+            })
+        })
+    };
+    let streams: Vec<bool> = attackers.iter().map(|&a| across(a)).collect();
+    let mut shift = 0;
+    if !d_hexes.is_empty() && d_hexes.iter().all(|&h| rough(h)) {
+        shift = shift.min(-1);
+    }
+    if higher.iter().any(|&b| b) || streams.iter().any(|&b| b) {
+        shift = shift.min(-1);
+    }
+    if (!higher.is_empty() && higher.iter().all(|&b| b)) || (!streams.is_empty() && streams.iter().all(|&b| b)) {
+        shift = shift.min(-2);
+    }
+    let bottom = a_hexes.iter().map(|&h| level(h)).min().unwrap_or(1);
+    if shift == 0 && !d_hexes.is_empty() && d_hexes.iter().all(|&h| level(h) < bottom && !wet(h)) {
+        shift = 1;
+    }
+    shift
+}
+
+/// Caesar's manual's terrain adjustments (pp. 86–87), cumulative: a column
+/// left each if all defenders stand in a river, marsh or woods; if the
+/// defending unit is infantry in rough ground (woods, rocky ground,
+/// marsh); if any defender stands higher than the attackers, and another
+/// if all do; if any attacker attacks across a river (a stream side or
+/// into the lowest ground), two if all do; a column right if all defenders
+/// stand lower.
+fn caesar_terrain_shift(battle: &Battle, map: &gboh_formats::map::Map, attackers: &[usize], defenders: &[usize]) -> i32 {
+    let on = |h: Hex| h.x >= 0 && h.y >= 0 && (h.x as usize) < map.width && (h.y as usize) < map.height;
+    let codes = |h: Hex| if on(h) { map.hex_features(h.x as usize, h.y as usize).to_vec() } else { Vec::new() };
+    let level = |h: Hex| if on(h) { map.elevation_at(h.x as usize, h.y as usize) as i32 } else { 1 };
+    let wet = |h: Hex| level(h) == 0 || codes(h).contains(&3);
+    let rough = |h: Hex| wet(h) || codes(h).iter().any(|c| matches!(c, 1 | 2));
+    let d_hexes: Vec<Hex> = defenders.iter().flat_map(|&d| battle.hexes(d)).collect();
+    let a_hexes: Vec<Hex> = attackers.iter().flat_map(|&a| battle.hexes(a)).collect();
+    let (top, bottom) = (a_hexes.iter().map(|&h| level(h)).max().unwrap_or(1), a_hexes.iter().map(|&h| level(h)).min().unwrap_or(1));
+    let across = |a: usize| {
+        battle.hexes(a).iter().any(|&h| {
+            gboh_formats::map::Side::ALL.iter().enumerate().any(|(k, &s)| {
+                let n = h.neighbours()[k];
+                d_hexes.contains(&n) && on(h) && (map.side_features(h.x as usize, h.y as usize, s).contains(&6) || level(n) == 0)
+            })
+        })
+    };
+    let infantry = |d: usize| !matches!(class(battle, d), MoveClass::HeavyCavalry | MoveClass::RomanCavalry | MoveClass::BarbarianCavalry | MoveClass::LightCavalry | MoveClass::Lancer | MoveClass::Elephant | MoveClass::Chariot);
+    let mut shift = 0;
+    if !d_hexes.is_empty() && d_hexes.iter().all(|&h| rough(h)) {
+        shift -= 1;
+    }
+    if defenders.first().is_some_and(|&d| infantry(d) && battle.hexes(d).iter().any(|&h| rough(h))) {
+        shift -= 1;
+    }
+    if d_hexes.iter().any(|&h| level(h) > top) {
+        shift -= 1;
+    }
+    if !d_hexes.is_empty() && d_hexes.iter().all(|&h| level(h) > top) {
+        shift -= 1;
+    }
+    let streams: Vec<bool> = attackers.iter().map(|&a| across(a)).collect();
+    if streams.iter().any(|&b| b) {
+        shift -= if streams.iter().all(|&b| b) { 2 } else { 1 };
+    }
+    if !d_hexes.is_empty() && d_hexes.iter().all(|&h| level(h) < bottom) {
+        shift += 1;
+    }
+    shift
 }
 
 /// What happened to the units in one shock.
@@ -103,8 +194,9 @@ fn routed(battle: &Battle, u: usize) -> bool {
 
 /// Resolve one shock of `attackers` (with whether each moved this phase)
 /// against `defenders`, updating hits on `battle`.
-/// `berms`: Caesar's berm hexes (Dyrrhachium's), which shift the column.
-pub fn resolve(battle: &mut Battle, attackers: &[(usize, bool)], defenders: &[usize], berms: &[crate::hex::Hex], rng: &mut BorlandRand) -> Outcome {
+/// `map`: the battlefield, for Caesar's berms (Dyrrhachium's) and the
+/// manual's terrain shifts (an option).
+pub fn resolve(battle: &mut Battle, attackers: &[(usize, bool)], defenders: &[usize], map: Option<&gboh_formats::map::Map>, rng: &mut BorlandRand) -> Outcome {
     let mut out = Outcome::default();
     let hit = |out: &mut Outcome, battle: &mut Battle, u: usize, h: i32| {
         battle.units[u].hits += h;
@@ -124,10 +216,29 @@ pub fn resolve(battle: &mut Battle, attackers: &[(usize, bool)], defenders: &[us
     let mut fighting = Vec::new();
     let (mut checked, mut all_light, mut chariot) = (false, true, false);
     let mut foreign_elephant = false;
+    let manual = battle.options.manual_shock;
+    // (the manual's charge: only the classes it lists check, and none
+    // attacking skirmishers)
+    let (hannibal, caesar) = (battle.hannibal(), battle.caesar());
+    let manual_checks = move |c: MoveClass| match c {
+        MoveClass::HeavyInfantry | MoveClass::MediumInfantry | MoveClass::Phalanx | MoveClass::Lancer | MoveClass::Elephant => true,
+        MoveClass::Chariot => !hannibal,
+        MoveClass::Legion => caesar,
+        _ => false,
+    };
+    let at_skirmishers = standing.iter().all(|&d| class(battle, d) == MoveClass::Skirmisher);
+    let mut all_frontal_light = true;
     for &(a, moved) in attackers {
         let d = standing[0];
         let frontal = angle(battle.units[d].hex, battle.units[d].facing, battle.units[a].hex) == 0;
-        if checks_before_shock(class(battle, a), moved, class(battle, d), frontal) {
+        let checks = if manual { moved && manual_checks(class(battle, a)) && !at_skirmishers } else { checks_before_shock(class(battle, a), moved, class(battle, d), frontal) };
+        if checks {
+            all_frontal_light &= frontal && class(battle, a) == MoveClass::LightInfantry;
+            // (the manual: a charging elephant shakes them too, Hannibal's
+            // and Caesar's)
+            if manual && battle.hannibal() && class(battle, a) == MoveClass::Elephant {
+                foreign_elephant = true;
+            }
             checked = true;
             all_light &= class(battle, a) == MoveClass::LightInfantry;
             chariot |= class(battle, a) == MoveClass::Chariot;
@@ -139,7 +250,7 @@ pub fn resolve(battle: &mut Battle, attackers: &[(usize, bool)], defenders: &[us
                 foreign_elephant |= class(battle, a) == MoveClass::Elephant && battle.units[a].nation != CARTHAGINIAN;
             }
             let u = &battle.units[a];
-            let (h, rout) = tq_check_unit(u.hits, u.tq as i32, rng.next() % 10 + u.rallied as u32);
+            let (h, rout) = tq_check_unit(u.hits, u.tq as i32, rng.next() % 10 + battle.tq_burden(a));
             let before = u.hits;
             hit(&mut out, battle, a, h - before);
             if rout {
@@ -157,14 +268,17 @@ pub fn resolve(battle: &mut Battle, attackers: &[(usize, bool)], defenders: &[us
         let mut still = Vec::new();
         for &d in &standing {
             let c = class(battle, d);
-            if all_light && matches!(c, MoveClass::Phalanx | MoveClass::HeavyInfantry) {
+            // (the manual: phalanx and heavy infantry, Caesar's cohorts too,
+            // charged frontally by light infantry only)
+            let steady = matches!(c, MoveClass::Phalanx | MoveClass::HeavyInfantry) || (manual && battle.caesar() && battle.units[d].legion.is_some());
+            if steady && if manual { all_frontal_light } else { all_light } {
                 still.push(d);
                 continue;
             }
             let u = &battle.units[d];
-            let elephants = foreign_elephant && c == MoveClass::Elephant && battle.units[d].nation == CARTHAGINIAN;
+            let elephants = foreign_elephant && (manual || (c == MoveClass::Elephant && battle.units[d].nation == CARTHAGINIAN));
             let roll = rng.next() % 10 + (chariot || elephants) as u32;
-            let (h, rout) = tq_check_unit(u.hits, u.tq as i32, roll + u.rallied as u32);
+            let (h, rout) = tq_check_unit(u.hits, u.tq as i32, roll + battle.tq_burden(d));
             let before = u.hits;
             hit(&mut out, battle, d, h - before);
             if rout {
@@ -183,29 +297,72 @@ pub fn resolve(battle: &mut Battle, attackers: &[(usize, bool)], defenders: &[us
     let def_classes: Vec<MoveClass> = standing.iter().map(|&d| class(battle, d)).collect();
     let (lead, attack_angle) = leading_attacker(battle, &fighting, standing[0]);
     let a_class = class(battle, lead);
+    let berm = |h: Hex| map.is_some_and(|m| m.caesar && h.x >= 0 && h.y >= 0 && m.hex_features(h.x as usize, h.y as usize).contains(&4));
+    // the manual's rules (an option): no size ratio where elephants or
+    // chariots fight; the terrain shift best for the defender
+    let beasts = fighting.iter().chain(&standing).any(|&u| matches!(class(battle, u), MoveClass::Elephant | MoveClass::Chariot));
+    let terrain = match map.filter(|_| manual) {
+        Some(m) if battle.caesar() => caesar_terrain_shift(battle, m, &fighting, &standing),
+        Some(m) => manual_terrain_shift(battle, m, &fighting, &standing),
+        None => 0,
+    };
+    let d_class = defending_class(a_class, &def_classes).unwrap_or(def_classes[0]);
+    // the defender missile-capable (the original's argument for its
+    // superiority exceptions); an attacker held in the zone of another enemy
+    // than those it attacks gains no superiority (the manual's rule, read as
+    // the original's flag 🟡)
+    let defender_missile = standing.iter().any(|&d| class(battle, d) == d_class && battle.units[d].missile.is_some());
+    let held = map.is_some_and(|m| {
+        fighting.iter().any(|&a| {
+            let side = battle.units[a].side;
+            battle.hexes(a).iter().any(|&h| {
+                (0..battle.units.len()).any(|e| {
+                    let o = &battle.units[e];
+                    o.side != side
+                        && o.state == crate::battle::UnitState::Fighting
+                        && !standing.contains(&e)
+                        && class(battle, e) != MoveClass::Skirmisher
+                        && crate::movement::zoc_of(battle, m, e).contains(&h)
+                })
+            })
+        })
+    });
     let shock = Shock {
         attacker: a_class,
-        defender: defending_class(a_class, &def_classes).unwrap_or(def_classes[0]),
+        defender: d_class,
         angle: attack_angle,
         attacker_size: side_size(&fighting.iter().map(|&a| (class(battle, a), battle.units[a].size as i32)).collect::<Vec<_>>()),
         defender_size: side_size(&standing.iter().map(|&d| (class(battle, d), battle.units[d].size as i32)).collect::<Vec<_>>()),
         attacker_cataphract: gboh_formats::units::cataphract(battle.units[lead].type_id),
         defender_cataphract: standing.iter().any(|&d| gboh_formats::units::cataphract(battle.units[d].type_id)),
-        defender_missile: false,
-        no_superiority: false,
+        defender_missile,
+        no_superiority: held,
         // (Caesar's berms, `FUN_004aee30`: the attacker on one and the
         // defender not −2, the other way round −3)
-        column_shift: match (berms.contains(&battle.units[lead].hex), berms.contains(&battle.units[standing[0]].hex)) {
+        column_shift: terrain + match (berm(battle.units[lead].hex), berm(battle.units[standing[0]].hex)) {
             (true, false) => -2,
             (false, true) => -3,
             _ => 0,
-        },
+        }
+            // a rallied attacker a column worse, a rallied defender a column
+            // better for the attacker (Caesar's code tests the attacker
+            // twice, so they cancel: fixed)
+            - battle.units[lead].rallied as i32
+            + battle.units[standing[0]].rallied as i32,
         // (Caesar's: Alexander's superiority order, no nations' rules)
         hannibal: battle.hannibal() && !battle.caesar(),
         caesar: battle.caesar(),
+        stack_superiority: battle.hannibal() && !battle.caesar() && !battle.options.no_stacked_superiority,
         attacker_nation: battle.units[lead].nation,
         defender_nation: battle.units[standing[0]].nation,
+        manual,
+        moved: attackers.iter().any(|&(a, m)| m && fighting.contains(&a)),
+        all_phalanx: fighting.iter().all(|&a| class(battle, a) == MoveClass::Phalanx),
+        // (Alexander's and Hannibal's manuals: any defending heavy cavalry
+        // 2L; Caesar's: cataphracts only)
+        defender_heavy_cavalry: !battle.caesar() && standing.iter().any(|&d| matches!(class(battle, d), MoveClass::HeavyCavalry | MoveClass::RomanCavalry)),
     };
+    let shock = if manual && beasts { Shock { attacker_size: 1, defender_size: 1, ..shock } } else { shock };
     let r = shock.resolve(rng.next() % 10);
 
     // share out and collapse
@@ -219,6 +376,11 @@ pub fn resolve(battle: &mut Battle, attackers: &[(usize, bool)], defenders: &[us
     let mut roll = || rng.next() % 10;
     let a_hits = share_hits(r.attacker_hits, &a_shares, lead_i, r.defender_hits, standing.len(), &mut roll);
     let d_hits = share_hits(r.defender_hits, &d_shares, 0, r.attacker_hits, fighting.len(), &mut roll);
+    // (the manual: with a skirmisher on either side, the others' hits halve)
+    let skirmish = manual && fighting.iter().chain(&standing).any(|&u| class(battle, u) == MoveClass::Skirmisher);
+    let halved = |u: usize, h: i32| if skirmish && class(battle, u) != MoveClass::Skirmisher { h / 2 } else { h };
+    let a_hits: Vec<i32> = fighting.iter().zip(&a_hits).map(|(&u, &h)| halved(u, h)).collect();
+    let d_hits: Vec<i32> = standing.iter().zip(&d_hits).map(|(&u, &h)| halved(u, h)).collect();
     for (&u, &h) in fighting.iter().zip(&a_hits).chain(standing.iter().zip(&d_hits)) {
         hit(&mut out, battle, u, h);
         if routed(battle, u) {
@@ -226,7 +388,11 @@ pub fn resolve(battle: &mut Battle, attackers: &[(usize, bool)], defenders: &[us
         }
     }
 
-    // leader casualties (attacking side rolls first)
+    // leader casualties (attacking side rolls first; the manual: "a leader
+    // is never involved in shock combat")
+    if manual {
+        return out;
+    }
     if let (Some(la), Some(ld)) = (involved_leader(battle, &fighting), involved_leader(battle, &standing)) {
         let fourth = |l: usize| battle.units[l].leader.map_or(0, |r| r.personal_combat);
         let ra = rng.next() % 10;
@@ -278,15 +444,14 @@ mod tests {
     }
 
     #[test]
-    fn flankers_lead_unless_outscored_first() {
+    fn the_best_angle_leads() {
         let t = Hex::new(5, 5);
         let n = t.neighbours();
         // target faces 3 (front n[1], n[2]); flank n[0], rear n[4]
         let mk = |ty, hex| unit(ty, 2, hex, 6, 6, 6);
-        let mut b = Battle { units: vec![unit(31, 1, t, 3, 6, 6), mk(31, n[1]), mk(2, n[0])], wind: false };
-        // a skirmisher on the flank scores below the frontal hoplites: not used
-        assert_eq!(leading_attacker(&b, &[1, 2], 0), (1, 0));
-        // listed first it leads, and a frontal unit cannot take over
+        let mut b = Battle { units: vec![unit(31, 1, t, 3, 6, 6), mk(31, n[1]), mk(2, n[0])], ..Default::default() };
+        // a skirmisher on the flank leads, whatever the order: the flank
+        assert_eq!(leading_attacker(&b, &[1, 2], 0), (2, 1));
         assert_eq!(leading_attacker(&b, &[2, 1], 0), (2, 1));
         b.units[2].type_id = 31;
         b.units[2].hex = n[4];
@@ -306,16 +471,16 @@ mod tests {
 
     #[test]
     fn routed_defenders_are_eliminated() {
-        let mut b = Battle { units: vec![unit(31, 2, Hex::new(5, 5), 3, 6, 6), unit(31, 1, Hex::new(6, 5), 7, 6, 6)], wind: false };
+        let mut b = Battle { units: vec![unit(31, 2, Hex::new(5, 5), 3, 6, 6), unit(31, 1, Hex::new(6, 5), 7, 6, 6)], ..Default::default() };
         b.units[1].hits = 6;
-        let out = resolve(&mut b, &[(0, true)], &[1], &[], &mut BorlandRand::new(1));
+        let out = resolve(&mut b, &[(0, true)], &[1], None, &mut BorlandRand::new(1));
         assert_eq!(out.eliminated, vec![1]);
     }
 
     #[test]
     fn a_shock_deals_hits_to_both_sides() {
-        let mut b = Battle { units: vec![unit(31, 2, Hex::new(5, 5), 3, 6, 9), unit(31, 1, Hex::new(6, 5), 7, 6, 9)], wind: false };
-        let out = resolve(&mut b, &[(0, false)], &[1], &[], &mut BorlandRand::new(1));
+        let mut b = Battle { units: vec![unit(31, 2, Hex::new(5, 5), 3, 6, 9), unit(31, 1, Hex::new(6, 5), 7, 6, 9)], ..Default::default() };
+        let out = resolve(&mut b, &[(0, false)], &[1], None, &mut BorlandRand::new(1));
         assert!(b.units[0].hits > 0 && b.units[1].hits > 0, "{out:?}");
     }
 }

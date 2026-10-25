@@ -177,12 +177,13 @@ mod tests {
             elevation: vec![1; 144],
             cells: vec![Vec::new(); (2 * 12 + 2) * (4 * 12 + 1)],
             caesar: false,
+            fast_roads: false,
         }
     }
 
     #[test]
     fn flees_west_in_a_straight_line() {
-        let b = Battle { units: vec![unit(2, Hex::new(6, 5), 7)], wind: false };
+        let b = Battle { units: vec![unit(2, Hex::new(6, 5), 7)], ..Default::default() };
         let Flight::Moved(path) = flee(&b, &map(), 0, 4) else { panic!() };
         assert_eq!(path.len(), 4);
         assert_eq!(path[3].x, 2);
@@ -206,14 +207,14 @@ mod tests {
 
     #[test]
     fn leaves_the_map_at_the_edge() {
-        let b = Battle { units: vec![unit(2, Hex::new(1, 5), 7)], wind: false };
+        let b = Battle { units: vec![unit(2, Hex::new(1, 5), 7)], ..Default::default() };
         assert!(matches!(flee(&b, &map(), 0, 4), Flight::Gone(_)));
     }
 
     #[test]
     fn avoids_enemy_zones() {
         // an enemy west of the path forces the unit round it
-        let mut b = Battle { units: vec![unit(2, Hex::new(6, 5), 7), unit(1, Hex::new(4, 4), 3)], wind: false };
+        let mut b = Battle { units: vec![unit(2, Hex::new(6, 5), 7), unit(1, Hex::new(4, 4), 3)], ..Default::default() };
         b.units[1].hits = 0;
         let Flight::Moved(path) = flee(&b, &map(), 0, 1) else { panic!() };
         assert!(path[0].distance(Hex::new(4, 4)) > 1);

@@ -35,6 +35,8 @@ pub struct Save {
     pub levels: [u16; 2],
     /// Hannibal's: the battle began with a deployment phase.
     pub deploy: bool,
+    /// The rule options the battle is fought by.
+    pub options: gboh_game::options::Options,
     pub orders: Vec<Order>,
     /// The campaign the battle is part of, if one (its own text, see
     /// `gboh_game::campaign::Campaign::to_text`).
@@ -107,6 +109,9 @@ impl Save {
         if self.deploy {
             s.push_str("deploy 1\n");
         }
+        if self.options != Default::default() {
+            s.push_str(&format!("options {}\n", self.options.to_text()));
+        }
         for line in self.campaign.iter().flat_map(|c| c.lines()) {
             s.push_str(&format!("campaign {line}\n"));
         }
@@ -139,12 +144,17 @@ impl Save {
         let mut orders = Vec::new();
         let mut campaign: Option<String> = None;
         let mut deploy = false;
+        let mut options = gboh_game::options::Options::default();
         for (k, line) in lines.enumerate() {
             if line.trim().is_empty() {
                 continue;
             }
             if line.trim() == "deploy 1" {
                 deploy = true;
+                continue;
+            }
+            if let Some(o) = line.strip_prefix("options ") {
+                options = gboh_game::options::Options::parse(o);
                 continue;
             }
             if let Some(c) = line.strip_prefix("campaign ") {
@@ -155,7 +165,7 @@ impl Save {
             }
             orders.push(parse_order(line).map_err(|_| format!("bad order {line:?} (line {})", k + 6))?);
         }
-        Ok(Self { description, scenario, computer: [c[0] != 0, c[1] != 0], levels, deploy, orders, campaign })
+        Ok(Self { description, scenario, computer: [c[0] != 0, c[1] != 0], levels, deploy, options, orders, campaign })
     }
 }
 
@@ -220,6 +230,7 @@ mod tests {
             computer: [false, true],
             levels: [80, 70],
             deploy: false,
+            options: gboh_game::options::Options { roads: true, ..Default::default() },
             orders: vec![
                 Order::Click { hex: Hex::new(13, 21), right: false },
                 Order::Click { hex: Hex::new(4, 5), right: true },

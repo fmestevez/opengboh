@@ -63,6 +63,9 @@ pub struct Map {
     /// 4 berm, 12 road; sides 9 and 11 walls, 10 ditches). Set by the game
     /// for Caesar's battles; the file doesn't say.
     pub caesar: bool,
+    /// Whether road to road (hex code 12) costs a flat movement point
+    /// (Caesar's rule; an option for the others). Set by the game.
+    pub fast_roads: bool,
 }
 
 impl Map {
@@ -87,7 +90,7 @@ impl Map {
         if r.remaining() != 0 {
             return Err(Error::Invalid { offset: r.pos, msg: "trailing bytes after feature grid".into() });
         }
-        Ok(Self { name, width, height, hex_id_origin, unk_b, elevation, cells, caesar: false })
+        Ok(Self { name, width, height, hex_id_origin, unk_b, elevation, cells, caesar: false, fast_roads: false })
     }
 
     pub fn grid_width(&self) -> usize {

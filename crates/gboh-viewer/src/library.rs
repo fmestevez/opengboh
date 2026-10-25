@@ -195,19 +195,22 @@ pub fn import(found: Found) -> Arc<Progress> {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Settings {
     pub theme: Option<Title>,
+    /// The rule options new battles are fought by.
+    pub options: gboh_game::options::Options,
 }
 
 impl Settings {
     pub fn load() -> Self {
         let text = std::fs::read_to_string(root().join("settings.txt")).unwrap_or_default();
         let theme = text.lines().find_map(|l| l.strip_prefix("theme ").and_then(Title::from_key));
-        Self { theme }
+        let options = text.lines().find_map(|l| l.strip_prefix("options ")).map(gboh_game::options::Options::parse).unwrap_or_default();
+        Self { theme, options }
     }
 
     pub fn save(&self) {
         let dir = root();
         let _ = std::fs::create_dir_all(&dir);
-        let text = self.theme.map_or(String::new(), |t| format!("theme {}\n", t.key()));
+        let text = self.theme.map_or(String::new(), |t| format!("theme {}\n", t.key())) + &format!("options {}\n", self.options.to_text());
         let _ = std::fs::write(dir.join("settings.txt"), text);
     }
 
@@ -234,7 +237,7 @@ mod tests {
         assert!(detect(data, Title::Alexander).is_ok());
         let wrong = detect(top, Title::Caesar).unwrap_err();
         assert!(wrong.contains("Alexander"), "{wrong}");
-        assert_eq!(Settings { theme: Some(Title::Caesar) }.theme_in_force(&[Title::Alexander]), Some(Title::Alexander));
+        assert_eq!(Settings { theme: Some(Title::Caesar), options: Default::default() }.theme_in_force(&[Title::Alexander]), Some(Title::Alexander));
     }
 
     /// Hannibal's and Caesar's folders (theirs beside Alexander's, as in the

@@ -197,6 +197,14 @@ pub fn step_cost(map: &Map, class: MoveClass, from: Hex, dir: usize) -> Option<i
     if map.caesar {
         return caesar_step_cost(map, class, from, dir);
     }
+    // (Caesar's road rule, an option for the others)
+    if map.fast_roads
+        && map.hex_features(from.x as usize, from.y as usize).contains(&12)
+        && map.hex_features(to.x as usize, to.y as usize).contains(&12)
+        && !map.side_features(from.x as usize, from.y as usize, SIDES[dir]).contains(&IMPASSABLE_SIDE)
+    {
+        return Some(1);
+    }
     let side = map.side_features(from.x as usize, from.y as usize, SIDES[dir]);
     if side.contains(&IMPASSABLE_SIDE) {
         return None;
@@ -361,6 +369,13 @@ pub fn zoc_of(battle: &Battle, map: &Map, unit: usize) -> Vec<Hex> {
     if u.leader.is_some() || u.state != UnitState::Fighting {
         return Vec::new();
     }
+    // (the manuals, an option: skirmishers with missiles left hold their
+    // flank hexes too)
+    let mut dirs = dirs.to_vec();
+    if battle.options.manual_movement && class == MoveClass::Skirmisher && u.missile.is_some_and(|m| m.1 > 0) {
+        let front = dirs.clone();
+        dirs.extend((0..6).filter(|k| !front.contains(k) && (front.contains(&((k + 1) % 6)) || front.contains(&((k + 5) % 6)))));
+    }
     let mut out = Vec::new();
     for h in battle.hexes(unit) {
         for &d in &dirs {
@@ -464,8 +479,25 @@ fn search(battle: &Battle, map: &Map, unit: usize, points: i32) -> Search {
     // no step out of an enemy zone (`FUN_0056e7d7`), but from where the
     // unit's order began (it starts with full points); a two-hex unit whose
     // second hex is in a zone cannot step at all
-    let start_free = u.mp >= u.max_mp;
+    let mut start_free = u.mp >= u.max_mp;
+    // (the manuals, an option: Alexander's unit leaves a zone it began in
+    // only through a free front hex and outpacing every enemy holding it
+    // there, light cavalry against cataphracts whatever their pace;
+    // Hannibal's outpacing them; Caesar's skirmishers move through zones)
+    let manual = battle.options.manual_movement;
+    if manual && start_free && !battle.caesar() {
+        let holders: Vec<usize> = (0..battle.units.len())
+            .filter(|&e| battle.units[e].side != u.side && battle.units[e].state == UnitState::Fighting && zoc_of(battle, map, e).contains(&u.hex))
+            .collect();
+        let outpaces = holders.iter().all(|&e| u.max_mp > battle.units[e].max_mp || (class == MoveClass::LightCavalry && gboh_formats::units::cataphract(battle.units[e].type_id)));
+        let free_front = dirs.iter().any(|&d| { let n = u.hex.neighbours()[d]; on_map(map, n) && can_enter(battle, unit, n) });
+        start_free = outpaces && (battle.hannibal() || free_front);
+    }
+    let through = manual && battle.caesar() && class == MoveClass::Skirmisher;
     let stuck = |h: Hex| {
+        if through {
+            return false;
+        }
         let zoc = in_enemy_zoc(battle, map, u.side, h) && !(h == u.hex && start_free);
         zoc || pair(h).is_some_and(|p| in_enemy_zoc(battle, map, u.side, p))
     };
@@ -563,6 +595,7 @@ mod tests {
             elevation: vec![1; w * h],
             cells: vec![Vec::new(); (2 * w + 2) * (4 * h + 1)],
             caesar: false,
+            fast_roads: false,
         }
     }
 
@@ -618,7 +651,7 @@ mod tests {
         let map = flat_map(12, 12);
         let mut l = unit(4, 2, Hex::new(3, 5), 3);
         l.leader = Some(crate::battle::LeaderRatings { charisma: 1, command_range: 4, initiative: 3, personal_combat: 1 });
-        let battle = Battle { units: vec![l, unit(31, 1, Hex::new(6, 5), 7), unit(31, 2, Hex::new(3, 4), 3)], wind: false };
+        let battle = Battle { units: vec![l, unit(31, 1, Hex::new(6, 5), 7), unit(31, 2, Hex::new(3, 4), 3)], ..Default::default() };
         let m = leader_moves(&battle, &map, 0, 2);
         // any direction, two steps, but not next to the enemy nor onto a friend
         assert!(m.contains(&Hex::new(1, 5)) && m.contains(&Hex::new(3, 7)));
@@ -629,7 +662,7 @@ mod tests {
     #[test]
     fn moves_only_forward() {
         let map = flat_map(10, 10);
-        let battle = Battle { units: vec![unit(31, 2, Hex::new(4, 4), 3)], wind: false };
+        let battle = Battle { units: vec![unit(31, 2, Hex::new(4, 4), 3)], ..Default::default() };
         let r = reachable(&battle, &map, 0, 1);
         // facing 3: the NE and SE neighbours
         let n = Hex::new(4, 4).neighbours();
@@ -646,7 +679,7 @@ mod tests {
         // facing 4 moves SE and S; an enemy at (3, 5) facing them (8: NW
         // and N) holds both first steps in its zone of control
         let start = Hex::new(2, 4);
-        let battle = Battle { units: vec![unit(31, 2, start, 4), unit(31, 1, Hex::new(3, 5), 8)], wind: false };
+        let battle = Battle { units: vec![unit(31, 2, start, 4), unit(31, 1, Hex::new(3, 5), 8)], ..Default::default() };
         let zone = zoc_of(&battle, &map, 1);
         let r = reachable(&battle, &map, 0, 6);
         let mut got: Vec<_> = r.keys().copied().collect();
@@ -654,15 +687,15 @@ mod tests {
         assert!(got.iter().all(|h| zone.contains(h)), "{got:?} {zone:?}");
         assert!(!got.is_empty());
         // facing away, it holds nothing the unit walks through
-        let battle = Battle { units: vec![unit(31, 2, start, 4), unit(31, 1, Hex::new(3, 5), 4)], wind: false };
+        let battle = Battle { units: vec![unit(31, 2, start, 4), unit(31, 1, Hex::new(3, 5), 4)], ..Default::default() };
         assert!(reachable(&battle, &map, 0, 6).len() > 2);
         // a skirmisher stopped in a zone moves on from where it stands
-        let mut battle = Battle { units: vec![unit(2, 2, start, 4), unit(31, 1, Hex::new(3, 5), 8)], wind: false };
+        let mut battle = Battle { units: vec![unit(2, 2, start, 4), unit(31, 1, Hex::new(3, 5), 8)], ..Default::default() };
         let first = *got.first().unwrap();
         battle.units[0].hex = first;
         battle.units[0].mp = 3;
         assert!(!reachable(&battle, &map, 0, 3).is_empty());
-        let mut battle = Battle { units: vec![unit(31, 2, first, 4), unit(31, 1, Hex::new(3, 5), 8)], wind: false };
+        let mut battle = Battle { units: vec![unit(31, 2, first, 4), unit(31, 1, Hex::new(3, 5), 8)], ..Default::default() };
         battle.units[0].mp = 3;
         assert!(reachable(&battle, &map, 0, 3).is_empty(), "others stay once stopped");
     }
