@@ -885,6 +885,7 @@ impl Viewer {
                     }
                 }
                 Asked::Custom { files } => self.custom_click(&files, &d, at, (w, h, cx, cy)),
+                Asked::Variants { files } => self.variant_click(&files, &d, at, (w, h, cx, cy)),
                 Asked::Network(_) => self.network_click(&d, at, (w, h, cx, cy)),
                 Asked::Video if at == Some(1) => self.close_video(),
                 _ => {}
@@ -899,6 +900,7 @@ impl Viewer {
                 setup::Outcome::Redraw => self.show_setup(),
                 setup::Outcome::Quit => self.quit = true,
                 setup::Outcome::Load => self.open_files(false),
+                setup::Outcome::Variants(v) => self.choose_variant(v),
                 setup::Outcome::Play { .. } | setup::Outcome::Campaign | setup::Outcome::Multiplayer if !self.game.is_none_or(|g| g.playable()) => {
                     self.notice(&["The rewrite does not play this game's battles yet."]);
                 }
@@ -2026,6 +2028,56 @@ impl Viewer {
                 self.show_setup();
             }
         }
+    }
+
+    /// `VARIANTDLG` for a battle with variants: Standard (string 47), then
+    /// theirs by description.
+    fn choose_variant(&mut self, variants: Vec<(String, String)>) {
+        let standard = crate::ui::exe_resources(&self.data_dir).and_then(|r| r.string(47)).unwrap_or_else(|| "Standard".into());
+        let list = std::iter::once(standard).chain(variants.iter().map(|v| v.1.clone())).collect();
+        let files = std::iter::once(None).chain(variants.into_iter().map(|v| Some(v.0))).collect();
+        self.plain = Some((hud::Plain { name: "VARIANTDLG", list, selected: Some(0), ..Default::default() }, Asked::Variants { files }));
+        self.update_hud();
+        self.redraw();
+    }
+
+    /// A click on the variants' dialog: OK (or a second click on a line)
+    /// goes on with the chosen one, Cancel back to the battles.
+    fn variant_click(&mut self, files: &[Option<String>], d: &hud::Plain, at: Option<u16>, (w, h, cx, cy): (usize, usize, i32, i32)) {
+        let chosen = match at {
+            Some(1) => d.selected,
+            Some(2) => {
+                self.plain = None;
+                None
+            }
+            Some(101) => {
+                let k = self.hud.plain_line_at(d, w, h, cx, cy);
+                let again = k.is_some() && k == d.selected;
+                if let (Some(k), Some((p, _))) = (k, &mut self.plain) {
+                    p.selected = Some(k);
+                }
+                if again { k } else { None }
+            }
+            _ => None,
+        };
+        let Some(file) = chosen.and_then(|k| files.get(k)) else {
+            self.update_hud();
+            self.redraw();
+            return;
+        };
+        self.plain = None;
+        let data_dir = self.data_dir.clone();
+        if let Some(s) = &mut self.setup {
+            match file {
+                None => s.choose_standard(),
+                Some(f) => {
+                    s.choose_custom(&data_dir, f);
+                }
+            }
+        }
+        self.show_setup();
+        self.update_hud();
+        self.redraw();
     }
 
     /// A testing click or drag (see `GBOH_CLICKS`), as the mouse makes it.
@@ -3960,6 +4012,8 @@ enum Asked {
     Video,
     /// More...: the player's scenario files to choose from.
     Custom { files: Vec<String> },
+    /// A battle's variants: its standard scenario (none) or one of these.
+    Variants { files: Vec<Option<String>> },
     /// A step of setting up a network game.
     Network(net::Step),
 }

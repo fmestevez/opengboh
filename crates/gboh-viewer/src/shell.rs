@@ -430,25 +430,8 @@ pub fn entries(imported: &[Title]) -> Vec<Entry> {
             })
             .collect();
         files.sort();
-        // the variants' descriptions (`*.var`: i32 battle, u16 n + the
-        // scenario's file name, 4 bytes, u16 n + the description)
-        let mut variants = std::collections::HashMap::new();
-        for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
-            let path = e.path();
-            if !path.extension().is_some_and(|x| x.eq_ignore_ascii_case("var")) {
-                continue;
-            }
-            let Ok(d) = std::fs::read(&path) else { continue };
-            let str16 = |at: usize| -> Option<(String, usize)> {
-                let n = u16::from_le_bytes([*d.get(at)?, *d.get(at + 1)?]) as usize;
-                Some((d.get(at + 2..at + 2 + n)?.iter().map(|&b| b as char).collect(), at + 2 + n))
-            };
-            if let Some((file, at)) = str16(4)
-                && let Some((description, _)) = str16(at + 4)
-            {
-                variants.insert(file.to_ascii_lowercase(), description);
-            }
-        }
+        let variants: std::collections::HashMap<String, String> =
+            crate::setup::variant_files(&dir).into_iter().map(|(_, file, description)| (file.to_ascii_lowercase(), description)).collect();
         let repeated = |name: &str| files.iter().filter(|(n, _)| n == name).count() > 1;
         let entries: Vec<Entry> = files
             .iter()

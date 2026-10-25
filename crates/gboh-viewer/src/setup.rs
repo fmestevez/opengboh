@@ -197,6 +197,9 @@ pub enum Outcome {
     History,
     /// More...: choose a scenario file of the player's own.
     Custom,
+    /// The chosen battle has variants: choose (`VARIANTDLG`) between its
+    /// standard scenario and these (file, description).
+    Variants(Vec<(String, String)>),
     /// Tell the player these strings of the executable's string table.
     Message(Vec<u16>),
     /// The rewrite's own: the content manager, its settings, the battles of
@@ -237,9 +240,9 @@ pub struct Setup {
     dark: u8,
     button: Vec<Sprite>,
     big_button: Vec<Sprite>,
-    /// Caesar's start screen's buttons (`Big Stone Pushbutton`: its `Up`
-    /// cel is a 1 × 1 placeholder, so its `Down` art serves up and down;
-    /// 🟡 the original's look not checked).
+    /// Caesar's start screen's buttons (`Big Stone Pushbutton`): up, its
+    /// `Up` cel is a 1 × 1 placeholder, so only the caption shows on the
+    /// painting (as the original, seen running); pressed, the stone.
     stone_button: Vec<Sprite>,
     radio: Vec<Sprite>,
     checkbox: Vec<Sprite>,
@@ -260,6 +263,8 @@ pub struct Setup {
     /// Where the chosen battle's picture and description go (Hannibal's and
     /// Caesar's scenario screens).
     info_box: (i32, i32, i32, i32),
+    /// Each battle's variants (`*.var`): scenario file and description.
+    variants: Vec<Vec<(String, String)>>,
     small: crate::ui::Font,
     white: u8,
     names: Vec<String>,
@@ -348,6 +353,24 @@ impl Setup {
             })
             .collect();
         let places = battles.iter().map(|&k| table.places[k]).collect();
+        let all_variants = variant_files(data_dir);
+        let variants = battles
+            .iter()
+            .map(|&k| {
+                // (a variant names its battle by the original's full table,
+                // whose unused slots this one leaves out)
+                let original: &[&str] = match game {
+                    Game::Hannibal => &gboh_game::campaign::HANNIBAL_BATTLES,
+                    Game::Caesar => &gboh_game::campaign::CAESAR_BATTLES,
+                    Game::Alexander => table.files,
+                };
+                all_variants
+                    .iter()
+                    .filter(|v| usize::try_from(v.0).ok().and_then(|i| original.get(i)).is_some_and(|f| f.eq_ignore_ascii_case(table.files[k])))
+                    .map(|v| (v.1.clone(), v.2.clone()))
+                    .collect()
+            })
+            .collect();
         // nation bytes 0 Greek, 1 Persian, 2 Macedonian, 3 Indian, 4
         // Danubian, 5 Scythian; the string table has Greek, Macedonian,
         // Persian, Danubian, Indian, Scythian from string 31
@@ -387,7 +410,12 @@ impl Setup {
             yellow,
             button: cels(&buttons, "Pushbutton"),
             big_button: cels(&buttons, "Big Pushbutton"),
-            stone_button: if game == Game::Caesar { cels(&buttons, "Big Stone Pushbutton").into_iter().skip(1).take(1).collect() } else { Vec::new() },
+            stone_button: if game == Game::Caesar {
+                let stone = cels(&buttons, "Big Stone Pushbutton");
+                [Sprite { width: 1, height: 1, pixels: vec![0] }].into_iter().chain(stone.into_iter().skip(1).take(1)).collect()
+            } else {
+                Vec::new()
+            },
             radio: cels(&buttons, "Radio"),
             checkbox: cels(&buttons, "CheckBox"),
             turn_limits: false,
@@ -404,6 +432,7 @@ impl Setup {
             }
             .or_else(|| first(&dialog, "Campaign Map")),
             info_box: if game == Game::Caesar { CAESAR_INFO_BOX } else { INFO_BOX },
+            variants,
             marble: first(&back, "Blocks"),
             labels: cels(&campaign, "Battles"),
             game,
@@ -459,6 +488,14 @@ impl Setup {
         true
     }
 
+    /// Go on with the chosen battle's standard scenario (after
+    /// `VARIANTDLG`).
+    pub fn choose_standard(&mut self) {
+        if let Screen::Scenario { selected: Some(k) } = self.screen {
+            self.screen = Screen::Sides { battle: k, computer: [false, true] };
+        }
+    }
+
     /// Whether checkbox `id` of the rout dialog is ticked.
     fn checked(&self, id: u16) -> bool {
         if id == TURN_LIMITS { self.turn_limits } else { self.default_deployment }
@@ -492,9 +529,9 @@ impl Setup {
         }
         let caption: String = caption.chars().filter(|&c| c != '&').collect();
         let (tx, ty) = (x + (w - self.text_width(&caption)) / 2 + down, y + (h - 11) / 2 + down);
-        if std::ptr::eq(art, &self.stone_button) {
+        if std::ptr::eq(art, &self.stone_button) && down == 1 {
             // (on the stone's dark middle: light, shadowed; 🟡 the
-            // original's ink not checked)
+            // original's ink when pressed not checked)
             self.font.draw_in(canvas, &caption, tx + 1, ty + 1, self.dark);
             self.font.draw_in(canvas, &caption, tx, ty, self.white);
         } else {
@@ -560,14 +597,29 @@ impl Setup {
                     let (x, y, pw, ph) = self.places[k];
                     frame_in(&mut canvas, (x - 1, y - 1, pw + 2, ph + 2), self.white);
                     let (bx, by, bw, _) = self.info_box;
-                    let pic_w = self.overviews[k].as_ref().map_or(0, |p| {
+                    let (pic_w, pic_h) = self.overviews[k].as_ref().map_or((0, 0), |p| {
                         canvas.blit(p, bx, by);
-                        p.width as i32
+                        (p.width as i32, p.height as i32)
                     });
+                    // beside the picture, then under it the whole width (as
+                    // the original, seen running)
                     let mut line_y = by + 2;
-                    for line in &self.descriptions[k] {
-                        for part in wrap(line, bw - pic_w - 4, |t| self.small.width(t)) {
-                            self.small.draw(&mut canvas, &part, bx + pic_w + 4, line_y);
+                    let column = |y: i32| if y < by + pic_h { (bx + pic_w + 4, bw - pic_w - 4) } else { (bx + 4, bw - 8) };
+                    for text in &self.descriptions[k] {
+                        let mut line = String::new();
+                        for word in text.split_whitespace() {
+                            let candidate = if line.is_empty() { word.to_string() } else { format!("{line} {word}") };
+                            let (x, w) = column(line_y);
+                            if self.small.width(&candidate) > w && !line.is_empty() {
+                                self.small.draw(&mut canvas, &line, x, line_y);
+                                line_y += 12;
+                                line = word.to_string();
+                            } else {
+                                line = candidate;
+                            }
+                        }
+                        if !line.is_empty() {
+                            self.small.draw(&mut canvas, &line, column(line_y).0, line_y);
                             line_y += 12;
                         }
                     }
@@ -707,7 +759,9 @@ impl Setup {
             }
             Screen::Start => match Self::control_at(&self.start, x, y) {
                 Some(106) => {
-                    self.screen = Screen::Scenario { selected: None };
+                    // (Caesar's opens on its first battle, as seen running)
+                    let first = (self.game == gboh_formats::game::Game::Caesar && !self.files.is_empty()).then_some(0);
+                    self.screen = Screen::Scenario { selected: first };
                     Outcome::Redraw
                 }
                 Some(2) => Outcome::Quit,
@@ -724,6 +778,10 @@ impl Setup {
                     return Outcome::Redraw;
                 }
                 match Self::control_at(&self.scenario, x, y) {
+                    // (a battle with variants asks which first)
+                    Some(1) if selected.is_some_and(|k| self.variants.get(k).is_some_and(|v| !v.is_empty())) => {
+                        Outcome::Variants(self.variants[selected.unwrap()].clone())
+                    }
                     Some(1) if selected.is_some() => {
                         // the computer plays the visitor by default
                         self.screen = Screen::Sides { battle: selected.unwrap(), computer: [false, true] };
@@ -825,6 +883,34 @@ fn frame_in(canvas: &mut Canvas, (x, y, w, h): (i32, i32, i32, i32), colour: u8)
 }
 
 /// `text` broken into lines no wider than `width`.
+/// The variants in `data_dir` (`*.var`: i32 battle, u16 n + the
+/// scenario's file name, 4 bytes, u16 n + the description): battle (the
+/// game's table index), file, description, sorted by file.
+pub fn variant_files(data_dir: &Path) -> Vec<(i32, String, String)> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(data_dir).into_iter().flatten().flatten() {
+        let path = e.path();
+        if !path.extension().is_some_and(|x| x.eq_ignore_ascii_case("var")) {
+            continue;
+        }
+        let Ok(d) = std::fs::read(&path) else { continue };
+        let str16 = |at: usize| -> Option<(String, usize)> {
+            let n = u16::from_le_bytes([*d.get(at)?, *d.get(at + 1)?]) as usize;
+            Some((d.get(at + 2..at + 2 + n)?.iter().map(|&b| b as char).collect(), at + 2 + n))
+        };
+        let battle = d.get(..4).map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+        if let Some(battle) = battle
+            && let Some((file, at)) = str16(4)
+            && let Some((description, _)) = str16(at + 4)
+            && crate::find_ci(data_dir, &file).is_some()
+        {
+            out.push((battle, file, description));
+        }
+    }
+    out.sort_by(|a, b| a.1.cmp(&b.1));
+    out
+}
+
 fn wrap(text: &str, width: i32, measure: impl Fn(&str) -> i32) -> Vec<String> {
     let mut lines = Vec::new();
     let mut line = String::new();
@@ -884,6 +970,9 @@ mod tests {
         assert!(s.overviews.iter().all(|o| o.is_some()));
         assert_eq!(s.descriptions[1].len(), 1);
         assert!(s.sides.iter().all(|[a, b]| !a.starts_with("Nation") && !b.starts_with("Nation")));
+        // Dyrrhachium has a variant, so OK asks which
+        assert!(matches!(s.variants[0].as_slice(), [(f, _)] if f.eq_ignore_ascii_case("dyrrhac2.scn")));
+        assert!(s.variants[4].is_empty(), "Munda has none");
         if let Ok(out) = std::env::var("GBOH_SHOTS") {
             let pal = gboh_formats::pal::Palette::parse(&std::fs::read(crate::palette_path(dir).unwrap()).unwrap()).unwrap();
             crate::ui::write_ppm(&c, &pal, &Path::new(&out).join("cae_scenario.ppm")).unwrap();

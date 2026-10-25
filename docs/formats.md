@@ -1968,9 +1968,16 @@ Caesar's engine is Hannibal's one version on. Where it differs:
 - **Interface**: its battle table (ten battles, Rhine only where installed;
   each description two strings joined), the scenario screen's info box at
   (41, 200, 382, 145), its own side names, Group Attack in the toolbar's
-  place of the line extension, its start screen's `Big Stone Pushbutton`
-  (whose `Up` cel is an empty placeholder), CD tracks 2 start, 3 and 4 the
-  battle, 5 defeat, 6 victory.
+  place of the line extension, CD tracks 2 start, 3 and 4 the battle, 5
+  defeat, 6 victory. Its start screen's buttons are bare captions on the
+  painting (`Big Stone Pushbutton`'s `Up` cel is an empty placeholder), the
+  stone showing only while one is pressed; the scenario screen opens on the
+  first battle, the description running on under the picture at full
+  width (as Hannibal's).
+- **Variants** (Hannibal's and Caesar's): OK on a battle that has `*.var`
+  files asks which to play (`VARIANTDLG`: "Standard", string 47, then the
+  variants' descriptions); a variant names its battle by the original's
+  full table.
 
 ### Caesar's campaign (`gboh_game::campaign::Kind::Caesar`)
 
