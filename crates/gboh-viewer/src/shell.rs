@@ -444,15 +444,19 @@ pub fn entries(imported: &[Title]) -> Vec<Entry> {
     for &t in imported {
         let Some(dir) = crate::library::data_dir(t) else { continue };
         out.push(Entry { title: t, scenario: None, name: "Campaign".into(), detail: None });
-        let mut files: Vec<(String, String)> = std::fs::read_dir(&dir)
-            .into_iter()
-            .flatten()
-            .filter_map(|e| e.ok()?.file_name().into_string().ok())
-            .filter(|n| n.to_ascii_lowercase().ends_with(".scn"))
+        // (with Caesar's, the editor's scenarios, played on its data)
+        let mut dirs = vec![dir.clone()];
+        if t == Title::Caesar {
+            dirs.push(crate::editor::scenarios_dir());
+        }
+        let mut files: Vec<(String, String)> = dirs
+            .iter()
+            .flat_map(|d| std::fs::read_dir(d).into_iter().flatten().filter_map(|e| Some((d.clone(), e.ok()?.file_name().into_string().ok()?))))
+            .filter(|(_, n)| n.to_ascii_lowercase().ends_with(".scn"))
             // (Hannibal's early drafts, which its game hides)
-            .filter(|n| !n.eq_ignore_ascii_case("ILIPA2.SCN") && !n.eq_ignore_ascii_case("CANNAE2.SCN"))
-            .filter_map(|n| {
-                let scn = gboh_formats::scn::Scenario::parse(&std::fs::read(dir.join(&n)).ok()?).ok()?;
+            .filter(|(_, n)| !n.eq_ignore_ascii_case("ILIPA2.SCN") && !n.eq_ignore_ascii_case("CANNAE2.SCN"))
+            .filter_map(|(d, n)| {
+                let scn = gboh_formats::scn::Scenario::parse(&std::fs::read(d.join(&n)).ok()?).ok()?;
                 let name = if scn.title.trim().is_empty() { n.clone() } else { scn.title.trim().to_string() };
                 Some((name, n))
             })
