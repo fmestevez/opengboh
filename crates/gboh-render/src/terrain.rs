@@ -625,6 +625,7 @@ mod tests {
             cells: Vec::new(),
             caesar: false,
             fast_roads: false,
+            manual_slopes: None,
         };
         let normal = Layout::new(&map, Zoom::Normal);
         let reversed = Layout::reversed(&map, Zoom::Normal);

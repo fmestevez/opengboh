@@ -4,13 +4,14 @@
 //! plain bugs fixed). A save records the options its battle was fought by.
 
 /// Each option: its key (in settings and saves), and its wording.
-pub const ALL: [(&str, &str); 14] = [
+pub const ALL: [(&str, &str); 15] = [
     ("manual_turning", "Manual: elephants and chariots (and heavy horse) pay 2 MP to turn"),
     ("manual_shock", "Manual: shock with terrain shifts, its charge, size ratio and leader rules"),
     ("manual_missiles", "Manual: woods protect, replenishment, 15% leader hits"),
-    ("manual_movement", "Manual: leaving zones of control, skirmishers' flank zone"),
-    ("manual_command", "Manual: group order odds, leaders' withdrawal risk"),
+    ("manual_movement", "Manual: leaving zones of control, skirmishers' flank zone, slopes"),
+    ("manual_command", "Manual: group order odds, leaders' withdrawal risk, Gallic rallies"),
     ("manual_victory", "Manual: rout points, turn limits and battles' special rules"),
+    ("printed_clash", "Manual: clash values as Hannibal's and Caesar's manuals print them"),
     ("pursuit", "Alexander: cavalry pursue broken units (from Hannibal)"),
     ("deployment", "Alexander: deploy before the battle (from Hannibal)"),
     ("backward", "Alexander: backward movement (from Hannibal)"),
@@ -30,6 +31,7 @@ pub struct Options {
     pub manual_movement: bool,
     pub manual_command: bool,
     pub manual_victory: bool,
+    pub printed_clash: bool,
     pub pursuit: bool,
     pub deployment: bool,
     pub backward: bool,
@@ -50,6 +52,7 @@ impl Options {
             "manual_movement" => &mut self.manual_movement,
             "manual_command" => &mut self.manual_command,
             "manual_victory" => &mut self.manual_victory,
+            "printed_clash" => &mut self.printed_clash,
             "pursuit" => &mut self.pursuit,
             "deployment" => &mut self.deployment,
             "backward" => &mut self.backward,

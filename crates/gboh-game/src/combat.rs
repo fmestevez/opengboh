@@ -51,6 +51,12 @@ pub struct Shock {
     pub moved: bool,
     pub all_phalanx: bool,
     pub defender_heavy_cavalry: bool,
+    /// The clash values as Hannibal's and Caesar's manuals print them (an
+    /// option): the stored values, where the code reads a column less and
+    /// Alexander's manual prints that. So a column right in all Caesar's
+    /// shocks, and in Hannibal's where legions or Roman cavalry fight (the
+    /// cells it added).
+    pub printed: bool,
 }
 
 /// Hannibal's Roman and Carthaginian nations.
@@ -149,6 +155,10 @@ impl Shock {
         // Hannibal's: elephants other than the Carthaginians' against other
         // troops
         if self.hannibal && self.attacker == MoveClass::Elephant && self.attacker_nation != CARTHAGINIAN && self.defender != MoveClass::Elephant {
+            col += 1;
+        }
+        let added = |c: MoveClass| matches!(c, MoveClass::Legion | MoveClass::RomanCavalry);
+        if self.printed && (self.caesar || (self.hannibal && (added(self.attacker) || added(self.defender)))) {
             col += 1;
         }
         (col + self.column_shift).clamp(0, 12) as usize
@@ -469,7 +479,20 @@ mod tests {
             moved: false,
             all_phalanx: false,
             defender_heavy_cavalry: false,
+            printed: false,
         }
+    }
+
+    /// The printed clash values: a column right for Caesar, and for
+    /// Hannibal where legions fight; Alexander's as the code has them.
+    #[test]
+    fn printed_clash_values() {
+        let base = shock(HeavyInfantry, HeavyInfantry, 0, 6, 6).column();
+        let printed = |hannibal, caesar, a| Shock { printed: true, hannibal, caesar, ..shock(a, HeavyInfantry, 0, 6, 6) }.column();
+        assert_eq!(printed(false, false, HeavyInfantry), base);
+        assert_eq!(printed(false, true, HeavyInfantry), base + 1);
+        assert_eq!(printed(true, false, HeavyInfantry), base);
+        assert_eq!(printed(true, false, Legion), shock(Legion, HeavyInfantry, 0, 6, 6).column() + 1);
     }
 
     /// In Hannibal's rules the table applies after the angle, so on a flank

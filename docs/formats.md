@@ -2062,17 +2062,30 @@ to the other player):
   leaves it only outpacing every enemy holding it there (Alexander's also
   through a free front hex; his light cavalry against cataphracts
   regardless); Caesar's skirmishers move through zones; skirmishers with
-  missiles left hold their flank hexes too.
+  missiles left hold their flank hexes too. Slopes by the manuals' tables:
+  up one or two levels a point each, down one or two levels a point, three
+  levels two (the games: a point a level either way); Hannibal's and
+  Caesar's skirmishers change two levels at most (Alexander's three).
 - **Manual command:** group moves at most 90 % on a first try and 20 %
   easier after a failure; every leader's group move succeeds in Caesar; a
   leader stepping away from an enemy is hurt 5 times in 100 (the games 90
-  from cavalry, 60 from others).
+  from cavalry, 60 from others); Caesar's Gallic leaders rally units only
+  within two hexes. (Not done: Alexander's manual has a leader who starts
+  in an enemy's zone give no orders but shocks; Caesar's Numidians at
+  Ruspina better at momentum on the first turn, and Hannibal's and
+  Caesar's reinforcements arriving by chance, for which the manuals give
+  no figures.)
 - **Manual victory:** Alexander's Agrianians 2 rout points, "Alexander
   (CH)" at Chaeronea a leader's 5 × initiative, and no turn limit at
   Hydaspes; Hannibal × 10 and his death no end of the battle;
   Cynoscephalae's limit turn 10; Caesar's artillery its TQ; Vercellae's
   heat (the Gauls, but their horse, a point worse on TQ checks from turn 3,
   two from turn 5).
+- **Printed clash values:** the code reads each clash value a column left
+  of the value stored, and Alexander's manual prints that; Hannibal's
+  manual prints the stored values for the cells it added (legions, Roman
+  cavalry) and Caesar's for its whole table. Read as printed, those shocks
+  go a column right.
 - **From Hannibal to Alexander:** cavalry pursuit after a shock; a
   deployment phase before battle; backward movement; group retreat,
   attack and restore cohesion (the rewrite adds these to Alexander's

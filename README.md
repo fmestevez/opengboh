@@ -115,7 +115,8 @@ Settings → **Rules** turns on, for new battles:
 
 * the manuals' rules where the games' code differs: turning costs, shock
   combat (terrain shifts, the charge, size ratio, leaders), missiles,
-  movement through zones of control, command, and victory conditions;
+  movement (zones of control, slopes), command, victory conditions, and
+  the clash values as Hannibal's and Caesar's manuals print them;
 * rules of one game in another: Hannibal's cavalry pursuit, deployment
   phase, backward movement and group orders for Alexander; Caesar's road
   movement, rally penalties and staff leaders for Alexander and Hannibal,

@@ -369,6 +369,7 @@ pub fn resolve(battle: &mut Battle, attackers: &[(usize, bool)], defenders: &[us
         defender_nation: battle.units[standing[0]].nation,
         manual,
         moved: attackers.iter().any(|&(a, m)| m && fighting.contains(&a)),
+        printed: battle.options.printed_clash,
         all_phalanx: fighting.iter().all(|&a| class(battle, a) == MoveClass::Phalanx),
         // (Alexander's and Hannibal's manuals: any defending heavy cavalry
         // 2L; Caesar's: cataphracts only)

@@ -173,6 +173,7 @@ mod tests {
             cells: vec![Vec::new(); (2 * 12 + 2) * (4 * 12 + 1)],
             caesar: false,
             fast_roads: false,
+            manual_slopes: None,
         }
     }
 

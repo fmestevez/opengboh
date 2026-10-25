@@ -66,6 +66,11 @@ pub struct Map {
     /// Whether road to road (hex code 12) costs a flat movement point
     /// (Caesar's rule; an option for the others). Set by the game.
     pub fast_roads: bool,
+    /// The manuals' slopes (a rule option): going down two levels costs a
+    /// point, not two, and three a point less; and skirmishers change two
+    /// levels at most where `Some(true)` (Hannibal's and Caesar's manuals;
+    /// Alexander's, `Some(false)`, lets them change three). Set by the game.
+    pub manual_slopes: Option<bool>,
 }
 
 impl Map {
@@ -105,6 +110,7 @@ impl Map {
             cells: vec![Vec::new(); n],
             caesar: false,
             fast_roads: false,
+            manual_slopes: None,
         }
     }
 
@@ -131,7 +137,7 @@ impl Map {
         if r.remaining() != 0 {
             return Err(Error::Invalid { offset: r.pos, msg: "trailing bytes after feature grid".into() });
         }
-        Ok(Self { name, width, height, hex_id_origin, unk_b, elevation, cells, caesar: false, fast_roads: false })
+        Ok(Self { name, width, height, hex_id_origin, unk_b, elevation, cells, caesar: false, fast_roads: false, manual_slopes: None })
     }
 
     pub fn grid_width(&self) -> usize {

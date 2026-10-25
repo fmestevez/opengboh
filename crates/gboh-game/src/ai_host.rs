@@ -610,6 +610,9 @@ impl Host for AiHost<'_> {
             }
             "attempttorally" => {
                 let Some(u) = self.unit(arg(0)) else { return Some(0) };
+                if !self.game.may_rally(u) {
+                    return Some(0);
+                }
                 // the original counts the order before trying
                 if !self.charge(u) {
                     return Some(0);

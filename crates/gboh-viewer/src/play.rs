@@ -1191,6 +1191,10 @@ impl Play {
             self.say("only routed units rally");
             return false;
         }
+        if !self.game.may_rally(s) {
+            self.say("a Gallic leader rallies only within two hexes");
+            return false;
+        }
         if !self.charge(s) {
             self.say("no command points");
             return false;

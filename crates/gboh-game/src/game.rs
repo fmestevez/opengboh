@@ -615,6 +615,16 @@ impl Game {
     pub fn set_options(&mut self, options: crate::options::Options) {
         self.battle.options = options;
         self.map.fast_roads = self.map.caesar || options.roads;
+        self.map.manual_slopes = options.manual_movement.then_some(self.rules.newer());
+    }
+
+    /// Whether the active leader may try to rally `unit`: any he commands,
+    /// but by Caesar's manual (a rule option) a Gallic leader only within
+    /// two hexes of him.
+    pub fn may_rally(&self, unit: usize) -> bool {
+        let Some(l) = self.activation.active() else { return false };
+        let (l, u) = (&self.battle.units[l], &self.battle.units[unit]);
+        !(self.battle.options.manual_command && self.rules == Rules::Caesar && l.nation == 11 && l.hex.distance(u.hex) > 2)
     }
 
     /// Rally a routed unit with the active leader (the order must already
@@ -1926,6 +1936,7 @@ mod tests {
                 cells: vec![Vec::new(); (2 * 12 + 2) * (4 * 12 + 1)],
                 caesar: false,
                 fast_roads: false,
+                manual_slopes: None,
             },
             activation,
             rng: BorlandRand::new(1),
@@ -1979,6 +1990,19 @@ mod tests {
         let to = back[0];
         g.order_backward(0, to).unwrap();
         assert_eq!((g.battle.units[0].hex, g.battle.units[0].facing), (to, 3));
+    }
+
+    /// Caesar's manual: Gallic leaders rally only within two hexes (an
+    /// option).
+    #[test]
+    fn gallic_leaders_rally_near() {
+        let r = LeaderRatings { charisma: 1, command_range: 6, initiative: 3, personal_combat: 1 };
+        let mut g = game(vec![unit(4, 11, Hex::new(2, 2), Some(r)), unit(31, 11, Hex::new(2, 6), None), unit(31, 11, Hex::new(2, 4), None)]);
+        g.rules = Rules::Caesar;
+        assert_eq!(g.begin_turn(), Some(0));
+        assert!(g.may_rally(1) && g.may_rally(2));
+        g.battle.options.manual_command = true;
+        assert!(!g.may_rally(1) && g.may_rally(2));
     }
 
     /// Hannibal's Roman leaders never fail a group order.

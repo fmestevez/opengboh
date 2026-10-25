@@ -85,9 +85,11 @@ impl MoveClass {
     }
 
     /// The steepest climb (in levels, elevation 0 counted as 1) the class
-    /// can make in one step.
-    fn max_climb(self) -> i32 {
+    /// can make in one step on `map` (skirmishers two by Hannibal's and
+    /// Caesar's manuals, a rule option).
+    fn max_climb(self, map: &Map) -> i32 {
         match self {
+            MoveClass::Skirmisher if map.manual_slopes == Some(true) => 2,
             MoveClass::Skirmisher => 3,
             c if c.horse() || matches!(c, MoveClass::Elephant | MoveClass::Chariot) => 1,
             _ => 2,
@@ -217,7 +219,7 @@ pub fn step_cost(map: &Map, class: MoveClass, from: Hex, dir: usize) -> Option<i
         return None;
     }
     let (z0, z1) = (elevation(map, from), elevation(map, to));
-    if (z0.max(1) - z1.max(1)).abs() > class.max_climb() {
+    if (z0.max(1) - z1.max(1)).abs() > class.max_climb(map) {
         return None;
     }
     let mut cost = 1;
@@ -228,7 +230,20 @@ pub fn step_cost(map: &Map, class: MoveClass, from: Hex, dir: usize) -> Option<i
         cost = cost.max(99);
     }
     let extra = if side.contains(&STREAM) { 1 } else { 0 };
-    Some(cost + extra + (z0 - z1).abs())
+    Some(cost + extra + slope(map, z0, z1))
+}
+
+/// The points a step from level `z0` to `z1` adds: the difference; or by
+/// the manuals' tables (a rule option) up one or two levels one or two,
+/// down one or two levels one, and three levels (skirmishers, by
+/// Alexander's) two.
+fn slope(map: &Map, z0: i32, z1: i32) -> i32 {
+    let d = (z0 - z1).abs();
+    match map.manual_slopes {
+        Some(_) if d >= 3 => 2,
+        Some(_) if z1 < z0 => 1,
+        _ => d,
+    }
 }
 
 /// Caesar's step (`FUN_004be2a3`, `FUN_0057fffb`): road to road a flat
@@ -260,7 +275,7 @@ fn caesar_step_cost(map: &Map, class: MoveClass, from: Hex, dir: usize) -> Optio
     if (chariot || class == MoveClass::Elephant) && (z1 == 0 || codes.contains(&MARSH)) {
         return None;
     }
-    if (z0.max(1) - z1.max(1)).abs() > class.max_climb() {
+    if (z0.max(1) - z1.max(1)).abs() > class.max_climb(map) {
         return None;
     }
     if here.contains(&ROAD) && codes.contains(&ROAD) {
@@ -277,7 +292,7 @@ fn caesar_step_cost(map: &Map, class: MoveClass, from: Hex, dir: usize) -> Optio
     if side.contains(&DITCH) {
         extra += 1 + (codes.contains(&BERM) && !here.contains(&BERM)) as i32;
     }
-    Some(cost + extra + (z0.max(1) - z1.max(1)).abs())
+    Some(cost + extra + slope(map, z0.max(1), z1.max(1)))
 }
 
 /// The right-front and left-front map sides of facing `f` (the sides of
@@ -600,6 +615,7 @@ mod tests {
             cells: vec![Vec::new(); (2 * w + 2) * (4 * h + 1)],
             caesar: false,
             fast_roads: false,
+            manual_slopes: None,
         }
     }
 
@@ -639,6 +655,26 @@ mod tests {
 
     /// The hex line: straight down a column, and a diagonal whose every
     /// step is to a neighbour.
+    /// The manuals' slopes: down two levels a point, three levels two,
+    /// and Hannibal's and Caesar's skirmishers two levels at most.
+    #[test]
+    fn manual_slopes() {
+        let mut m = flat_map(5, 5);
+        let (low, high) = (Hex::new(2, 2), Hex::new(2, 1));
+        let dir = low.neighbours().iter().position(|&n| n == high).unwrap();
+        let back = high.neighbours().iter().position(|&n| n == low).unwrap();
+        m.elevation[5 + 2] = 3;
+        assert_eq!(step_cost(&m, MoveClass::HeavyInfantry, low, dir), Some(3));
+        assert_eq!(step_cost(&m, MoveClass::HeavyInfantry, high, back), Some(3));
+        m.manual_slopes = Some(false);
+        assert_eq!(step_cost(&m, MoveClass::HeavyInfantry, low, dir), Some(3), "up two: two");
+        assert_eq!(step_cost(&m, MoveClass::HeavyInfantry, high, back), Some(2), "down two: one");
+        m.elevation[5 + 2] = 4;
+        assert_eq!(step_cost(&m, MoveClass::Skirmisher, low, dir), Some(3), "three levels: two");
+        m.manual_slopes = Some(true);
+        assert_eq!(step_cost(&m, MoveClass::Skirmisher, low, dir), None, "two levels at most");
+    }
+
     #[test]
     fn hex_lines() {
         let map = flat_map(12, 12);
