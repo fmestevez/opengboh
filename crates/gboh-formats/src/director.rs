@@ -121,9 +121,15 @@ pub struct Sound {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     /// `sound playFile channel, "file"`
-    PlayFile { channel: u16, file: String },
+    PlayFile {
+        channel: u16,
+        file: String,
+    },
     /// `sound fadeOut channel, ticks`
-    FadeOut { channel: u16, ticks: u16 },
+    FadeOut {
+        channel: u16,
+        ticks: u16,
+    },
     Quit,
 }
 
@@ -170,10 +176,8 @@ impl Movie {
             return Err(Error::Invalid { offset: header, msg: "not a Director 5 projector".into() });
         }
         let app = le32(&data, header + 4)? as usize;
-        let file = chunks(&data, app)?
-            .into_iter()
-            .find(|(t, _, _)| t == b"File")
-            .ok_or(Error::Invalid { offset: app, msg: "no movie in the projector".into() })?;
+        let file =
+            chunks(&data, app)?.into_iter().find(|(t, _, _)| t == b"File").ok_or(Error::Invalid { offset: app, msg: "no movie in the projector".into() })?;
         // the File chunk is the movie's own RIFX
         Self::parse(data, file.1 - 8)
     }
@@ -205,12 +209,7 @@ impl Movie {
         };
         let frames = bytes(b"VWSC").map(score).transpose()?.unwrap_or_default();
         let names = bytes(b"Lnam").map(lingo_names).unwrap_or_default();
-        let scripts = chunks
-            .iter()
-            .filter(|c| &c.0 == b"Lscr")
-            .filter_map(|&(_, o, l)| data.get(o..o + l))
-            .filter_map(|s| script(s, &names).ok())
-            .collect();
+        let scripts = chunks.iter().filter(|c| &c.0 == b"Lscr").filter_map(|&(_, o, l)| data.get(o..o + l)).filter_map(|s| script(s, &names).ok()).collect();
         Ok(Self { data, chunks, cast, keys, frame_rate, stage, frames, scripts })
     }
 

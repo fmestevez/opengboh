@@ -250,11 +250,7 @@ const COLUMN: [[[i8; 16]; 3]; 16] = [
         [13, 13, 12, 11, 11, 10, 10, 7, 3, 3, 3, 9, 9, 13, 13, 0],
         [13, 13, 12, 13, 13, 10, 10, 7, 3, 3, 3, 9, 9, 13, 13, 0],
     ],
-    [
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-    ],
+    [[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]],
 ];
 /// Superiority by defender class and attacker class: 1 the attacker is
 /// superior, 2 the defender.
@@ -331,11 +327,7 @@ pub enum LeaderCasualty {
 /// wounded), 5–6 killed. A tie, or a difference of 7 or more, has no
 /// effect (the original only tests 1–6). Returns whether the attacking
 /// side's leader is hurt, and the effect.
-pub fn leader_casualty(
-    attacker: (u16, u32),
-    defender: (u16, u32),
-    loser_wounded: impl Fn(bool) -> bool,
-) -> Option<(bool, LeaderCasualty)> {
+pub fn leader_casualty(attacker: (u16, u32), defender: (u16, u32), loser_wounded: impl Fn(bool) -> bool) -> Option<(bool, LeaderCasualty)> {
     let a = attacker.1 as i32 + attacker.0 as i32;
     let d = defender.1 as i32 + defender.0 as i32;
     let attacker_lost = a > d;
@@ -386,14 +378,7 @@ pub struct Share {
 /// contact makes a TQ check with `roll` (0..=9): it takes 1 fewer if the
 /// check costs nothing, 1 more otherwise (`rolls` supplies one roll per such
 /// unit, in order).
-pub fn share_hits(
-    total: i32,
-    units: &[Share],
-    lead: usize,
-    other_total: i32,
-    other_n: usize,
-    rolls: &mut dyn FnMut() -> u32,
-) -> Vec<i32> {
+pub fn share_hits(total: i32, units: &[Share], lead: usize, other_total: i32, other_n: usize, rolls: &mut dyn FnMut() -> u32) -> Vec<i32> {
     let n = units.len().max(1) as i32;
     let (each, extra) = (total / n, total % n);
     let other = (other_total / other_n.max(1) as i32).max(1);
@@ -498,7 +483,9 @@ mod tests {
                 (0..16).flat_map(|d| (0..16).map(move |a| (a, d))).find(|&(a, d)| SUPERIORITY[d][a] == 2 && [0, 2, 3, 6].contains(&a) && [0, 2, 3].contains(&d))
             });
         let (a, d) = pair.expect("a pair the table favours the defender in");
-        let class = |n: usize| [Phalanx, Legion, HeavyInfantry, MediumInfantry, LightInfantryMG, LightInfantryMG, LightInfantry].into_iter().find(|c| *c as usize == n).unwrap();
+        let class = |n: usize| {
+            [Phalanx, Legion, HeavyInfantry, MediumInfantry, LightInfantryMG, LightInfantryMG, LightInfantry].into_iter().find(|c| *c as usize == n).unwrap()
+        };
         let mut s = shock(class(a), class(d), 1, 6, 6);
         assert_eq!(s.superiority(), (true, false));
         s.hannibal = true;

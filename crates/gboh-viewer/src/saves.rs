@@ -129,9 +129,7 @@ impl Save {
         }
         let mut field = |name: &str| -> Result<String, String> {
             let line = lines.next().ok_or(format!("no {name}"))?;
-            line.strip_prefix(name)
-                .map(|v| v.trim_start().to_string())
-                .ok_or(format!("expected {name}, found {line:?}"))
+            line.strip_prefix(name).map(|v| v.trim_start().to_string()).ok_or(format!("expected {name}, found {line:?}"))
         };
         let description = field("description")?;
         let scenario = field("scenario")?;

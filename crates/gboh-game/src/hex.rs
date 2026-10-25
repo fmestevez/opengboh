@@ -33,14 +33,7 @@ impl Hex {
         let (x, y) = (self.x, self.y);
         // odd columns are shifted down, so their upper diagonals share the row
         let up = if x & 1 == 0 { y - 1 } else { y };
-        [
-            Hex::new(x, y - 1),
-            Hex::new(x + 1, up),
-            Hex::new(x + 1, up + 1),
-            Hex::new(x, y + 1),
-            Hex::new(x - 1, up + 1),
-            Hex::new(x - 1, up),
-        ]
+        [Hex::new(x, y - 1), Hex::new(x + 1, up), Hex::new(x + 1, up + 1), Hex::new(x, y + 1), Hex::new(x - 1, up + 1), Hex::new(x - 1, up)]
     }
 }
 

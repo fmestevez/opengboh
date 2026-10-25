@@ -1,8 +1,8 @@
 //! Orders: what an activated leader's units do, and what it costs him.
 
+use crate::battle::UnitState;
 use crate::battle::{Battle, flank, neighbour};
 use crate::hex::Hex;
-use crate::battle::UnitState;
 use crate::missile::Volley;
 use crate::movement::{MoveClass, arc, path_to, reachable};
 use gboh_formats::crt::BorlandRand;
@@ -301,9 +301,10 @@ pub fn terrain_hits(battle: &Battle, map: &Map, unit: usize, from: Hex, to: Hex)
     }
     if group == 2 {
         let near = to.neighbours();
-        let elephant = battle.units.iter().any(|o| {
-            o.side != u.side && o.state == UnitState::Fighting && near.contains(&o.hex) && MoveClass::of_type(o.type_id) == Some(Elephant)
-        });
+        let elephant = battle
+            .units
+            .iter()
+            .any(|o| o.side != u.side && o.state == UnitState::Fighting && near.contains(&o.hex) && MoveClass::of_type(o.type_id) == Some(Elephant));
         if elephant {
             hits += 2;
         }
@@ -376,7 +377,11 @@ fn withdrawers(battle: &Battle, map: &Map, mover: usize) -> (Vec<usize>, Vec<usi
             };
             let held = (0..battle.units.len()).any(|x| {
                 let other = &battle.units[x];
-                x != mover && other.side == m.side && other.state == UnitState::Fighting && other.hex.distance(o.hex) == 1 && crate::movement::zoc_of(battle, map, x).contains(&o.hex)
+                x != mover
+                    && other.side == m.side
+                    && other.state == UnitState::Fighting
+                    && other.hex.distance(o.hex) == 1
+                    && crate::movement::zoc_of(battle, map, x).contains(&o.hex)
             });
             if eligible && !held {
                 units.push(e);
@@ -408,8 +413,7 @@ pub fn withdraw(battle: &mut Battle, map: &Map, unit: usize, mover: usize, rng: 
     let u = &battle.units[unit];
     let class = MoveClass::of_type(u.type_id).unwrap_or(MoveClass::HeavyInfantry);
     let tq = u.tq as i32;
-    if class.horse() && MoveClass::of_type(battle.units[mover].type_id) == Some(MoveClass::Elephant)
-    {
+    if class.horse() && MoveClass::of_type(battle.units[mover].type_id) == Some(MoveClass::Elephant) {
         let r = (rng.next() % 10) as i32;
         let hits = ((r - tq).max(0) - tq).max(1);
         battle.units[unit].hits += hits;
@@ -686,7 +690,8 @@ impl CommandPoints {
         let own = battle.units[unit].group == l.group;
         // (Caesar's staff leaders, whose own group has no units, pay no
         // more for another's, `FUN_0056b057`)
-        let staff = (battle.caesar() || battle.options.staff_leaders) && !battle.units.iter().any(|u| u.leader.is_none() && u.group == l.group && u.side == l.side);
+        let staff =
+            (battle.caesar() || battle.options.staff_leaders) && !battle.units.iter().any(|u| u.leader.is_none() && u.group == l.group && u.side == l.side);
         self.used = (self.used + if own || staff { 1 } else { 2 }).min(self.max);
     }
 
@@ -829,10 +834,7 @@ mod tests {
     #[test]
     fn volleys_need_arc_range_and_missiles() {
         use crate::missile::Weapon;
-        let mut b = Battle {
-            units: vec![unit(10, Hex::new(2, 4), 3, 0, None), unit(31, Hex::new(4, 4), 7, 0, None)],
-            ..Default::default()
-        };
+        let mut b = Battle { units: vec![unit(10, Hex::new(2, 4), 3, 0, None), unit(31, Hex::new(4, 4), 7, 0, None)], ..Default::default() };
         b.units[1].side = 1;
         b.units[0].missile = Some((Weapon::Bow, 10));
         let mut rng = BorlandRand::new(3);
@@ -851,10 +853,7 @@ mod tests {
         use crate::missile::Weapon;
         let m = map();
         // the mover faces 3 and walks east past a javelin unit facing it
-        let mut b = Battle {
-            units: vec![unit(31, Hex::new(2, 5), 3, 0, None), unit(2, Hex::new(5, 5), 7, 0, None)],
-            ..Default::default()
-        };
+        let mut b = Battle { units: vec![unit(31, Hex::new(2, 5), 3, 0, None), unit(2, Hex::new(5, 5), 7, 0, None)], ..Default::default() };
         b.units[1].side = 1;
         b.units[1].missile = Some((Weapon::Javelin, 3));
         let target = Hex::new(4, 5);
@@ -883,7 +882,10 @@ mod tests {
         let (gx, gy) = Map::hex_cell(target.x as usize, target.y as usize);
         let gw = m.grid_width();
         m.cells[gy as usize * gw + gx as usize] = vec![1];
-        let b = Battle { units: vec![unit(31, Hex::new(2, 5), 3, 0, None), unit(2, Hex::new(2, 5), 3, 0, None), unit(8, Hex::new(2, 5), 3, 0, None)], ..Default::default() };
+        let b = Battle {
+            units: vec![unit(31, Hex::new(2, 5), 3, 0, None), unit(2, Hex::new(2, 5), 3, 0, None), unit(8, Hex::new(2, 5), 3, 0, None)],
+            ..Default::default()
+        };
         assert_eq!(terrain_hits(&b, &m, 0, Hex::new(2, 5), target), 1);
         assert_eq!(terrain_hits(&b, &m, 1, Hex::new(2, 5), target), 0);
         // horses next to an enemy elephant: 2 more
@@ -903,10 +905,7 @@ mod tests {
         let m = map();
         // infantry walks up to cavalry facing it; the cavalry (TQ 9, 0 hits)
         // always passes and backs away
-        let mut b = Battle {
-            units: vec![unit(31, Hex::new(2, 5), 3, 0, None), unit(8, Hex::new(5, 5), 7, 0, None)],
-            ..Default::default()
-        };
+        let mut b = Battle { units: vec![unit(31, Hex::new(2, 5), 3, 0, None), unit(8, Hex::new(5, 5), 7, 0, None)], ..Default::default() };
         b.units[1].side = 1;
         b.units[1].tq = 9;
         move_to(&mut b, &m, 0, Hex::new(4, 5), &mut BorlandRand::new(1)).unwrap();
@@ -932,11 +931,7 @@ mod tests {
     fn command_points() {
         let ratings = LeaderRatings { charisma: 0, command_range: 5, initiative: 3, personal_combat: 1 };
         let b = Battle {
-            units: vec![
-                unit(4, Hex::new(1, 1), 3, 1, Some(ratings)),
-                unit(31, Hex::new(2, 1), 3, 1, None),
-                unit(31, Hex::new(3, 1), 3, 2, None),
-            ],
+            units: vec![unit(4, Hex::new(1, 1), 3, 1, Some(ratings)), unit(31, Hex::new(2, 1), 3, 1, None), unit(31, Hex::new(3, 1), 3, 2, None)],
             ..Default::default()
         };
         let mut c = CommandPoints::new(&b, 0);

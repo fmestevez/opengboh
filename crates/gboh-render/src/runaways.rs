@@ -25,8 +25,7 @@ pub enum Runaway {
 }
 
 impl Runaway {
-    pub const ALL: [Runaway; 5] =
-        [Runaway::Horse, Runaway::CataphractHorse, Runaway::RunningChariot, Runaway::DraggingPersian, Runaway::DraggingIndian];
+    pub const ALL: [Runaway; 5] = [Runaway::Horse, Runaway::CataphractHorse, Runaway::RunningChariot, Runaway::DraggingPersian, Runaway::DraggingIndian];
 
     /// The EIF title of the art at full size.
     pub fn title(self) -> &'static str {
@@ -55,9 +54,7 @@ impl Runaway {
             } else {
                 Runaway::DraggingIndian
             }),
-            _ if roll < 15 && crate::units::Formation::of_type(type_id) == crate::units::Formation::Cavalry => {
-                Some(Runaway::Horse)
-            }
+            _ if roll < 15 && crate::units::Formation::of_type(type_id) == crate::units::Formation::Cavalry => Some(Runaway::Horse),
             _ => None,
         }
     }

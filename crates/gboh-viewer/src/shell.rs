@@ -221,7 +221,10 @@ pub enum Screen {
     Settings,
     /// The rule options.
     Rules,
-    Selector { entries: Vec<Entry>, scroll: usize },
+    Selector {
+        entries: Vec<Entry>,
+        scroll: usize,
+    },
 }
 
 /// What the screens show besides their layout.
@@ -483,7 +486,14 @@ mod tests {
 
     #[test]
     fn draws_the_screens() {
-        let v = View { imported: &[Title::Alexander], theme: Some(Title::Alexander), options: Default::default(), status: ("Importing: 40%".into(), false), busy: false, pressed: None };
+        let v = View {
+            imported: &[Title::Alexander],
+            theme: Some(Title::Alexander),
+            options: Default::default(),
+            status: ("Importing: 40%".into(), false),
+            busy: false,
+            pressed: None,
+        };
         let (c, buttons) = draw(&Screen::Content, &v, 1000, 700);
         // Re-import for Alexander, Import for the others, Continue and Quit
         assert!(buttons.iter().any(|b| b.0 == IMPORT) && buttons.iter().any(|b| b.0 == IMPORT + 2));
@@ -495,17 +505,46 @@ mod tests {
         let none = View { imported: &[], ..v };
         let (_, buttons) = draw(&Screen::Content, &none, 1000, 700);
         assert!(!buttons.iter().any(|b| b.0 == CONTINUE));
-        let (_, buttons) = draw(&Screen::Settings, &View { imported: &[Title::Alexander], theme: Some(Title::Alexander), options: Default::default(), status: (String::new(), false), busy: false, pressed: None }, 1000, 700);
+        let (_, buttons) = draw(
+            &Screen::Settings,
+            &View {
+                imported: &[Title::Alexander],
+                theme: Some(Title::Alexander),
+                options: Default::default(),
+                status: (String::new(), false),
+                busy: false,
+                pressed: None,
+            },
+            1000,
+            700,
+        );
         assert!(buttons.iter().any(|b| b.0 == THEME) && !buttons.iter().any(|b| b.0 == THEME + 1));
         // the rules: a toggle per option, a tick on those set
         let opts = gboh_game::options::Options { roads: true, ..Default::default() };
-        let (rules, buttons) = draw(&Screen::Rules, &View { imported: &[Title::Alexander], theme: Some(Title::Alexander), options: opts, status: (String::new(), false), busy: false, pressed: None }, 1000, 700);
+        let (rules, buttons) = draw(
+            &Screen::Rules,
+            &View { imported: &[Title::Alexander], theme: Some(Title::Alexander), options: opts, status: (String::new(), false), busy: false, pressed: None },
+            1000,
+            700,
+        );
         assert_eq!(buttons.iter().filter(|b| b.0 >= OPTION).count(), gboh_game::options::ALL.len());
         if let Ok(out) = std::env::var("GBOH_SHOTS") {
             crate::ui::write_ppm(&rules, &palette(), &std::path::Path::new(&out).join("rules.ppm")).unwrap();
         }
         if let Ok(out) = std::env::var("GBOH_SHOTS") {
-            let (c, _) = draw(&Screen::Content, &View { imported: &[Title::Alexander], theme: None, options: Default::default(), status: ("Importing: 40%".into(), false), busy: false, pressed: None }, 1000, 700);
+            let (c, _) = draw(
+                &Screen::Content,
+                &View {
+                    imported: &[Title::Alexander],
+                    theme: None,
+                    options: Default::default(),
+                    status: ("Importing: 40%".into(), false),
+                    busy: false,
+                    pressed: None,
+                },
+                1000,
+                700,
+            );
             crate::ui::write_ppm(&c, &palette(), &std::path::Path::new(&out).join("content.ppm")).unwrap();
         }
     }

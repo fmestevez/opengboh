@@ -16,8 +16,8 @@
 use crate::activation::Activation;
 use crate::battle::Battle;
 use crate::hex::Hex;
-use gboh_formats::map::Map;
 use gboh_formats::crt::BorlandRand;
+use gboh_formats::map::Map;
 use gboh_formats::scn::battle_index;
 
 /// The hexes within `leader`'s command range (the original's command set,
@@ -63,11 +63,8 @@ pub fn commanded(battle: &Battle, map: &Map, leader: usize) -> Vec<usize> {
     }
     let set = command_set(battle, map, leader);
     let in_set = |u: usize, set: &std::collections::HashMap<Hex, i32>| battle.hexes(u).iter().any(|h| set.contains_key(h));
-    let subordinates: Vec<(usize, std::collections::HashMap<Hex, i32>)> = battle
-        .leaders()
-        .filter(|&s| s != leader && battle.units[s].side == l.side && in_set(s, &set))
-        .map(|s| (s, command_set(battle, map, s)))
-        .collect();
+    let subordinates: Vec<(usize, std::collections::HashMap<Hex, i32>)> =
+        battle.leaders().filter(|&s| s != leader && battle.units[s].side == l.side && in_set(s, &set)).map(|s| (s, command_set(battle, map, s))).collect();
     (0..battle.units.len())
         .filter(|&i| {
             let u = &battle.units[i];
@@ -86,7 +83,5 @@ pub fn opening_flags(scn: &gboh_formats::scn::Scenario, map: &gboh_formats::map:
     let battle = Battle::from_scenario(scn, map);
     let mut activation = Activation::new(&battle, battle_index(&scn.map_file));
     let mut rng = BorlandRand::new(seed);
-    activation.begin_turn(&battle, &mut rng).map_or_else(Vec::new, |l| {
-        commanded(&battle, map, l).into_iter().map(|i| battle.units[i].source).collect()
-    })
+    activation.begin_turn(&battle, &mut rng).map_or_else(Vec::new, |l| commanded(&battle, map, l).into_iter().map(|i| battle.units[i].source).collect())
 }

@@ -69,9 +69,7 @@ impl Resources {
             let (vsize, va, rsize, raw) = (u32_at(d, o + 8)?, u32_at(d, o + 12)?, u32_at(d, o + 16)?, u32_at(d, o + 20)?);
             secs.push((va, vsize.max(rsize), raw));
         }
-        let file_offset = |rva: u32| {
-            secs.iter().find(|&&(va, size, _)| va <= rva && rva < va + size).map(|&(va, _, raw)| (raw + rva - va) as usize)
-        };
+        let file_offset = |rva: u32| secs.iter().find(|&&(va, size, _)| va <= rva && rva < va + size).map(|&(va, _, raw)| (raw + rva - va) as usize);
         let base = file_offset(rsrc_rva).ok_or(Error::Invalid { offset: pe, msg: "no resources".into() })?;
         let name_at = |id: u32| -> Result<Name> {
             if id & 0x8000_0000 == 0 {
@@ -164,7 +162,10 @@ fn parse_cursor(d: &[u8]) -> Result<Cursor> {
     if bits != 1 {
         return Err(Error::Invalid { offset: b, msg: format!("{bits}-bit cursor") });
     }
-    let colours = match u32_at(d, b + 32)? { 0 => 2, n => n as usize };
+    let colours = match u32_at(d, b + 32)? {
+        0 => 2,
+        n => n as usize,
+    };
     let palette: Vec<[u8; 3]> = (0..colours).map(|k| d.get(b + header + 4 * k..b + header + 4 * k + 3).map(|c| [c[2], c[1], c[0]]).unwrap_or([0; 3])).collect();
     let stride = width.div_ceil(32) * 4;
     let xor = b + header + 4 * colours;

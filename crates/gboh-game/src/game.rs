@@ -14,8 +14,8 @@ use crate::rout::{Flight, flee};
 use crate::shock::{self, Outcome};
 use gboh_formats::crt::BorlandRand;
 use gboh_formats::map::Map;
-use std::collections::HashMap;
 use gboh_formats::scn::{Scenario, battle_index};
+use std::collections::HashMap;
 
 /// Unit positions, facings, hits and states; shocks; orders used.
 type Snapshot = (Vec<(crate::hex::Hex, u8, i32, UnitState)>, usize, u16);
@@ -38,8 +38,7 @@ const HANNIBAL_BATTLES: [&str; 13] =
 /// result 1 is the visitor's, 0x10001 the home army's, as the manual's
 /// victory conditions show for every battle (the Romans, the visitor,
 /// holding out at Bagradas and Trasimene; the home army elsewhere).
-const HANNIBAL_TURN_LIMITS: [(u16, usize); 13] =
-    [(14, 0), (7, 1), (9, 0), (7, 0), (7, 0), (7, 0), (14, 0), (11, 0), (5, 0), (5, 0), (9, 0), (2, 1), (7, 1)];
+const HANNIBAL_TURN_LIMITS: [(u16, usize); 13] = [(14, 0), (7, 1), (9, 0), (7, 0), (7, 0), (7, 0), (14, 0), (11, 0), (5, 0), (5, 0), (9, 0), (2, 1), (7, 1)];
 
 /// The facing half round from `facing` (2 ↔ 6, 3 ↔ 7, 4 ↔ 8).
 fn opposite(facing: u8) -> u8 {
@@ -181,17 +180,42 @@ pub struct Game {
 pub enum Happened {
     /// A unit (or leader) walked through these hexes, from where it was;
     /// `running` when routed.
-    Moved { unit: usize, path: Vec<crate::hex::Hex>, running: bool },
-    Volley { shooter: usize, target: usize, weapon: crate::missile::Weapon, hit: bool },
+    Moved {
+        unit: usize,
+        path: Vec<crate::hex::Hex>,
+        running: bool,
+    },
+    Volley {
+        shooter: usize,
+        target: usize,
+        weapon: crate::missile::Weapon,
+        hit: bool,
+    },
     /// A unit lost men: `count` cohesion hits taken on `hex`, of `kind`,
     /// facing `facing`, `hits` in all after them.
-    Casualties { unit: usize, hex: crate::hex::Hex, facing: u8, kind: Casualty, count: i32, hits: i32 },
+    Casualties {
+        unit: usize,
+        hex: crate::hex::Hex,
+        facing: u8,
+        kind: Casualty,
+        count: i32,
+        hits: i32,
+    },
     /// A unit was destroyed where it stood (its men all fall).
-    Eliminated { unit: usize, hex: crate::hex::Hex, facing: u8 },
+    Eliminated {
+        unit: usize,
+        hex: crate::hex::Hex,
+        facing: u8,
+    },
     /// A unit broke and routs (its men throw down their arms).
-    Routed { unit: usize },
+    Routed {
+        unit: usize,
+    },
     /// A shock combat is fought (its casualties follow).
-    Shock { attackers: Vec<usize>, defenders: Vec<usize> },
+    Shock {
+        attackers: Vec<usize>,
+        defenders: Vec<usize>,
+    },
 }
 
 /// How men fell (the unit art's corpse strips).
@@ -239,10 +263,7 @@ impl Game {
             map,
             activation,
             rng: BorlandRand::new(seed),
-            armies: [
-                (scn.home.nation, scn.home.rout_level),
-                (scn.visitor.nation, scn.visitor.rout_level),
-            ],
+            armies: [(scn.home.nation, scn.home.rout_level), (scn.visitor.nation, scn.visitor.rout_level)],
             points: None,
             resupplied: Vec::new(),
             orderable_now: Vec::new(),
@@ -319,11 +340,7 @@ impl Game {
         self.group_move = None;
         if let Some(l) = leader {
             // consecutive group moves get easier (`FUN_00565fa0`)
-            let streak = if self.group_tried.insert(l, false).unwrap_or(false) {
-                self.group_streak.get(&l).copied().unwrap_or(0).saturating_add(1)
-            } else {
-                0
-            };
+            let streak = if self.group_tried.insert(l, false).unwrap_or(false) { self.group_streak.get(&l).copied().unwrap_or(0).saturating_add(1) } else { 0 };
             self.group_streak.insert(l, streak);
         }
         self.shocks.clear();
@@ -400,11 +417,12 @@ impl Game {
             _ => hex.x < line,
         };
         let hexes: Vec<crate::hex::Hex> = std::iter::once(hex).chain(u.two_hex().then(|| crate::battle::flank(hex, u.facing)).flatten()).collect();
-        let fits = hexes.len() == if u.two_hex() { 2 } else { 1 } && hexes.iter().all(|&h| {
-            crate::movement::on_map(&self.map, h)
-                && !crate::movement::impassable(&self.map, h)
-                && (0..self.battle.units.len()).all(|o| o == unit || !self.battle.units[o].on_field() || !self.battle.hexes(o).contains(&h))
-        });
+        let fits = hexes.len() == if u.two_hex() { 2 } else { 1 }
+            && hexes.iter().all(|&h| {
+                crate::movement::on_map(&self.map, h)
+                    && !crate::movement::impassable(&self.map, h)
+                    && (0..self.battle.units.len()).all(|o| o == unit || !self.battle.units[o].on_field() || !self.battle.hexes(o).contains(&h))
+            });
         side_ok && fits
     }
 
@@ -552,7 +570,8 @@ impl Game {
     /// The manual's woods (an option): shooting into them a point harder.
     fn cover(&self, target: usize) -> i32 {
         let h = self.battle.units[target].hex;
-        let woods = self.battle.options.manual_missiles && crate::movement::on_map(&self.map, h) && self.map.hex_features(h.x as usize, h.y as usize).contains(&1);
+        let woods =
+            self.battle.options.manual_missiles && crate::movement::on_map(&self.map, h) && self.map.hex_features(h.x as usize, h.y as usize).contains(&1);
         woods as i32
     }
 
@@ -568,7 +587,10 @@ impl Game {
         if self.rng.random() % 100 >= chance {
             return;
         }
-        let king = { let n = &self.battle.units[l].name; n.contains("Alexander") || n.contains("Darius") };
+        let king = {
+            let n = &self.battle.units[l].name;
+            n.contains("Alexander") || n.contains("Darius")
+        };
         let (startled, wounded) = if king { (40, 85) } else { (25, 70) };
         match self.rng.random() % 100 {
             r if r < startled => self.leader_casualty(l, LeaderCasualty::Finished, 0),
@@ -673,9 +695,7 @@ impl Game {
             if !hannibal && !orderable.contains(&u) {
                 return Some("a unit is out of command");
             }
-            let near = self.battle.units.iter().any(|e| {
-                e.side != o.side && e.on_field() && self.battle.hexes(u).iter().any(|h| h.distance(e.hex) <= reach)
-            });
+            let near = self.battle.units.iter().any(|e| e.side != o.side && e.on_field() && self.battle.hexes(u).iter().any(|h| h.distance(e.hex) <= reach));
             if near {
                 return Some("a unit is near the enemy");
             }
@@ -970,9 +990,7 @@ impl Game {
                     let class = MoveClass::of_type(o.type_id).unwrap_or(MoveClass::HeavyInfantry);
                     let Some(c) = step_cost(&self.map, class, h, d) else { continue 'dir };
                     let to = h.neighbours()[d];
-                    let blocked = self.battle.units.iter().enumerate().any(|(i, x)| {
-                        x.on_field() && x.hex == to && !group.contains(&i) && i != l
-                    });
+                    let blocked = self.battle.units.iter().enumerate().any(|(i, x)| x.on_field() && x.hex == to && !group.contains(&i) && i != l);
                     if spent + c > o.max_mp || blocked || in_enemy_zoc(&self.battle, &self.map, o.side, to) {
                         continue 'dir;
                     }
@@ -1013,9 +1031,7 @@ impl Game {
     /// Where the active leader can move, if he has not yet.
     pub fn leader_options(&self) -> Vec<crate::hex::Hex> {
         match self.activation.active() {
-            Some(l) if !self.leader_moved => {
-                crate::movement::leader_moves(&self.battle, &self.map, l, self.battle.units[l].mp)
-            }
+            Some(l) if !self.leader_moved => crate::movement::leader_moves(&self.battle, &self.map, l, self.battle.units[l].mp),
             _ => Vec::new(),
         }
     }
@@ -1060,9 +1076,8 @@ impl Game {
         if u.nation != ROMAN || !gboh_formats::units::title(u.type_id).is_some_and(|t| t.contains("Triarii")) {
             return false;
         }
-        let legion_near = self.battle.units.iter().any(|o| {
-            o.side == u.side && o.state == UnitState::Fighting && o.legion.is_some() && o.hex.distance(u.hex) <= 6
-        });
+        let legion_near =
+            self.battle.units.iter().any(|o| o.side == u.side && o.state == UnitState::Fighting && o.legion.is_some() && o.hex.distance(u.hex) <= 6);
         let threat = self.battle.units.iter().any(|o| {
             o.side != u.side
                 && o.on_field()
@@ -1083,13 +1098,11 @@ impl Game {
     pub fn in_front(&self, unit: usize) -> Vec<usize> {
         let u = &self.battle.units[unit];
         let Some(dirs) = crate::movement::forward(u.facing) else { return Vec::new() };
-        let front: Vec<crate::hex::Hex> =
-            self.battle.hexes(unit).iter().flat_map(|h| dirs.map(|d| h.neighbours()[d])).collect();
+        let front: Vec<crate::hex::Hex> = self.battle.hexes(unit).iter().flat_map(|h| dirs.map(|d| h.neighbours()[d])).collect();
         (0..self.battle.units.len())
             .filter(|&e| {
                 let o = &self.battle.units[e];
-                o.side != u.side && o.leader.is_none() && o.on_field()
-                    && self.battle.hexes(e).iter().any(|h| front.contains(h))
+                o.side != u.side && o.leader.is_none() && o.on_field() && self.battle.hexes(e).iter().any(|h| front.contains(h))
             })
             .collect()
     }
@@ -1238,9 +1251,8 @@ impl Game {
             return;
         }
         let side = attackers.first().map(|&(a, _)| self.battle.units[a].side);
-        let threatened = hex.neighbours().iter().any(|n| {
-            self.battle.units.iter().any(|u| Some(u.side) != side && u.state == UnitState::Fighting && u.hex == *n)
-        });
+        let threatened =
+            hex.neighbours().iter().any(|n| self.battle.units.iter().any(|u| Some(u.side) != side && u.state == UnitState::Fighting && u.hex == *n));
         if threatened {
             return;
         }
@@ -1327,7 +1339,8 @@ impl Game {
         if roll < threshold {
             return false;
         }
-        let occupied = |g: &Self, h: crate::hex::Hex| (0..g.battle.units.len()).any(|u| u != p && g.battle.units[u].on_field() && g.battle.hexes(u).contains(&h));
+        let occupied =
+            |g: &Self, h: crate::hex::Hex| (0..g.battle.units.len()).any(|u| u != p && g.battle.units[u].on_field() && g.battle.hexes(u).contains(&h));
         // the hex line to the routed unit
         let goal = self.battle.units[target].hex;
         let from = self.battle.units[p].hex;
@@ -1403,7 +1416,8 @@ impl Game {
             return true;
         }
         let here = self.battle.units[p].hex;
-        let leaders: Vec<usize> = self.battle.leaders().filter(|&l| self.battle.units[l].side != side && self.battle.units[l].hex.distance(here) <= 1).collect();
+        let leaders: Vec<usize> =
+            self.battle.leaders().filter(|&l| self.battle.units[l].side != side && self.battle.units[l].hex.distance(here) <= 1).collect();
         for l in leaders {
             // (at risk: finished, then wounded on d100 25..70, killed above)
             if crate::orders::leader_withdraw(&mut self.battle, &self.map, l, p, &mut self.rng) {
@@ -1445,11 +1459,7 @@ impl Game {
     /// What an order can change, to notice when the AI stops making
     /// progress.
     fn snapshot(&self) -> Snapshot {
-        (
-            self.battle.units.iter().map(|u| (u.hex, u.facing, u.hits, u.state)).collect(),
-            self.shocks.len(),
-            self.points.as_ref().map_or(0, |p| p.used),
-        )
+        (self.battle.units.iter().map(|u| (u.hex, u.facing, u.hits, u.state)).collect(), self.shocks.len(), self.points.as_ref().map_or(0, |p| p.used))
     }
 
     /// A routed elephant rampages, then is out of the battle (the original's
@@ -1694,8 +1704,10 @@ impl Game {
             let hexes = self.battle.hexes(u);
             let b = &self.battle;
             let held = |h: crate::hex::Hex| (0..b.units.len()).any(|x| x != u && b.units[x].on_field() && b.hexes(x).contains(&h));
-            let enemy_leader = |h: crate::hex::Hex| b.units.iter().any(|x| x.on_field() && x.leader.is_some() && x.side != side && h.neighbours().contains(&x.hex));
-            let ok = (!o.two_hex() || o.second_hex().is_some_and(|h| crate::movement::on_map(&self.map, h))) && hexes.iter().all(|&h| !held(h) && !enemy_leader(h));
+            let enemy_leader =
+                |h: crate::hex::Hex| b.units.iter().any(|x| x.on_field() && x.leader.is_some() && x.side != side && h.neighbours().contains(&x.hex));
+            let ok =
+                (!o.two_hex() || o.second_hex().is_some_and(|h| crate::movement::on_map(&self.map, h))) && hexes.iter().all(|&h| !held(h) && !enemy_leader(h));
             if ok {
                 self.battle.units[u].state = UnitState::Fighting;
             }
@@ -1705,12 +1717,7 @@ impl Game {
     /// Rout points an army has lost (units out of the battle).
     pub fn rout_points(&self, army: usize) -> u16 {
         let nation = self.armies[army].0;
-        self.battle
-            .units
-            .iter()
-            .filter(|u| u.side == nation && u.state == UnitState::Gone)
-            .map(|u| unit_rout_points(&self.battle.options, u))
-            .sum::<u16>()
+        self.battle.units.iter().filter(|u| u.side == nation && u.state == UnitState::Gone).map(|u| unit_rout_points(&self.battle.options, u)).sum::<u16>()
             + self.fallen_leaders.iter().filter(|(n, _)| *n == nation).map(|(_, p)| p).sum::<u16>()
     }
 
@@ -1737,9 +1744,7 @@ impl Game {
             (false, false) => {}
         }
         // a killed Alexander loses the battle, a killed Darius too
-        let killed = |name: &str| {
-            self.battle.units.iter().any(|u| u.leader.is_some() && u.state == UnitState::Gone && u.name.contains(name))
-        };
+        let killed = |name: &str| self.battle.units.iter().any(|u| u.leader.is_some() && u.state == UnitState::Gone && u.name.contains(name));
         if killed("Alexander") {
             return Verdict::Won(enemy);
         }
@@ -1767,7 +1772,13 @@ impl Game {
         }
         // (not Caesar's: no leader's death ends its battles)
         // (nor by Hannibal's manual: an option)
-        let hannibal = self.battle.units.iter().find(|u| self.rules == Rules::Hannibal && !self.battle.options.manual_victory && u.leader.is_some() && u.state == UnitState::Gone && u.name.contains("Hannibal"));
+        let hannibal = self.battle.units.iter().find(|u| {
+            self.rules == Rules::Hannibal
+                && !self.battle.options.manual_victory
+                && u.leader.is_some()
+                && u.state == UnitState::Gone
+                && u.name.contains("Hannibal")
+        });
         if let Some(h) = hannibal {
             let his = self.armies.iter().position(|a| a.0 == h.side).unwrap_or(0);
             return Verdict::Won(1 - his);
@@ -1922,11 +1933,7 @@ mod tests {
     #[test]
     fn a_turn_runs_through_every_leader() {
         let r = LeaderRatings { charisma: 1, command_range: 4, initiative: 3, personal_combat: 1 };
-        let mut g = game(vec![
-            unit(4, 2, Hex::new(2, 2), Some(r)),
-            unit(5, 1, Hex::new(9, 9), Some(r)),
-            unit(31, 2, Hex::new(3, 2), None),
-        ]);
+        let mut g = game(vec![unit(4, 2, Hex::new(2, 2), Some(r)), unit(5, 1, Hex::new(9, 9), Some(r)), unit(31, 2, Hex::new(3, 2), None)]);
         let mut leaders = vec![g.begin_turn().unwrap()];
         while let (_, Some(l)) = g.finish_leader(false) {
             leaders.push(l);
@@ -1987,12 +1994,7 @@ mod tests {
     fn shocks_take_in_everyone_in_front() {
         // attacker at (4,4) facing 3: front hexes NE and SE
         let n = Hex::new(4, 4).neighbours();
-        let mut g = game(vec![
-            unit(31, 2, Hex::new(4, 4), None),
-            unit(31, 1, n[1], None),
-            unit(31, 1, n[2], None),
-            unit(31, 1, n[4], None),
-        ]);
+        let mut g = game(vec![unit(31, 2, Hex::new(4, 4), None), unit(31, 1, n[1], None), unit(31, 1, n[2], None), unit(31, 1, n[4], None)]);
         assert!(g.designate_shock(0, 1));
         assert_eq!(g.shocks[0].1, vec![1, 2]);
         // not behind
@@ -2041,11 +2043,7 @@ mod tests {
     #[test]
     fn group_moves_carry_the_group() {
         let r = LeaderRatings { charisma: 1, command_range: 6, initiative: 7, personal_combat: 1 };
-        let mut g = game(vec![
-            unit(4, 2, Hex::new(2, 6), Some(r)),
-            unit(31, 2, Hex::new(3, 5), None),
-            unit(31, 2, Hex::new(3, 7), None),
-        ]);
+        let mut g = game(vec![unit(4, 2, Hex::new(2, 6), Some(r)), unit(31, 2, Hex::new(3, 5), None), unit(31, 2, Hex::new(3, 7), None)]);
         g.activation = Activation::new(&g.battle, None);
         g.begin_turn();
         assert_eq!(g.group_move_refused(), None);

@@ -285,22 +285,12 @@ impl UnitSprites {
         };
         let standing = cels("Standing")?;
         let running = |prefix: &str| -> Option<Vec<(Sprite, (i32, i32))>> {
-            ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
-                .iter()
-                .map(|d| cels(&format!("{prefix}{d}"))?.into_iter().next())
-                .collect()
+            ["N", "NE", "E", "SE", "S", "SW", "W", "NW"].iter().map(|d| cels(&format!("{prefix}{d}"))?.into_iter().next()).collect()
         };
-        let routed = cels("StandingR")
-            .filter(|r| r.len() >= 8)
-            .or_else(|| running("Rout"))
-            .or_else(|| running("R"))
-            .unwrap_or_else(|| standing.clone());
+        let routed = cels("StandingR").filter(|r| r.len() >= 8).or_else(|| running("Rout")).or_else(|| running("R")).unwrap_or_else(|| standing.clone());
         const DIRS: [&str; 8] = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
         let walking = DIRS.iter().map(|d| cels(d).unwrap_or_default()).collect();
-        let running = DIRS
-            .iter()
-            .map(|d| cels(&format!("Rout{d}")).or_else(|| cels(&format!("R{d}"))).unwrap_or_default())
-            .collect();
+        let running = DIRS.iter().map(|d| cels(&format!("Rout{d}")).or_else(|| cels(&format!("R{d}"))).unwrap_or_default()).collect();
         let corpses = ["Shock", "Arrow", "Trample", "General"].map(|n| cels(n).unwrap_or_default());
         let firing = DIRS.iter().map(|d| cels(&format!("M{d}")).unwrap_or_default()).collect();
         let dropping = DIRS.iter().map(|d| cels(&format!("Drop{d}")).unwrap_or_default()).collect();
@@ -438,10 +428,7 @@ pub fn drawables_with<'a>(map: &Map, layout: &Layout, unit: &UnitView, art: &'a 
     });
     let poses = if unit.routed { &art.routed } else { &art.standing };
     let Some((sprite, hot)) = walking.or(acting).or(poses.get(facing - 1)) else { return Vec::new() };
-    figure_spots(map, layout, unit)
-        .into_iter()
-        .map(|(anchor, depth)| Drawable { anchor, depth, sprite, hot: *hot })
-        .collect()
+    figure_spots(map, layout, unit).into_iter().map(|(anchor, depth)| Drawable { anchor, depth, sprite, hot: *hot }).collect()
 }
 
 /// Walking men (`FUN_004ee88a`): each goes from his place to the first
@@ -620,19 +607,44 @@ pub fn fallen_by_hits(unit: &UnitView) -> u32 {
 /// original's tables at `0x60d768`, `0x60d8d0`, `0x60d960`, `0x60d9cc`).
 fn exposure(formation: Formation) -> &'static [[i16; 9]] {
     const PHALANX_X: [[i16; 9]; 20] = [
-        [9, 3, 4, 9, 9, 9, 9, 1, 2], [9, 1, 3, 9, 9, 9, 9, 9, 2], [9, 1, 3, 9, 9, 9, 9, 9, 2], [9, 1, 2, 9, 9, 9, 9, 9, 3],
-        [9, 2, 1, 9, 9, 9, 9, 9, 3], [9, 2, 3, 9, 9, 9, 9, 9, 1], [9, 1, 3, 9, 9, 9, 9, 9, 2], [9, 1, 3, 9, 9, 9, 9, 9, 2],
-        [9, 1, 2, 9, 9, 9, 9, 9, 3], [9, 3, 2, 1, 9, 9, 9, 9, 4], [9, 5, 6, 9, 9, 3, 2, 1, 4], [9, 4, 5, 9, 9, 1, 2, 9, 3],
-        [9, 4, 5, 9, 3, 1, 2, 9, 6], [9, 4, 3, 9, 2, 1, 9, 9, 5], [9, 4, 3, 9, 2, 1, 9, 9, 5], [9, 4, 5, 9, 9, 2, 1, 9, 3],
-        [9, 4, 5, 9, 9, 1, 2, 9, 3], [9, 4, 6, 9, 3, 1, 2, 9, 5], [9, 3, 4, 9, 2, 1, 9, 9, 6], [9, 5, 4, 1, 3, 2, 9, 9, 6],
+        [9, 3, 4, 9, 9, 9, 9, 1, 2],
+        [9, 1, 3, 9, 9, 9, 9, 9, 2],
+        [9, 1, 3, 9, 9, 9, 9, 9, 2],
+        [9, 1, 2, 9, 9, 9, 9, 9, 3],
+        [9, 2, 1, 9, 9, 9, 9, 9, 3],
+        [9, 2, 3, 9, 9, 9, 9, 9, 1],
+        [9, 1, 3, 9, 9, 9, 9, 9, 2],
+        [9, 1, 3, 9, 9, 9, 9, 9, 2],
+        [9, 1, 2, 9, 9, 9, 9, 9, 3],
+        [9, 3, 2, 1, 9, 9, 9, 9, 4],
+        [9, 5, 6, 9, 9, 3, 2, 1, 4],
+        [9, 4, 5, 9, 9, 1, 2, 9, 3],
+        [9, 4, 5, 9, 3, 1, 2, 9, 6],
+        [9, 4, 3, 9, 2, 1, 9, 9, 5],
+        [9, 4, 3, 9, 2, 1, 9, 9, 5],
+        [9, 4, 5, 9, 9, 2, 1, 9, 3],
+        [9, 4, 5, 9, 9, 1, 2, 9, 3],
+        [9, 4, 6, 9, 3, 1, 2, 9, 5],
+        [9, 3, 4, 9, 2, 1, 9, 9, 6],
+        [9, 5, 4, 1, 3, 2, 9, 9, 6],
     ];
     const INFANTRY_X: [[i16; 9]; 8] = [
-        [9, 3, 4, 9, 9, 9, 9, 1, 2], [9, 1, 3, 9, 9, 9, 9, 9, 2], [9, 1, 2, 9, 9, 9, 9, 9, 3], [9, 3, 2, 1, 9, 9, 9, 9, 4],
-        [9, 4, 5, 9, 9, 9, 2, 1, 3], [9, 4, 5, 9, 9, 1, 2, 9, 3], [9, 4, 3, 9, 2, 1, 9, 9, 5], [9, 4, 3, 1, 2, 9, 9, 9, 5],
+        [9, 3, 4, 9, 9, 9, 9, 1, 2],
+        [9, 1, 3, 9, 9, 9, 9, 9, 2],
+        [9, 1, 2, 9, 9, 9, 9, 9, 3],
+        [9, 3, 2, 1, 9, 9, 9, 9, 4],
+        [9, 4, 5, 9, 9, 9, 2, 1, 3],
+        [9, 4, 5, 9, 9, 1, 2, 9, 3],
+        [9, 4, 3, 9, 2, 1, 9, 9, 5],
+        [9, 4, 3, 1, 2, 9, 9, 9, 5],
     ];
     const MOUNTED_X: [[i16; 9]; 6] = [
-        [9, 3, 4, 5, 9, 9, 9, 2, 1], [9, 1, 2, 4, 9, 9, 9, 5, 3], [9, 3, 1, 2, 9, 9, 9, 5, 4],
-        [9, 6, 8, 7, 5, 3, 1, 2, 4], [9, 8, 6, 4, 2, 1, 3, 5, 7], [9, 6, 4, 2, 1, 3, 5, 7, 8],
+        [9, 3, 4, 5, 9, 9, 9, 2, 1],
+        [9, 1, 2, 4, 9, 9, 9, 5, 3],
+        [9, 3, 1, 2, 9, 9, 9, 5, 4],
+        [9, 6, 8, 7, 5, 3, 1, 2, 4],
+        [9, 8, 6, 4, 2, 1, 3, 5, 7],
+        [9, 6, 4, 2, 1, 3, 5, 7, 8],
     ];
     const BEASTS_X: [[i16; 9]; 3] = [[9, 1, 6, 9, 9, 5, 4, 2, 3], [9, 1, 3, 2, 4, 5, 9, 9, 6], [9, 1, 2, 4, 9, 9, 9, 5, 3]];
     match formation {
@@ -803,10 +815,7 @@ impl FlagSprites {
             let cels: Vec<_> = s.cels.iter().filter_map(|c| Some((Sprite::from(c.decode().ok()?), (c.hot_x as i32, c.hot_y as i32)))).collect();
             (!cels.is_empty()).then_some(cels)
         };
-        let pennants = ["Macedonian Flag", "Persian Flag", "Indian Flag", "Greek Flag"]
-            .into_iter()
-            .map(all)
-            .collect::<Option<_>>()?;
+        let pennants = ["Macedonian Flag", "Persian Flag", "Indian Flag", "Greek Flag"].into_iter().map(all).collect::<Option<_>>()?;
         Some(Self { pennants, stem: all("Stem")?.swap_remove(0) })
     }
 }
@@ -843,10 +852,7 @@ pub fn flag_drawables<'a>(map: &Map, layout: &Layout, unit: &UnitView, jitter: i
     let top = moved(anchor_at(map, layout, hex, (base.0 + PENNANT.0, base.1 + PENNANT.1)));
     // the pennant sorts with its pole, so it shares the pole's anchor
     let hot = (flag_hot.0 - (top.0 - pole.0), flag_hot.1 - (top.1 - pole.1));
-    vec![
-        Drawable { anchor: pole, depth: 0, sprite: stem, hot: *stem_hot },
-        Drawable { anchor: pole, depth: 1, sprite: flag, hot },
-    ]
+    vec![Drawable { anchor: pole, depth: 0, sprite: stem, hot: *stem_hot }, Drawable { anchor: pole, depth: 1, sprite: flag, hot }]
 }
 
 const PHALANX: [Figure; 20] = [
@@ -889,9 +895,7 @@ const CAVALRY: [Figure; 6] = [
     Figure { offset: [(5, 24), (-19, 13), (0, 0), (-10, 5), (0, -1), (23, 4), (0, 0), (21, 9)], depth: [0, 0, 0, 0, 0, 0, 0, 0] },
     Figure { offset: [(34, 24), (0, 24), (0, 0), (-33, 13), (-29, -1), (4, -7), (0, 0), (39, -1)], depth: [0, 0, 0, 0, 0, 0, 0, 0] },
 ];
-const SINGLE: [Figure; 1] = [
-    Figure { offset: [(0, 11), (0, 11), (0, 11), (0, 11), (0, 11), (0, 11), (0, 11), (0, 11)], depth: [0, 0, 0, 0, 0, 0, 0, 0] },
-];
+const SINGLE: [Figure; 1] = [Figure { offset: [(0, 11), (0, 11), (0, 11), (0, 11), (0, 11), (0, 11), (0, 11), (0, 11)], depth: [0, 0, 0, 0, 0, 0, 0, 0] }];
 const ELEPHANTS: [Figure; 3] = [
     Figure { offset: [(37, 23), (21, 20), (0, 0), (-27, 16), (-39, 10), (-23, -9), (0, 0), (20, -12)], depth: [0; 8] },
     Figure { offset: [(-39, 23), (-23, -9), (0, 0), (20, -12), (37, 10), (24, 20), (0, 0), (-27, 16)], depth: [0; 8] },
@@ -902,8 +906,7 @@ const CHARIOTS: [Figure; 3] = [
     Figure { offset: [(-49, 16), (-23, -9), (0, 0), (15, -12), (27, 10), (34, 20), (0, 0), (-27, 16)], depth: [0; 8] },
     Figure { offset: [(-11, 3), (13, -2), (0, 0), (4, 8), (-11, 23), (-3, 11), (0, 0), (-17, -3)], depth: [0; 8] },
 ];
-const OXYBELES: [Figure; 1] =
-    [Figure { offset: [(0, 45), (0, 20), (0, 20), (0, 20), (0, 20), (0, 20), (0, 20), (0, 20)], depth: [0; 8] }];
+const OXYBELES: [Figure; 1] = [Figure { offset: [(0, 45), (0, 20), (0, 20), (0, 20), (0, 20), (0, 20), (0, 20), (0, 20)], depth: [0; 8] }];
 
 #[cfg(test)]
 mod tests {

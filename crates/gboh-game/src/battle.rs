@@ -225,7 +225,8 @@ impl Battle {
         for i in 0..units.len() {
             let (link, side) = (units[i].link, units[i].side);
             if units[i].leader.is_some() && link >= 0 {
-                units[i].superior = (0..units.len()).find(|&k| k != i && units[k].leader.is_some() && units[k].side == side && units[k].group as i32 == link as i32);
+                units[i].superior =
+                    (0..units.len()).find(|&k| k != i && units[k].leader.is_some() && units[k].side == side && units[k].group as i32 == link as i32);
             }
         }
         Self { units, wind: false, heat: 0, options: Default::default() }
@@ -263,11 +264,7 @@ impl Battle {
 
     /// Indices of the leaders still in the battle.
     pub fn leaders(&self) -> impl Iterator<Item = usize> + '_ {
-        self.units
-            .iter()
-            .enumerate()
-            .filter(|(_, u)| u.leader.is_some() && u.on_field())
-            .map(|(i, _)| i)
+        self.units.iter().enumerate().filter(|(_, u)| u.leader.is_some() && u.on_field()).map(|(i, _)| i)
     }
 
     /// The hexes `unit` covers: its own, plus its flank neighbour for

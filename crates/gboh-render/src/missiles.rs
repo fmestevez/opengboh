@@ -30,16 +30,8 @@ pub enum Missile {
 }
 
 impl Missile {
-    pub const ALL: [Missile; 8] = [
-        Missile::Arrow,
-        Missile::Javelin,
-        Missile::Bolt,
-        Missile::Stone,
-        Missile::MountedJavelin,
-        Missile::LightJavelin,
-        Missile::Pilum,
-        Missile::Axe,
-    ];
+    pub const ALL: [Missile; 8] =
+        [Missile::Arrow, Missile::Javelin, Missile::Bolt, Missile::Stone, Missile::MountedJavelin, Missile::LightJavelin, Missile::Pilum, Missile::Axe];
 
     /// Caesar's missile art table's entry `k`.
     pub fn caesar(k: u8) -> Option<Self> {

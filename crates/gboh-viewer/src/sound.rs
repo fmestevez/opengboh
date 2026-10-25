@@ -57,7 +57,9 @@ pub enum Music {
     /// battle's.
     Start,
     Battle,
-    End { won: bool },
+    End {
+        won: bool,
+    },
 }
 
 /// Plays sounds; silent if there is no audio output.
@@ -90,12 +92,7 @@ pub struct Sound {
 impl Sound {
     pub fn new(data_dir: &Path) -> Self {
         let files = std::fs::read_dir(data_dir)
-            .map(|d| {
-                d.filter_map(|e| e.ok())
-                    .map(|e| e.path())
-                    .filter_map(|p| Some((p.file_name()?.to_str()?.to_ascii_lowercase(), p)))
-                    .collect()
-            })
+            .map(|d| d.filter_map(|e| e.ok()).map(|e| e.path()).filter_map(|p| Some((p.file_name()?.to_str()?.to_ascii_lowercase(), p))).collect())
             .unwrap_or_default();
         // GBOH_MUTE silences everything
         let output = if std::env::var_os("GBOH_MUTE").is_some() { None } else { rodio::OutputStream::try_default().ok() };
@@ -104,7 +101,22 @@ impl Sound {
             .is_some_and(|g| g != gboh_formats::game::Game::Alexander)
             .then(|| data_dir.parent().and_then(|p| crate::find_ci(p, "MUSIC")))
             .flatten();
-        Self { output, dir: data_dir.into(), files, cd, cache: HashMap::new(), seed: 1, volumes: [0.5; 3], music, playing: Music::Silent, next_piece: 0, caesar: gboh_formats::game::Game::detect(data_dir) == Some(gboh_formats::game::Game::Caesar), next_ambient: None, data: None, channels: HashMap::new() }
+        Self {
+            output,
+            dir: data_dir.into(),
+            files,
+            cd,
+            cache: HashMap::new(),
+            seed: 1,
+            volumes: [0.5; 3],
+            music,
+            playing: Music::Silent,
+            next_piece: 0,
+            caesar: gboh_formats::game::Game::detect(data_dir) == Some(gboh_formats::game::Game::Caesar),
+            next_ambient: None,
+            data: None,
+            channels: HashMap::new(),
+        }
     }
 
     /// Set the volumes (0 to 1) of the effects, the ambient sounds and the
@@ -343,11 +355,8 @@ mod tests {
     #[test]
     fn sounds_exist() {
         let Ok(dir) = std::env::var("GBOH_DATA") else { return };
-        let have: Vec<String> = std::fs::read_dir(&dir)
-            .unwrap()
-            .filter_map(|e| e.ok()?.file_name().into_string().ok())
-            .map(|n| n.to_ascii_lowercase())
-            .collect();
+        let have: Vec<String> =
+            std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()?.file_name().into_string().ok()).map(|n| n.to_ascii_lowercase()).collect();
         use MoveClass::*;
         let mut names: Vec<&str> = vec!["select", "start", "victory", "defeat", "shoklup1", "shoklup5", "elef1", "elefblow"];
         for c in [Phalanx, HeavyInfantry, MediumInfantry, LightInfantry, Skirmisher, HeavyCavalry, Lancer, LightCavalry, Elephant, Chariot, Oxybeles] {

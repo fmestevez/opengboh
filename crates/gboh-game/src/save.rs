@@ -122,9 +122,7 @@ fn leader(d: &[u8], mut o: usize) -> Option<(Saved, usize)> {
 fn order(battle: &Battle, home: u8) -> (Vec<(usize, bool)>, Vec<usize>) {
     let mut units: Vec<usize> = (0..battle.units.len()).collect();
     units.sort_by_key(|&u| (battle.units[u].side != home, battle.units[u].source));
-    let missile = |u: usize| {
-        battle.units[u].missile.is_some() && MoveClass::of_type(battle.units[u].type_id) != Some(MoveClass::Chariot)
-    };
+    let missile = |u: usize| battle.units[u].missile.is_some() && MoveClass::of_type(battle.units[u].type_id) != Some(MoveClass::Chariot);
     let combat = units.iter().filter(|&&u| battle.units[u].leader.is_none()).map(|&u| (u, missile(u))).collect();
     // leaders are saved in plain scenario order (not by side)
     let mut leaders: Vec<usize> = units.into_iter().filter(|&u| battle.units[u].leader.is_some()).collect();
@@ -149,11 +147,7 @@ fn parse_from(d: &[u8], o: usize, combat_order: &[(usize, bool)], leaders: &[usi
             Some(&(_, m)) => combat(d, n, m).is_some() || combat(d, n, !m).is_some(),
             None => leader(d, n).is_some(),
         };
-        let (s, n) = [missile, !missile]
-            .into_iter()
-            .filter_map(|m| combat(d, o, m))
-            .find(|&(_, n)| next_ok(n))
-            .ok_or((i, o))?;
+        let (s, n) = [missile, !missile].into_iter().filter_map(|m| combat(d, o, m)).find(|&(_, n)| next_ok(n)).ok_or((i, o))?;
         out.push((u, s));
         o = n;
     }
@@ -173,9 +167,7 @@ pub struct Error(pub String);
 /// nation `home`), by battle index.
 pub fn read(d: &[u8], battle: &Battle, home: u8) -> Result<Vec<(usize, Saved)>, Error> {
     let (combat_order, leaders) = order(battle, home);
-    (0..d.len())
-        .find_map(|o| parse_at(d, o, &combat_order, &leaders))
-        .ok_or_else(|| Error("no unit section found".into()))
+    (0..d.len()).find_map(|o| parse_at(d, o, &combat_order, &leaders)).ok_or_else(|| Error("no unit section found".into()))
 }
 
 /// The turn number in the save's title ("…; Turn #8; Spitaces").

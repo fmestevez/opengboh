@@ -23,13 +23,13 @@
 //! * `render <DATA dir> <MAP or SCN file> <out.png> [in|normal|out]`: draw a
 //!   map (or a scenario's map with its units) with the faithful renderer.
 
-use gboh_formats::{eif::Eif, map::Map, pal::Palette, scn::Scenario};
+use anyhow::{Context, Result, bail};
 use gboh_formats::units::{title, unit_type};
+use gboh_formats::{eif::Eif, map::Map, pal::Palette, scn::Scenario};
 use gboh_render::battlefield;
 use gboh_render::terrain::Zoom;
-use std::collections::BTreeMap;
-use anyhow::{Context, Result, bail};
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -67,9 +67,7 @@ fn main() -> Result<()> {
         Some("command") if args.len() == 4 => command(Path::new(&args[2]), &args[3]),
         Some("turns") if args.len() == 5 => turns(Path::new(&args[2]), &args[3], args[4].parse()?),
         Some("ai") if args.len() >= 5 => ai(Path::new(&args[2]), &args[3], args[4].parse()?, &args[5..]),
-        Some("moves") if (5..=6).contains(&args.len()) => {
-            moves(Path::new(&args[2]), &args[3], &args[4], args.get(5).map_or("", String::as_str))
-        }
+        Some("moves") if (5..=6).contains(&args.len()) => moves(Path::new(&args[2]), &args[3], &args[4], args.get(5).map_or("", String::as_str)),
         Some("render") if (5..=10).contains(&args.len()) => render(
             Path::new(&args[2]),
             &args[3],
@@ -105,10 +103,8 @@ fn find_ci(dir: &Path, name: &str) -> Result<PathBuf> {
 }
 
 fn files_with_ext(dir: &Path, ext: &str) -> Result<Vec<PathBuf>> {
-    let mut paths: Vec<PathBuf> = fs::read_dir(dir)?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case(ext)))
-        .collect();
+    let mut paths: Vec<PathBuf> =
+        fs::read_dir(dir)?.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case(ext))).collect();
     paths.sort();
     Ok(paths)
 }
@@ -209,7 +205,11 @@ fn command(data_dir: &Path, scn_file: &str) -> Result<()> {
 }
 
 fn moves(data_dir: &Path, scn_file: &str, name: &str, turns: &str) -> Result<()> {
-    use gboh_game::{battle::Battle, movement::{highlighted, reachable}, orders::turn};
+    use gboh_game::{
+        battle::Battle,
+        movement::{highlighted, reachable},
+        orders::turn,
+    };
     let scn = Scenario::parse(&fs::read(find_ci(data_dir, scn_file)?)?)?;
     let map = Map::parse(&fs::read(find_ci(data_dir, &scn.map_file)?)?)?;
     let mut battle = Battle::from_scenario(&scn, &map);
@@ -374,7 +374,20 @@ fn ai(data_dir: &Path, scn_file: &str, n: u32, opts: &[String]) -> Result<()> {
             routed(game.armies[1].0)
         );
         if let Verdict::Won(a) = verdict {
-            let names = ["Greeks", "Persians", "Macedonians", "Indians", "Danubians", "Scythians", "Romans", "Carthaginians", "Seleucids", "Caesarians", "Pompeians", "Barbarians"];
+            let names = [
+                "Greeks",
+                "Persians",
+                "Macedonians",
+                "Indians",
+                "Danubians",
+                "Scythians",
+                "Romans",
+                "Carthaginians",
+                "Seleucids",
+                "Caesarians",
+                "Pompeians",
+                "Barbarians",
+            ];
             println!("{} win", names.get(game.armies[a].0 as usize).unwrap_or(&"?"));
             break;
         }
@@ -438,12 +451,9 @@ fn extract(data_dir: &Path, out_dir: &Path) -> Result<()> {
                     .pixels
                     .iter()
                     .zip(&img.effect)
-                    .flat_map(|(&i, &fx)| {
-                        if fx != 0 || Some(i) == shadow_idx { [0, 0, 0, 128] } else { rgba_pal[i as usize] }
-                    })
+                    .flat_map(|(&i, &fx)| if fx != 0 || Some(i) == shadow_idx { [0, 0, 0, 128] } else { rgba_pal[i as usize] })
                     .collect();
-                write_png(&dir.join(&file), cel.width as u32, cel.height as u32, &rgba)
-                    .with_context(|| format!("{stem}/{file}"))?;
+                write_png(&dir.join(&file), cel.width as u32, cel.height as u32, &rgba).with_context(|| format!("{stem}/{file}"))?;
                 info.cels.push(CelInfo {
                     file,
                     name: cel.name.clone(),
@@ -482,11 +492,8 @@ fn render(data_dir: &Path, file: &str, out: &Path, zoom: &str, save: Option<&str
     };
     let mut load = |name: &str| find_ci(data_dir, name).ok().and_then(|p| fs::read(p).ok());
     // a scenario brings its map and units
-    let scenario = if file.to_ascii_lowercase().ends_with(".scn") {
-        Some(Scenario::parse(&load(file).with_context(|| format!("{file} not found"))?)?)
-    } else {
-        None
-    };
+    let scenario =
+        if file.to_ascii_lowercase().ends_with(".scn") { Some(Scenario::parse(&load(file).with_context(|| format!("{file} not found"))?)?) } else { None };
     let map_file = scenario.as_ref().map_or_else(|| file.to_string(), |s| s.map_file.clone());
     let units = scenario.as_ref().map_or_else(Vec::new, |s| s.units.clone());
     let map = Map::parse(&load(&map_file).with_context(|| format!("{map_file} not found"))?)?;
@@ -497,8 +504,7 @@ fn render(data_dir: &Path, file: &str, out: &Path, zoom: &str, save: Option<&str
         battlefield::palette(&mut load)?
     };
     let titles = eif_title_index(data_dir)?;
-    let mut load_title =
-        |title: &str| titles.get(title).and_then(|n| fs::read(data_dir.join(n)).ok());
+    let mut load_title = |title: &str| titles.get(title).and_then(|n| fs::read(data_dir.join(n)).ok());
     let canvas = match (save, &scenario) {
         // a saved game's positions, routed units in their routed pose
         (Some(path), Some(scn)) => {
@@ -522,7 +528,7 @@ fn render(data_dir: &Path, file: &str, out: &Path, zoom: &str, save: Option<&str
                     hits: u.hits.max(0) as u16,
                     tq: u.tq,
                     act: None,
-                fallen: None,
+                    fallen: None,
                 })
                 .collect();
             let types: Vec<usize> = views.iter().map(|v| v.type_id).collect();

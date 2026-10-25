@@ -520,7 +520,9 @@ impl Hud {
             // (Hannibal's glyphs are pale in its palette: drawn in its
             // darkest colour, as the small font is)
             font: match Font::small(data_dir).ink() {
-                Some(ink) if gboh_formats::game::Game::detect(data_dir).is_some_and(|g| g != gboh_formats::game::Game::Alexander) => Font::load(data_dir).in_ink(ink),
+                Some(ink) if gboh_formats::game::Game::detect(data_dir).is_some_and(|g| g != gboh_formats::game::Game::Alexander) => {
+                    Font::load(data_dir).in_ink(ink)
+                }
                 _ => Font::load(data_dir),
             },
             small: Font::small(data_dir),
@@ -554,10 +556,12 @@ impl Hud {
             pale_yellow: crate::palette_path(data_dir)
                 .and_then(|p| std::fs::read(p).ok())
                 .and_then(|d| gboh_formats::pal::Palette::parse(&d).ok())
-                .and_then(|p| (1..=255u8).min_by_key(|&i| {
-                    let [r, g, b] = p.colors[i as usize];
-                    (255 - r as i32).pow(2) + (255 - g as i32).pow(2) + (225 - b as i32).pow(2)
-                }))
+                .and_then(|p| {
+                    (1..=255u8).min_by_key(|&i| {
+                        let [r, g, b] = p.colors[i as usize];
+                        (255 - r as i32).pow(2) + (255 - g as i32).pow(2) + (225 - b as i32).pow(2)
+                    })
+                })
                 .unwrap_or(255),
             button: cels(&eif(data_dir, "DLGBTN.EIF"), "Pushbutton"),
             big_button: cels(&eif(data_dir, "DLGBTN.EIF"), "Big Pushbutton"),
@@ -782,11 +786,16 @@ impl Hud {
             return None;
         }
         use gboh_formats::pe::Name::Id;
-        let hit = d.controls.iter().filter(|c| c.rect.0 < d.size.0).filter(|c| (c.class == Id(0x80) && !c.text.is_empty()) || matches!(c.class, Id(0x81) | Id(0x83))).find(|c| {
-            let (bx, by, bw, bh) = du(c.rect);
-            let (bx, by) = (dx + bx, dy + CAPTION + by);
-            x >= bx && x < bx + bw && y >= by && y < by + bh
-        });
+        let hit = d
+            .controls
+            .iter()
+            .filter(|c| c.rect.0 < d.size.0)
+            .filter(|c| (c.class == Id(0x80) && !c.text.is_empty()) || matches!(c.class, Id(0x81) | Id(0x83)))
+            .find(|c| {
+                let (bx, by, bw, bh) = du(c.rect);
+                let (bx, by) = (dx + bx, dy + CAPTION + by);
+                x >= bx && x < bx + bw && y >= by && y < by + bh
+            });
         Some(hit.map_or(0, |c| c.id))
     }
 
@@ -1069,9 +1078,8 @@ impl Hud {
         self.small.draw(canvas, &title, ox + 170 - self.small.width(&title) / 2, oy + 52);
         let percent = if a.level == 0 { 0 } else { a.eliminated.min(a.level) as u32 * 100 / a.level as u32 };
         let format = |id: u16, n: u32| self.string(id).replacen("%d", &n.to_string(), 1).replace("%%", "%");
-        for (k, line) in [format(123, a.level as u32), format(124, percent), format(125, a.routing_tq as u32), format(126, a.eliminated as u32)]
-            .iter()
-            .enumerate()
+        for (k, line) in
+            [format(123, a.level as u32), format(124, percent), format(125, a.routing_tq as u32), format(126, a.eliminated as u32)].iter().enumerate()
         {
             self.small.draw(canvas, line, ox + 28, oy + 76 + 24 * k as i32);
         }
@@ -1127,11 +1135,8 @@ impl Hud {
             self.draw_chiselled(canvas, &name, ox + centre - self.chiselled_width(&name) / 2, oy + 30);
             let x = ox + if side == 0 { 40 } else { 330 };
             let remaining = g.levels[side] as i32 - g.lost[side] as i32;
-            let lines = [
-                format!("{}{}", self.string(75), g.levels[side]),
-                format!("{}{}", self.string(76), g.lost[side]),
-                format!("{}{}", self.string(77), remaining),
-            ];
+            let lines =
+                [format!("{}{}", self.string(75), g.levels[side]), format!("{}{}", self.string(76), g.lost[side]), format!("{}{}", self.string(77), remaining)];
             for (k, line) in lines.iter().enumerate() {
                 self.small.draw(canvas, line, x, oy + 75 + 16 * k as i32 - 2);
             }
@@ -1175,10 +1180,7 @@ impl Hud {
             return Some(ResultsClick::Close);
         }
         let ((lx, ly, lw, lh), line) = self.overall_list(width, height);
-        (x >= lx && x < lx + lw && y >= ly && y < ly + lh)
-            .then(|| ((y - ly) / line) as usize)
-            .filter(|&k| k < r.battles)
-            .map(ResultsClick::Battle)
+        (x >= lx && x < lx + lw && y >= ly && y < ly + lh).then(|| ((y - ly) / line) as usize).filter(|&k| k < r.battles).map(ResultsClick::Battle)
     }
 
     /// Whether the left button is held down inside `rect`.
@@ -1427,8 +1429,7 @@ impl Hud {
             }
             // the part in view, in white
             let [l, t, r, b] = o.view.map(|v| v.clamp(0.0, 1.0));
-            let (x0, y0, x1, y1) =
-                (mx + (l * mw as f32) as i32, my + (t * mh as f32) as i32, mx + (r * mw as f32) as i32 - 1, my + (b * mh as f32) as i32 - 1);
+            let (x0, y0, x1, y1) = (mx + (l * mw as f32) as i32, my + (t * mh as f32) as i32, mx + (r * mw as f32) as i32 - 1, my + (b * mh as f32) as i32 - 1);
             for x in x0..=x1 {
                 put(x, y0, 255);
                 put(x, y1, 255);
@@ -1559,7 +1560,25 @@ mod tests {
             size: 1,
             missile: Some((66, 2, 6, 4)),
         };
-        let c = hud.canvas(800, 500, |t| t != Tool::Undo, ["Turn 1 Alexander III", "Turn 1", "Normal"], Some(&overview), Some(&details), None, None, &["--- Turn #1 ---".to_string(), "Alexander III is now active.".to_string(), "Agrian 1 shoots at India 4. India 4 takes 2 cohesion hits and is routing!".to_string()], None, None, None, None);
+        let c = hud.canvas(
+            800,
+            500,
+            |t| t != Tool::Undo,
+            ["Turn 1 Alexander III", "Turn 1", "Normal"],
+            Some(&overview),
+            Some(&details),
+            None,
+            None,
+            &[
+                "--- Turn #1 ---".to_string(),
+                "Alexander III is now active.".to_string(),
+                "Agrian 1 shoots at India 4. India 4 takes 2 cohesion hits and is routing!".to_string(),
+            ],
+            None,
+            None,
+            None,
+            None,
+        );
         // the combat results: two battles, the first open
         let row = |name: &str, current, total, to_rout, routed| ResultRow { name: name.into(), current, total, to_rout, routed, eliminated: false };
         let results = Results {
@@ -1568,7 +1587,21 @@ mod tests {
             open: Some((vec![row("Mercenary 2", 2, 3, 2, false), row("Agema Hypaspist", 2, 3, 6, false)], vec![row("India 10", 2, 3, 2, true)])),
         };
         let r = hud.canvas(800, 500, |_| true, ["", "", ""], None, None, Some(&results), None, &[], None, None, None, None);
-        let g = hud.canvas(800, 500, |_| true, ["", "", ""], None, None, None, Some(&GameOverview { nations: [2, 3], levels: [80, 70], lost: [1, 38] }), &[], None, None, None, None);
+        let g = hud.canvas(
+            800,
+            500,
+            |_| true,
+            ["", "", ""],
+            None,
+            None,
+            None,
+            Some(&GameOverview { nations: [2, 3], levels: [80, 70], lost: [1, 38] }),
+            &[],
+            None,
+            None,
+            None,
+            None,
+        );
         let rows = (0..14)
             .map(|k| ArmyRow {
                 name: format!("Hypaspist {}", k + 1),
@@ -1618,7 +1651,12 @@ mod tests {
             };
             let reader = Reader {
                 title: "Hydaspes  (326 BC)".into(),
-                paragraphs: vec!["STANDARD VICTORY CONDITIONS: (Can be altered with the Army Rout Level dialog box)".into(), "Indians: The Indians win if they can rout the Macedonian army, or if they are unrouted by the conclusion of game turn 10 of the battle.".into(), "The Armies at Hydaspes".into()],
+                paragraphs: vec![
+                    "STANDARD VICTORY CONDITIONS: (Can be altered with the Army Rout Level dialog box)".into(),
+                    "Indians: The Indians win if they can rout the Macedonian army, or if they are unrouted by the conclusion of game turn 10 of the battle."
+                        .into(),
+                    "The Armies at Hydaspes".into(),
+                ],
                 links: vec![None, None, Some(3)],
                 scroll: 0,
                 buttons: vec!["&Close".into(), "Contents".into()],

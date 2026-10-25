@@ -6,7 +6,7 @@
 //! casualties, advances and routs are not applied yet.
 
 use crate::battle::Battle;
-use crate::combat::{LeaderCasualty, Share, Shock, leader_casualty, checks_before_shock, defending_class, share_hits, side_size, tq_check_unit};
+use crate::combat::{LeaderCasualty, Share, Shock, checks_before_shock, defending_class, leader_casualty, share_hits, side_size, tq_check_unit};
 use crate::hex::Hex;
 use crate::movement::{MoveClass, forward};
 use gboh_formats::crt::BorlandRand;
@@ -124,7 +124,18 @@ fn caesar_terrain_shift(battle: &Battle, map: &gboh_formats::map::Map, attackers
             })
         })
     };
-    let infantry = |d: usize| !matches!(class(battle, d), MoveClass::HeavyCavalry | MoveClass::RomanCavalry | MoveClass::BarbarianCavalry | MoveClass::LightCavalry | MoveClass::Lancer | MoveClass::Elephant | MoveClass::Chariot);
+    let infantry = |d: usize| {
+        !matches!(
+            class(battle, d),
+            MoveClass::HeavyCavalry
+                | MoveClass::RomanCavalry
+                | MoveClass::BarbarianCavalry
+                | MoveClass::LightCavalry
+                | MoveClass::Lancer
+                | MoveClass::Elephant
+                | MoveClass::Chariot
+        )
+    };
     let mut shift = 0;
     if !d_hexes.is_empty() && d_hexes.iter().all(|&h| rough(h)) {
         shift -= 1;
@@ -166,10 +177,7 @@ pub struct Outcome {
 /// of `units`, the one with the highest first rating.
 fn involved_leader(battle: &Battle, units: &[usize]) -> Option<usize> {
     let hexes: Vec<Hex> = units.iter().flat_map(|&u| battle.hexes(u)).collect();
-    battle
-        .leaders()
-        .filter(|&l| hexes.contains(&battle.units[l].hex))
-        .max_by_key(|&l| battle.units[l].leader.map_or(0, |r| r.charisma))
+    battle.leaders().filter(|&l| hexes.contains(&battle.units[l].hex)).max_by_key(|&l| battle.units[l].leader.map_or(0, |r| r.charisma))
 }
 
 fn class(battle: &Battle, u: usize) -> MoveClass {
@@ -231,7 +239,11 @@ pub fn resolve(battle: &mut Battle, attackers: &[(usize, bool)], defenders: &[us
     for &(a, moved) in attackers {
         let d = standing[0];
         let frontal = angle(battle.units[d].hex, battle.units[d].facing, battle.units[a].hex) == 0;
-        let checks = if manual { moved && manual_checks(class(battle, a)) && !at_skirmishers } else { checks_before_shock(class(battle, a), moved, class(battle, d), frontal) };
+        let checks = if manual {
+            moved && manual_checks(class(battle, a)) && !at_skirmishers
+        } else {
+            checks_before_shock(class(battle, a), moved, class(battle, d), frontal)
+        };
         if checks {
             all_frontal_light &= frontal && class(battle, a) == MoveClass::LightInfantry;
             // (the manual: a charging elephant shakes them too, Hannibal's

@@ -582,16 +582,19 @@ fn caesar_view(map: &Map, art: &HanArt, ca: &CaesarArt, layout: Layout, strip_of
         }
     }
     // a corner piece clears the caps its neighbours put at its ends
-    let road = |t: Option<(usize, usize)>| t.is_some_and(|(r, c)| {
-        let (x, y) = layout.to_map(r, c);
-        map.hex_features(x, y).contains(&ROAD)
-    });
+    let road = |t: Option<(usize, usize)>| {
+        t.is_some_and(|(r, c)| {
+            let (x, y) = layout.to_map(r, c);
+            map.hex_features(x, y).contains(&ROAD)
+        })
+    };
     let mut pieces = vec![[0u16; 3]; n];
     for &(r, c) in &tiles {
         let i = r * cols + c;
         let [left, ul, ur, right] = layout.neighbours(r, c).map(|t| p.tile(t));
         let [ll, lr] = layout.lower(r, c).map(|t| p.tile(t));
-        const CLEAR: [[(usize, usize); 2]; 6] = [[(1, 11), (2, 17)], [(2, 12), (3, 18)], [(3, 13), (5, 19)], [(5, 8), (4, 14)], [(4, 9), (0, 15)], [(0, 10), (1, 16)]];
+        const CLEAR: [[(usize, usize); 2]; 6] =
+            [[(1, 11), (2, 17)], [(2, 12), (3, 18)], [(3, 13), (5, 19)], [(5, 8), (4, 14)], [(4, 9), (0, 15)], [(0, 10), (1, 16)]];
         let around = [left, ul, ur, right, ll, lr];
         for (k, clear) in CLEAR.iter().enumerate() {
             if layer2[i][2 + k].is_some() {

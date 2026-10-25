@@ -113,8 +113,21 @@ impl Places {
     fn caesar() -> Self {
         const AREA: [(i32, i32); 13] =
             [(61, 82), (134, 21), (282, 21), (319, 73), (379, 160), (406, 21), (479, 90), (540, 97), (668, 173), (539, 253), (362, 235), (223, 173), (39, 187)];
-        const FLAG: [(i32, i32); 13] =
-            [(82, 124), (186, 59), (328, 24), (359, 103), (361, 169), (451, 35), (496, 127), (634, 161), (698, 253), (568, 296), (396, 302), (285, 252), (64, 266)];
+        const FLAG: [(i32, i32); 13] = [
+            (82, 124),
+            (186, 59),
+            (328, 24),
+            (359, 103),
+            (361, 169),
+            (451, 35),
+            (496, 127),
+            (634, 161),
+            (698, 253),
+            (568, 296),
+            (396, 302),
+            (285, 252),
+            (64, 266),
+        ];
         Self {
             view: (35, 15, 529, 357),
             map_dy: 0,
@@ -434,7 +447,13 @@ impl CampaignArt {
 
     /// Each garrison icon of `province` (kind, value, cel, dialog place),
     /// infantry row then cavalry 17 pixels down.
-    fn icons(&self, c: &Campaign, province: usize, scroll: i32, m_split: &std::collections::HashMap<(usize, usize), [u16; 4]>) -> Vec<(usize, u16, usize, (i32, i32))> {
+    fn icons(
+        &self,
+        c: &Campaign,
+        province: usize,
+        scroll: i32,
+        m_split: &std::collections::HashMap<(usize, usize), [u16; 4]>,
+    ) -> Vec<(usize, u16, usize, (i32, i32))> {
         let mut out = Vec::new();
         for kind in [campaign::INFANTRY, campaign::CAVALRY] {
             let (mut x, y) = self.on_dialog(self.places.icons[province], scroll);
@@ -767,11 +786,7 @@ impl CampaignArt {
             }
             return canvas;
         }
-        let rows = [
-            (44, 186, r.rounds.to_string()),
-            (45, 272, r.conquered.to_string()),
-            (46, 380, string(38 + r.rating as u16)),
-        ];
+        let rows = [(44, 186, r.rounds.to_string()), (45, 272, r.conquered.to_string()), (46, 380, string(38 + r.rating as u16))];
         // the rects (x 411) are pixels of the picture: its marble panel
         for (id, y, value) in rows {
             self.font.draw(&mut canvas, &string(id), ox + 411, oy + y);
@@ -829,7 +844,9 @@ pub fn describe(e: &campaign::Event, names: &[String], kind: campaign::Kind) -> 
             format!("{} is {} free of {power}.", name(*province), if *level == campaign::FREE { "wholly" } else { "partly" })
         }
         campaign::Event::Reinforcements { kind: k, count: 0 } => format!("No {} reinforcements this round.", kind(*k)),
-        campaign::Event::Reinforcements { kind: k, count } => format!("{count} {} reinforcement{} gather in {}.", kind(*k), if *count == 1 { "" } else { "s" }, name(0)),
+        campaign::Event::Reinforcements { kind: k, count } => {
+            format!("{count} {} reinforcement{} gather in {}.", kind(*k), if *count == 1 { "" } else { "s" }, name(0))
+        }
     }
 }
 
@@ -850,7 +867,12 @@ mod tests {
         let mut c = Campaign::new_hannibal(3);
         c.after_battle(true);
         let events = c.opening();
-        let m = MapState { scroll: art.centre_on(4), subjugate: true, log: events.iter().map(|e| describe(e, &art.province_names, c.kind)).collect(), ..Default::default() };
+        let m = MapState {
+            scroll: art.centre_on(4),
+            subjugate: true,
+            log: events.iter().map(|e| describe(e, &art.province_names, c.kind)).collect(),
+            ..Default::default()
+        };
         let canvas = art.draw_map(&c, &m, 640, 480);
         // the flag over Gaul can be picked up and dropped on Cisalpine Gaul
         let (ox, oy) = art.origin(640, 480);
@@ -860,7 +882,9 @@ mod tests {
         // Fives; a Five won't split while there are Ones
         let mut m = m;
         assert_eq!(c.units[0][campaign::INFANTRY], 12);
-        let at = |m: &MapState, value: u16| art.icons(&c, 0, m.scroll, &m.split).into_iter().find(|i| i.0 == campaign::INFANTRY && i.1 == value).map(|i| (ox + i.3.0 + 2, oy + i.3.1 + 2));
+        let at = |m: &MapState, value: u16| {
+            art.icons(&c, 0, m.scroll, &m.split).into_iter().find(|i| i.0 == campaign::INFANTRY && i.1 == value).map(|i| (ox + i.3.0 + 2, oy + i.3.1 + 2))
+        };
         let (x, y) = at(&m, 10).unwrap();
         assert!(art.split(&c, &mut m, 640, 480, x, y));
         assert_eq!(m.split[&(0, campaign::INFANTRY)], [0, 0, 2, 2]);
@@ -916,7 +940,13 @@ mod tests {
         c.after_battle(true);
         c.after_battle(true);
         c.opening();
-        let m = MapState { scroll: 0, battle: false, subjugate: true, log: events.iter().map(|e| describe(e, &art.province_names, campaign::Kind::Alexander)).collect(), ..Default::default() };
+        let m = MapState {
+            scroll: 0,
+            battle: false,
+            subjugate: true,
+            log: events.iter().map(|e| describe(e, &art.province_names, campaign::Kind::Alexander)).collect(),
+            ..Default::default()
+        };
         let canvas = art.draw_map(&c, &m, 640, 480);
         // the flag can be picked up and dropped on Anatolia
         let (ox, oy) = art.origin(640, 480);

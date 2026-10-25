@@ -116,13 +116,8 @@ pub fn detect(folder: &Path, want: Title) -> Result<Found, String> {
     let own = want.game().exe_file();
     exes.sort_by_key(|p| !p.file_name().is_some_and(|n| n.eq_ignore_ascii_case(own)));
     // the executable whose first string (the game's title) names it
-    let named = |p: &PathBuf| {
-        std::fs::read(p)
-            .ok()
-            .and_then(|d| gboh_formats::pe::Resources::parse(&d).ok())
-            .and_then(|r| r.string(1))
-            .map(|s| s.to_ascii_lowercase())
-    };
+    let named =
+        |p: &PathBuf| std::fs::read(p).ok().and_then(|d| gboh_formats::pe::Resources::parse(&d).ok()).and_then(|r| r.string(1)).map(|s| s.to_ascii_lowercase());
     for exe in &exes {
         if let Some(title) = named(exe) {
             if title.contains(want.key()) {

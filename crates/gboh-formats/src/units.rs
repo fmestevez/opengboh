@@ -145,8 +145,20 @@ pub fn unit_type(u: &Unit) -> Option<usize> {
         (0, Greek | Tribal) => 6,
         (1 | 17, Macedonian) => 38,
         // heavy cavalry; the trailing byte marks cataphracts
-        (2, Macedonian) => if more.unwrap_or(0) != 0 { 44 } else { 8 },
-        (2, Persian) => if more.unwrap_or(0) != 0 { 41 } else { 12 },
+        (2, Macedonian) => {
+            if more.unwrap_or(0) != 0 {
+                44
+            } else {
+                8
+            }
+        }
+        (2, Persian) => {
+            if more.unwrap_or(0) != 0 {
+                41
+            } else {
+                12
+            }
+        }
         (2, PersianAllied) => 12,
         // light cavalry
         (3, Macedonian) => match missile? {
@@ -166,7 +178,13 @@ pub fn unit_type(u: &Unit) -> Option<usize> {
         (5, Macedonian | Indian) => 40,
         (5, Persian) => 24,
         // hoplites: the combat flag selects the double-sized formation
-        (6 | 14, Macedonian | Persian | Greek) => if flag == 0 { 31 } else { 18 },
+        (6 | 14, Macedonian | Persian | Greek) => {
+            if flag == 0 {
+                31
+            } else {
+                18
+            }
+        }
         (7, Macedonian) => 20,
         (7, Persian) if flag != 0 => 43,
         (7, Persian) => match missile? {
@@ -472,16 +490,14 @@ pub fn caesar_unit_type(u: &Unit) -> Option<usize> {
         (2, 3) => if more.unwrap_or(0) != 0 { "Pontine Cataphracted Cavalry" } else { "Pontine Heavy Cavalry" }.into(),
         (3, 3) => if missile == 1 { "Asian Light Cavalry (Archers)" } else { "Greek Light Cavalry" }.into(),
         (3, 9) => "Numidian Light Cavalry".into(),
-        (3, 10) => {
-            if missile == 1 {
-                "Asian Light Cavalry (Archers)"
-            } else if has("Numid") {
-                "Numidian Light Cavalry"
-            } else {
-                "Greek Light Cavalry"
-            }
-            .into()
+        (3, 10) => if missile == 1 {
+            "Asian Light Cavalry (Archers)"
+        } else if has("Numid") {
+            "Numidian Light Cavalry"
+        } else {
+            "Greek Light Cavalry"
         }
+        .into(),
         (4, 3) => "Pontine Chariots".into(),
         (5, 10) => "African Elephant".into(),
         (6 | 14, 3) => "Pontine Heavy Infantry".into(),
@@ -560,7 +576,13 @@ pub fn hannibal_unit_type(u: &Unit) -> Option<usize> {
     };
     let title = match (u.kind, n) {
         (0, 0 | 3) => "Greek Leader",
-        (0, 6) => if has("P. Scipio") { "Scipio" } else { "Roman Leader" },
+        (0, 6) => {
+            if has("P. Scipio") {
+                "Scipio"
+            } else {
+                "Roman Leader"
+            }
+        }
         (0, 7) => {
             if has("Hannibal") {
                 "Hannibal"
@@ -570,9 +592,21 @@ pub fn hannibal_unit_type(u: &Unit) -> Option<usize> {
                 "Carthaginian Leader"
             }
         }
-        (0, 8) => if has("Antioch") { "Antiochus" } else { "Persian Leader" },
+        (0, 8) => {
+            if has("Antioch") {
+                "Antiochus"
+            } else {
+                "Persian Leader"
+            }
+        }
         (2, 0 | 6 | 7) => "Carthaginian Heavy Cavalry",
-        (2, 8) => if more.unwrap_or(0) != 0 { "Persian Cataphracted Cavalry" } else { "Persian Heavy Cavalry" },
+        (2, 8) => {
+            if more.unwrap_or(0) != 0 {
+                "Persian Cataphracted Cavalry"
+            } else {
+                "Persian Heavy Cavalry"
+            }
+        }
         (3, 6 | 7) => {
             if has("Aetolia") {
                 "Greek Cavalry"
@@ -673,17 +707,53 @@ pub fn hannibal_unit_type(u: &Unit) -> Option<usize> {
                 "Iberian Lancer"
             }
         }
-        (9, 8) => if has("Taren") { "Macedonian Lancer" } else { "Persian Lancers" },
+        (9, 8) => {
+            if has("Taren") {
+                "Macedonian Lancer"
+            } else {
+                "Persian Lancers"
+            }
+        }
         // skirmishers; the scenario's missile byte: 1 bow, 2 sling, 3 javelin
         (10, 6) => match missile {
-            1 => if has("Crete") { "Macedonian Archers" } else { "Iberian Archers" },
-            2 => if has("Trall") { "Macedonian Slingers" } else { "Balaeric Slinger" },
+            1 => {
+                if has("Crete") {
+                    "Macedonian Archers"
+                } else {
+                    "Iberian Archers"
+                }
+            }
+            2 => {
+                if has("Trall") {
+                    "Macedonian Slingers"
+                } else {
+                    "Balaeric Slinger"
+                }
+            }
             _ => return None,
         },
-        (10, 7) => if has("Iber") { "Iberian Archers" } else { "Balaeric Slinger" },
+        (10, 7) => {
+            if has("Iber") {
+                "Iberian Archers"
+            } else {
+                "Balaeric Slinger"
+            }
+        }
         (10, 8) => match missile {
-            1 => if has("Crete") { "Macedonian Archers" } else { "Persian Archers" },
-            2 => if has("Trall") { "Macedonian Slingers" } else { "Persian Slingers" },
+            1 => {
+                if has("Crete") {
+                    "Macedonian Archers"
+                } else {
+                    "Persian Archers"
+                }
+            }
+            2 => {
+                if has("Trall") {
+                    "Macedonian Slingers"
+                } else {
+                    "Persian Slingers"
+                }
+            }
             3 => "Persian Javelin",
             _ => return None,
         },
@@ -694,7 +764,13 @@ pub fn hannibal_unit_type(u: &Unit) -> Option<usize> {
             3 => "Cohort",
             _ => return None,
         },
-        (22, 6) => if has("AS") { "AS Roman Cavalry" } else { "Roman Cavalry" },
+        (22, 6) => {
+            if has("AS") {
+                "AS Roman Cavalry"
+            } else {
+                "Roman Cavalry"
+            }
+        }
         _ => return None,
     };
     hannibal(title)
@@ -762,7 +838,21 @@ mod tests {
     }
 
     fn unit(kind: u8, nation: u8, name: &str, extra: UnitExtra) -> Unit {
-        Unit { kind, name: name.into(), nation, unk_a: 0, unk_b: 0, hex: 0, facing: 1, extra, arrival: 0, elite: 0, link: -1, layout: crate::scn::Layout::Alexander, art_nation: nation }
+        Unit {
+            kind,
+            name: name.into(),
+            nation,
+            unk_a: 0,
+            unk_b: 0,
+            hex: 0,
+            facing: 1,
+            extra,
+            arrival: 0,
+            elite: 0,
+            link: -1,
+            layout: crate::scn::Layout::Alexander,
+            art_nation: nation,
+        }
     }
 
     fn combat(c: u8) -> UnitExtra {

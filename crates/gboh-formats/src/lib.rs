@@ -11,11 +11,11 @@ pub mod hlp;
 pub mod map;
 pub mod pal;
 pub mod pe;
+mod read;
 pub mod rtf;
 pub mod scn;
 pub mod units;
 pub mod walkanim;
-mod read;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

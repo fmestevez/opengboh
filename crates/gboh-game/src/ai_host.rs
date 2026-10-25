@@ -79,10 +79,10 @@ pub fn angle(a: Hex, b: Hex) -> Option<i32> {
         6
     };
     const TABLE: [[i32; 7]; 4] = [
-        [0, 6, 4, 5, 2, 3, 1],         // right and up
-        [0, 18, 20, 19, 22, 21, 23],   // left and up
-        [0, 0, 8, 7, 10, 9, 11],       // right and down
-        [12, 18, 16, 17, 14, 15, 13],  // left and down
+        [0, 6, 4, 5, 2, 3, 1],        // right and up
+        [0, 18, 20, 19, 22, 21, 23],  // left and up
+        [0, 0, 8, 7, 10, 9, 11],      // right and down
+        [12, 18, 16, 17, 14, 15, 13], // left and down
     ];
     let quadrant = match (dx > 0, dy > 0) {
         (true, false) => 0,
@@ -189,8 +189,7 @@ impl<'a> AiHost<'a> {
     fn enemies_of(&self, unit: usize) -> impl Iterator<Item = usize> + '_ {
         let side = self.game.battle.units[unit].side;
         let b = &self.game.battle;
-        (0..b.units.len())
-            .filter(move |&e| b.units[e].side != side && b.units[e].leader.is_none() && b.units[e].state == UnitState::Fighting)
+        (0..b.units.len()).filter(move |&e| b.units[e].side != side && b.units[e].leader.is_none() && b.units[e].state == UnitState::Fighting)
     }
 
     fn query(&self, attr: i32, u: usize) -> i32 {
@@ -343,11 +342,7 @@ impl<'a> AiHost<'a> {
     fn move_leader(&mut self, target: Hex, l: usize) -> i32 {
         let here = self.game.battle.units[l].hex;
         let options = self.game.leader_options();
-        let to = if options.contains(&target) {
-            target
-        } else {
-            *options.iter().min_by_key(|h| (h.distance(target), h.x, h.y)).unwrap_or(&here)
-        };
+        let to = if options.contains(&target) { target } else { *options.iter().min_by_key(|h| (h.distance(target), h.x, h.y)).unwrap_or(&here) };
         if to == here || !self.charge(l) {
             return 0;
         }
@@ -385,12 +380,7 @@ impl<'a> AiHost<'a> {
             } else if attacker_superior(my_class, class) {
                 groups[2].push(o.hex);
             } else {
-                let flank_rear: Vec<Hex> = [2, 1]
-                    .iter()
-                    .flat_map(|&k| self.around(e, k))
-                    .filter_map(hex_of)
-                    .filter(|h| spots.contains(h))
-                    .collect();
+                let flank_rear: Vec<Hex> = [2, 1].iter().flat_map(|&k| self.around(e, k)).filter_map(hex_of).filter(|h| spots.contains(h)).collect();
                 if !flank_rear.is_empty() {
                     groups[3].extend(flank_rear);
                 } else if base_column(my_class, class, 0) > 4 {
@@ -398,11 +388,7 @@ impl<'a> AiHost<'a> {
                 }
             }
         }
-        groups
-            .iter()
-            .find(|g| !g.is_empty())
-            .and_then(|g| g.iter().min_by_key(|h| (h.distance(here), h.x, h.y)))
-            .map_or(-1, |&h| hex_id(h))
+        groups.iter().find(|g| !g.is_empty()).and_then(|g| g.iter().min_by_key(|h| (h.distance(here), h.x, h.y))).map_or(-1, |&h| hex_id(h))
     }
 
     /// `IsInGeneralDir`: the target is in the unit's cone, from its main
@@ -433,7 +419,10 @@ impl Host for AiHost<'_> {
             "getgroup" => {
                 let gid = arg(0);
                 let b = &self.game.battle;
-                let units: Vec<i32> = (0..b.units.len()).filter(|&u| b.units[u].on_field() && b.units[u].leader.is_none() && b.units[u].group as i32 == gid).map(|u| u as i32).collect();
+                let units: Vec<i32> = (0..b.units.len())
+                    .filter(|&u| b.units[u].on_field() && b.units[u].leader.is_none() && b.units[u].group as i32 == gid)
+                    .map(|u| u as i32)
+                    .collect();
                 self.list(arg(1)).map(|l| *l = (units, 0)).is_some() as i32
             }
             "getgroupleader" => {
@@ -533,11 +522,7 @@ impl Host for AiHost<'_> {
             }
             "assignlist" => {
                 let Some(u) = self.unit(arg(2)) else { return Some(0) };
-                let items = if arg(1) == 6 {
-                    self.game.orderable().into_iter().map(|u| u as i32).collect()
-                } else {
-                    self.around(u, arg(1))
-                };
+                let items = if arg(1) == 6 { self.game.orderable().into_iter().map(|u| u as i32).collect() } else { self.around(u, arg(1)) };
                 self.list(arg(0)).map(|l| *l = (items, 0)).is_some() as i32
             }
             "getunitpaths" | "getvalidmovement" => {

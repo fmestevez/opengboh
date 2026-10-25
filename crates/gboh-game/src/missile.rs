@@ -195,7 +195,8 @@ mod tests {
 
     #[test]
     fn bolts_at_range_seven_hit_only_on_zero() {
-        let v = Volley { weapon: Weapon::Bolt, range: 7, target: Skirmisher, from_front: false, moved: false, target_cataphract: false, ballista: false, bonus: 0 };
+        let v =
+            Volley { weapon: Weapon::Bolt, range: 7, target: Skirmisher, from_front: false, moved: false, target_cataphract: false, ballista: false, bonus: 0 };
         assert_eq!(v.resolve(9).hits, 0);
         assert_eq!(v.resolve(0).hits, 1);
     }

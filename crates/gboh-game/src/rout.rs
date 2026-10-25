@@ -99,13 +99,8 @@ pub fn flee(battle: &Battle, map: &Map, unit: usize, steps: u32) -> Flight {
 
 /// Hits removed by a successful rally, by `roll ÷ 2` and TQ band (under 4,
 /// 4–5, 6 or more); `None` means the rally fails after all.
-const RALLY: [[Option<i32>; 3]; 5] = [
-    [Some(1), Some(1), Some(1)],
-    [Some(2), Some(2), Some(2)],
-    [Some(2), Some(2), Some(2)],
-    [None, Some(3), Some(3)],
-    [None, Some(4), Some(4)],
-];
+const RALLY: [[Option<i32>; 3]; 5] =
+    [[Some(1), Some(1), Some(1)], [Some(2), Some(2), Some(2)], [Some(2), Some(2), Some(2)], [None, Some(3), Some(3)], [None, Some(4), Some(4)]];
 
 /// A rally attempt on a routed unit with troop quality `tq` and `hits`, by
 /// a leader with `initiative`. The first roll fails if it exceeds the

@@ -97,10 +97,7 @@ impl Cel {
             1 | 2 | 3 | 5 => {
                 let stride = (w + 3) & !3;
                 if self.data.len() < stride * h {
-                    return Err(Error::Invalid {
-                        offset: 0,
-                        msg: format!("raw cel {}x{} needs {} bytes, has {}", w, h, stride * h, self.data.len()),
-                    });
+                    return Err(Error::Invalid { offset: 0, msg: format!("raw cel {}x{} needs {} bytes, has {}", w, h, stride * h, self.data.len()) });
                 }
                 let mut pixels = Vec::with_capacity(w * h);
                 for row in self.data.chunks(stride).take(h) {

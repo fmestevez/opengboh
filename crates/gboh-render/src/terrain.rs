@@ -140,14 +140,7 @@ impl TerrainArt {
         let streams = strip(artwork, "Minor Rivers")?;
         let cliffs = (0..4).map(|n| strip(cliffs, &format!("Cliff {n}"))).collect::<Option<_>>()?;
         let roads = strip(artwork, "Roads")?;
-        (streams.len() >= 15 && roads.len() >= 7).then_some(Self {
-            strips,
-            streams,
-            cliffs,
-            roads,
-            river_rocks: Vec::new(),
-            background: None,
-        })
+        (streams.len() >= 15 && roads.len() >= 7).then_some(Self { strips, streams, cliffs, roads, river_rocks: Vec::new(), background: None })
     }
 }
 
@@ -244,10 +237,7 @@ impl Layout {
 
     /// Screen neighbours `(left, upper-left, upper-right, right)`.
     pub fn neighbours(&self, r: usize, c: usize) -> [Option<(usize, usize)>; 4] {
-        let at = |r: isize, c: isize| {
-            (r >= 0 && c >= 0 && (r as usize) < self.rows && (c as usize) < self.cols)
-                .then_some((r as usize, c as usize))
-        };
+        let at = |r: isize, c: isize| (r >= 0 && c >= 0 && (r as usize) < self.rows && (c as usize) < self.cols).then_some((r as usize, c as usize));
         let (r, c) = (r as isize, c as isize);
         let (ul, ur) = if Self::shifted(r as usize) { (c, c + 1) } else { (c - 1, c) };
         [at(r, c - 1), at(r - 1, ul), at(r - 1, ur), at(r, c + 1)]
@@ -296,11 +286,7 @@ pub fn block_cel(mask: Option<usize>, elevation: u8, rng: &mut BorlandRand) -> u
     let count = MASK_COUNTS[mask];
     let mut pick = rng.next() as usize % count;
     if mask == 0 {
-        pick = if pick == 0 {
-            rng.next() as usize % FLAT_RARE
-        } else {
-            rng.next() as usize % (count - FLAT_RARE) + FLAT_RARE
-        };
+        pick = if pick == 0 { rng.next() as usize % FLAT_RARE } else { rng.next() as usize % (count - FLAT_RARE) + FLAT_RARE };
     }
     base + start + pick
 }
@@ -412,10 +398,8 @@ impl Painter<'_> {
         let [ll, lr] = self.layout.lower(r, c).map(|n| self.tile(n));
         let is = |n, code| self.road_attr(n) == Some(code);
         let joins = |n| self.road_attr(n).is_some();
-        let mut v = [ROAD, RIVER_ROCKS]
-            .into_iter()
-            .find_map(|code| [(ul, 1), (left, 2), (ll, 3)].into_iter().find(|&(n, _)| is(n, code)))
-            .map_or(0, |(_, v)| v);
+        let mut v =
+            [ROAD, RIVER_ROCKS].into_iter().find_map(|code| [(ul, 1), (left, 2), (ll, 3)].into_iter().find(|&(n, _)| is(n, code))).map_or(0, |(_, v)| v);
         if v == 0 {
             v = if left.is_none() {
                 2
@@ -591,22 +575,12 @@ pub fn render(map: &Map, art: &TerrainArt, zoom: Zoom, strip_offset: usize, seed
 /// As [`render`], in `layout`'s view.
 pub fn render_view(map: &Map, art: &TerrainArt, layout: Layout, strip_offset: usize, seed: u32) -> Canvas {
     let (w, h) = layout.canvas_size();
-    let mut p = Painter {
-        map,
-        art,
-        layout,
-        strip_offset,
-        canvas: Canvas::new(w, h, 0),
-        rng: BorlandRand::new(seed),
-        river_rocks: Default::default(),
-    };
+    let mut p = Painter { map, art, layout, strip_offset, canvas: Canvas::new(w, h, 0), rng: BorlandRand::new(seed), river_rocks: Default::default() };
     // River rocks are picked when the hexes are built, before blocks.
     let count = art.river_rocks.len() as u32;
     for x in 0..map.width {
         for y in 0..map.height {
-            let rocks = map.hex_features(x, y).iter().any(|&f| {
-                f == RIVER_ROCKS || (f == STONES && map.elevation_at(x, y) == 0)
-            });
+            let rocks = map.hex_features(x, y).iter().any(|&f| f == RIVER_ROCKS || (f == STONES && map.elevation_at(x, y) == 0));
             if rocks && count > 0 {
                 let cel = (p.rng.next() % count) as usize;
                 p.river_rocks.insert(layout.to_tile(x, y), cel);
@@ -641,7 +615,17 @@ mod tests {
     /// column `w - 1 - i / h`, row `i % h - (x & 1)`), and maps back.
     #[test]
     fn reversed_blocks() {
-        let map = Map { name: String::new(), width: 33, height: 45, hex_id_origin: 1000, unk_b: 0, elevation: vec![1; 33 * 45], cells: Vec::new(), caesar: false, fast_roads: false };
+        let map = Map {
+            name: String::new(),
+            width: 33,
+            height: 45,
+            hex_id_origin: 1000,
+            unk_b: 0,
+            elevation: vec![1; 33 * 45],
+            cells: Vec::new(),
+            caesar: false,
+            fast_roads: false,
+        };
         let normal = Layout::new(&map, Zoom::Normal);
         let reversed = Layout::reversed(&map, Zoom::Normal);
         for r in 0..reversed.rows {

@@ -50,8 +50,7 @@ const LABEL_AT: [(i32, i32); 10] = [(9, 2), (9, 2), (10, 2), (9, 2), (9, 2), (9,
 
 /// String table ids of the battle names, and of their description lines.
 const NAME_IDS: [u16; 11] = [93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 80];
-const DESCRIPTION_IDS: [&[u16]; 11] =
-    [&[127, 128], &[129, 130], &[131, 132], &[133, 134], &[135], &[136, 137], &[138], &[139], &[140, 141], &[142], &[81, 82]];
+const DESCRIPTION_IDS: [&[u16]; 11] = [&[127, 128], &[129, 130], &[131, 132], &[133, 134], &[135], &[136, 137], &[138], &[139], &[140, 141], &[142], &[81, 82]];
 
 /// A game's battles for the scenario screen: files, where each one's name
 /// is on the map (pixels), and the string ids of its name and description.
@@ -103,18 +102,7 @@ const HANNIBAL_BATTLES: BattleTable = BattleTable {
 /// add-on's, only where its scenario is installed). Each description is
 /// two strings joined.
 const CAESAR_BATTLES: BattleTable = BattleTable {
-    files: &[
-        "DYRRHACH.SCN",
-        "PHARSAL.SCN",
-        "RUSPINA.SCN",
-        "THAPSUS.SCN",
-        "MUNDA.SCN",
-        "VERCELL.SCN",
-        "CHAERON.SCN",
-        "BIBRAC.SCN",
-        "SABIS.SCN",
-        "RHINE.SCN",
-    ],
+    files: &["DYRRHACH.SCN", "PHARSAL.SCN", "RUSPINA.SCN", "THAPSUS.SCN", "MUNDA.SCN", "VERCELL.SCN", "CHAERON.SCN", "BIBRAC.SCN", "SABIS.SCN", "RHINE.SCN"],
     places: &[
         (290, 95, 86, 11),
         (328, 127, 70, 11),
@@ -147,12 +135,22 @@ fn px((x, y): (i16, i16)) -> (i32, i32) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     Start,
-    Scenario { selected: Option<usize> },
+    Scenario {
+        selected: Option<usize>,
+    },
     /// Who plays each side (home, visitor): the computer or not.
-    Sides { battle: usize, computer: [bool; 2] },
+    Sides {
+        battle: usize,
+        computer: [bool; 2],
+    },
     /// The armies' rout levels (home, visitor) and the difficulty for the
     /// home army (0 easy, 1 normal, 2 hard, 3 custom).
-    Rout { battle: usize, computer: [bool; 2], levels: [u16; 2], difficulty: usize },
+    Rout {
+        battle: usize,
+        computer: [bool; 2],
+        levels: [u16; 2],
+        difficulty: usize,
+    },
 }
 
 /// The armies' rout levels for a difficulty, from the scenario's (home,
@@ -187,7 +185,11 @@ pub enum Outcome {
     Quit,
     /// Play this scenario, the computer taking the sides marked (home,
     /// visitor), with these rout levels.
-    Play { scenario: String, computer: [bool; 2], levels: [u16; 2] },
+    Play {
+        scenario: String,
+        computer: [bool; 2],
+        levels: [u16; 2],
+    },
     /// Load Saved Game.
     Load,
     /// Start Campaign, Multiplayer, View Tutorial, Historical Video.
@@ -222,11 +224,7 @@ fn extra_rect(start: &Option<Dialog>, k: usize) -> (i16, i16, i16, i16) {
     // the game's buttons in one column (Hannibal's): ours go under them, as
     // wide; in rows (Alexander's): in the top left corner
     let column = !rects.is_empty() && right - left < 140;
-    if column {
-        (left, bottom + 10 + 16 * k as i16, right - left, 14)
-    } else {
-        (4, 4 + 16 * k as i16, 90, 14)
-    }
+    if column { (left, bottom + 10 + 16 * k as i16, right - left, 14) } else { (4, 4 + 16 * k as i16, 90, 14) }
 }
 
 pub struct Setup {
@@ -289,14 +287,14 @@ impl Setup {
         let buttons = eif(data_dir, "DLGBTN.EIF");
         let campaign = eif(data_dir, "CAMPAIGN.EIF");
         let back = eif(data_dir, "BACKGND.EIF");
-        let yellow = crate::palette_path(data_dir)
-            .and_then(|p| std::fs::read(p).ok())
-            .and_then(|d| gboh_formats::pal::Palette::parse(&d).ok())
-            .map_or(251, |pal| {
-                (10..246).min_by_key(|&i| {
-                    let [r, g, b] = pal.colors[i];
-                    (255 - r as i32).pow(2) + (230 - g as i32).pow(2) + (b as i32).pow(2)
-                }).unwrap_or(251) as u8
+        let yellow =
+            crate::palette_path(data_dir).and_then(|p| std::fs::read(p).ok()).and_then(|d| gboh_formats::pal::Palette::parse(&d).ok()).map_or(251, |pal| {
+                (10..246)
+                    .min_by_key(|&i| {
+                        let [r, g, b] = pal.colors[i];
+                        (255 - r as i32).pow(2) + (230 - g as i32).pow(2) + (b as i32).pow(2)
+                    })
+                    .unwrap_or(251) as u8
             });
         let white = crate::palette_path(data_dir)
             .and_then(|p| std::fs::read(p).ok())
@@ -318,14 +316,11 @@ impl Setup {
         };
         // the battles whose scenarios are there (Hannibal's Dertosa came
         // later)
-        let battles: Vec<usize> = (0..table.files.len())
-            .filter(|&k| game == gboh_formats::game::Game::Alexander || crate::find_ci(data_dir, table.files[k]).is_some())
-            .collect();
+        let battles: Vec<usize> =
+            (0..table.files.len()).filter(|&k| game == gboh_formats::game::Game::Alexander || crate::find_ci(data_dir, table.files[k]).is_some()).collect();
         let files: Vec<&str> = battles.iter().map(|&k| table.files[k]).collect();
-        let names: Vec<String> = battles
-            .iter()
-            .map(|&k| string(table.names[k]).unwrap_or_else(|| table.files[k].trim_end_matches(".SCN").to_string()))
-            .collect();
+        let names: Vec<String> =
+            battles.iter().map(|&k| string(table.names[k]).unwrap_or_else(|| table.files[k].trim_end_matches(".SCN").to_string())).collect();
         let descriptions = battles
             .iter()
             .map(|&k| {
@@ -382,20 +377,13 @@ impl Setup {
         };
         let scenarios: Vec<_> = files
             .iter()
-            .map(|f| {
-                crate::find_ci(data_dir, f)
-                    .and_then(|p| std::fs::read(p).ok())
-                    .and_then(|d| gboh_formats::scn::Scenario::parse(&d).ok())
-            })
+            .map(|f| crate::find_ci(data_dir, f).and_then(|p| std::fs::read(p).ok()).and_then(|d| gboh_formats::scn::Scenario::parse(&d).ok()))
             .collect();
         let sides = scenarios
             .iter()
             .map(|scn| scn.as_ref().map_or_else(|| ["Home".into(), "Visitor".into()], |s| [nation(s.home.nation), nation(s.visitor.nation)]))
             .collect();
-        let rout = scenarios
-            .iter()
-            .map(|scn| scn.as_ref().map_or([100, 100], |s| [s.home.rout_level, s.visitor.rout_level]))
-            .collect();
+        let rout = scenarios.iter().map(|scn| scn.as_ref().map_or([100, 100], |s| [s.home.rout_level, s.visitor.rout_level])).collect();
         Self {
             screen: Screen::Start,
             pressed: None,
@@ -507,11 +495,7 @@ impl Setup {
         // (Caesar's start screen draws bare captions on its painting, its
         // `Big Stone Pushbutton`'s up cel an empty placeholder: hard to
         // read, so its buttons take the `Big Pushbutton` its data has too)
-        let art = if w > 120 {
-            &self.big_button
-        } else {
-            &self.button
-        };
+        let art = if w > 120 { &self.big_button } else { &self.button };
         // pressed while the left button is held on it
         let down = self.pressed.is_some_and(|(px, py)| px >= x && px < x + w && py >= y && py < y + h) as i32;
         if let Some(b) = art.get(down as usize).or(art.first()) {
@@ -725,11 +709,12 @@ impl Setup {
     /// A click at pixel `(x, y)` of the screen.
     pub fn click(&mut self, x: i32, y: i32) -> Outcome {
         match self.screen {
-            Screen::Start if (0..EXTRA.len()).any(|k| {
-                let (rx, ry) = px((extra_rect(&self.start, k).0, extra_rect(&self.start, k).1));
-                let (rw, rh) = px((extra_rect(&self.start, k).2, extra_rect(&self.start, k).3));
-                x >= rx && x < rx + rw && y >= ry && y < ry + rh
-            }) =>
+            Screen::Start
+                if (0..EXTRA.len()).any(|k| {
+                    let (rx, ry) = px((extra_rect(&self.start, k).0, extra_rect(&self.start, k).1));
+                    let (rw, rh) = px((extra_rect(&self.start, k).2, extra_rect(&self.start, k).3));
+                    x >= rx && x < rx + rw && y >= ry && y < ry + rh
+                }) =>
             {
                 let k = (0..EXTRA.len())
                     .find(|&k| {

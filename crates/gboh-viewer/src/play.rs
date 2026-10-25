@@ -46,7 +46,10 @@ pub enum Anim {
 /// deterministic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Order {
-    Click { hex: Hex, right: bool },
+    Click {
+        hex: Hex,
+        right: bool,
+    },
     ArmVolley,
     ArmBackward,
     /// The deployment phase over.
@@ -54,16 +57,22 @@ pub enum Order {
     GroupMove,
     Rally,
     Recover,
-    Turn { left: bool },
+    Turn {
+        left: bool,
+    },
     AboutFace,
     Undo,
-    Finish { momentum: bool },
+    Finish {
+        momentum: bool,
+    },
     /// The viewer played one of the computer's leaders (demo pacing).
     StepComputer,
     /// Hannibal's group orders and manipular line extension.
     Group(GroupOrder),
     /// The answer to the elite initiative offered (Hannibal's).
-    Elite { accept: bool },
+    Elite {
+        accept: bool,
+    },
 }
 
 /// Hannibal's leader orders for a whole group.
@@ -286,7 +295,35 @@ impl Play {
         let leader = if deploying { None } else { game.begin_turn() };
         let layout = gboh_render::terrain::Layout::new(&game.map, gboh_render::terrain::Zoom::In);
         let demo = ai.len() > 1;
-        let mut p = Self { game, combats: Vec::new(), turn_ended: false, commentary: Vec::new(), aiming: false, backing: false, deploying, deployed: deploying, ai, demo, events: vec![crate::sound::Event::Start], anims: Vec::new(), corpses: Vec::new(), shown: Default::default(), latest: Default::default(), lingering: Default::default(), layout, seed: 12345, selected: None, leader, status: String::new(), over: false, winner: None, notices: Vec::new(), told_no_orders: None, orders: Vec::new(), undo: Vec::new() };
+        let mut p = Self {
+            game,
+            combats: Vec::new(),
+            turn_ended: false,
+            commentary: Vec::new(),
+            aiming: false,
+            backing: false,
+            deploying,
+            deployed: deploying,
+            ai,
+            demo,
+            events: vec![crate::sound::Event::Start],
+            anims: Vec::new(),
+            corpses: Vec::new(),
+            shown: Default::default(),
+            latest: Default::default(),
+            lingering: Default::default(),
+            layout,
+            seed: 12345,
+            selected: None,
+            leader,
+            status: String::new(),
+            over: false,
+            winner: None,
+            notices: Vec::new(),
+            told_no_orders: None,
+            orders: Vec::new(),
+            undo: Vec::new(),
+        };
         if deploying {
             p.say("deploy your units, then finish");
             return p;
@@ -566,9 +603,9 @@ impl Play {
                     };
                     let mut fighting: Vec<(usize, u8, u16)> = attackers.iter().map(|&a| face(a, &defenders)).collect();
                     fighting.extend(defenders.iter().map(|&d| face(d, &attackers)));
-                    let elephants = fighting.iter().any(|&(u, ..)| {
-                        gboh_game::movement::MoveClass::of_type(units[u].type_id) == Some(gboh_game::movement::MoveClass::Elephant)
-                    });
+                    let elephants = fighting
+                        .iter()
+                        .any(|&(u, ..)| gboh_game::movement::MoveClass::of_type(units[u].type_id) == Some(gboh_game::movement::MoveClass::Elephant));
                     let sound = crate::sound::Event::Shock { elephants };
                     self.anims.push(Anim::Fight { units: fighting, falls: Vec::new(), sound });
                 }
@@ -795,12 +832,7 @@ impl Play {
     /// next hex, how far along and the frame) drawn on its way.
     /// Units in `pending` (walks not yet shown) are drawn where they
     /// started.
-    pub fn views_walking(
-        &self,
-        scene: &Scene,
-        walking: Option<(usize, Hex, Hex, f32, usize, bool)>,
-        pending: &[Anim],
-    ) -> Vec<UnitView> {
+    pub fn views_walking(&self, scene: &Scene, walking: Option<(usize, Hex, Hex, f32, usize, bool)>, pending: &[Anim]) -> Vec<UnitView> {
         let mut views = self.views();
         let pending: Vec<(usize, &Vec<Hex>)> = pending
             .iter()
@@ -1459,7 +1491,10 @@ mod tests {
         // about face, undone the same way
         p.game.battle.units[agema].mp = start.max_mp;
         assert!(p.about_face());
-        assert_eq!(p.game.battle.units[agema].facing, gboh_game::orders::turned(gboh_game::orders::turned(gboh_game::orders::turned(start.facing, true), true), true));
+        assert_eq!(
+            p.game.battle.units[agema].facing,
+            gboh_game::orders::turned(gboh_game::orders::turned(gboh_game::orders::turned(start.facing, true), true), true)
+        );
         assert!(p.undo());
         assert_eq!(p.game.battle.units[agema].facing, start.facing);
     }
@@ -1473,12 +1508,7 @@ mod tests {
         let scn = Scenario::parse(&std::fs::read(dir.join("HYDASPES.SCN")).unwrap()).unwrap();
         let map = Map::parse(&std::fs::read(dir.join("HYDASPES.MAP")).unwrap()).unwrap();
         let mut p = Play::new(Game::new(&scn, map, 1), Vec::new());
-        let shooter = *p
-            .game
-            .orderable()
-            .iter()
-            .find(|&&u| p.game.battle.units[u].missile.is_some_and(|(_, n)| n > 0))
-            .expect("a missile unit to order");
+        let shooter = *p.game.orderable().iter().find(|&&u| p.game.battle.units[u].missile.is_some_and(|(_, n)| n > 0)).expect("a missile unit to order");
         let at = p.game.battle.units[shooter].hex;
         assert!(p.click(at, false), "select");
         assert!(p.can_fire(), "{:?}", p.game.battle.units[shooter]);
@@ -1515,7 +1545,9 @@ mod tests {
         let scn = Scenario::parse(&std::fs::read(dir.join("HYDASPES.SCN")).unwrap()).unwrap();
         let map = Map::parse(&std::fs::read(dir.join("HYDASPES.MAP")).unwrap()).unwrap();
         let pal = gboh_formats::pal::Palette::parse(&std::fs::read(dir.join("GAME.PAL")).unwrap()).unwrap();
-        let find = |name: &str| std::fs::read_dir(dir).unwrap().filter_map(|e| e.ok()).find(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case(name)).map(|e| e.path());
+        let find = |name: &str| {
+            std::fs::read_dir(dir).unwrap().filter_map(|e| e.ok()).find(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case(name)).map(|e| e.path())
+        };
         let mut load = |name: &str| find(name).and_then(|p| std::fs::read(p).ok());
         let titles = crate::eif_title_index(dir);
         let mut load_title = |title: &str| titles.get(title).and_then(|n| std::fs::read(dir.join(n)).ok());
@@ -1624,12 +1656,15 @@ mod tests {
         assert!(!lit.is_empty());
         let edge = p.game.battle.units[u].retreat;
         // all on the unit's side of the line
-        assert!(lit.iter().all(|h| match edge {
-            1 => h.y < line,
-            3 => h.x > line,
-            5 => h.y > line,
-            _ => h.x < line,
-        }), "rows {rows} line {line} edge {edge}");
+        assert!(
+            lit.iter().all(|h| match edge {
+                1 => h.y < line,
+                3 => h.x > line,
+                5 => h.y > line,
+                _ => h.x < line,
+            }),
+            "rows {rows} line {line} edge {edge}"
+        );
         let to = *lit.iter().find(|h| **h != at).unwrap();
         assert!(p.click(to, false));
         assert_eq!(p.game.battle.units[u].hex, to);
@@ -1883,7 +1918,9 @@ mod tests {
                         }
                         Anim::Fall(_) => p.land(a),
                         Anim::Fight { .. } => {
-                            let fight_shots = std::env::var("GBOH_SHOTS").ok().filter(|_| !fought && matches!(a, Anim::Fight { falls, .. } if falls.iter().any(|f| !f.runaways.is_empty())));
+                            let fight_shots = std::env::var("GBOH_SHOTS")
+                                .ok()
+                                .filter(|_| !fought && matches!(a, Anim::Fight { falls, .. } if falls.iter().any(|f| !f.runaways.is_empty())));
                             fought |= fight_shots.is_some();
                             let times: Vec<u32> = if fight_shots.is_some() { (0..16).map(|k| k * 800).collect() } else { vec![0, 3000, 7200] };
                             for ms in times {

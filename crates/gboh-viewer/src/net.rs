@@ -42,7 +42,12 @@ pub enum Step {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Message {
     Hello(String),
-    Game { scenario: String, levels: [u16; 2], joiner: [bool; 2], host: String },
+    Game {
+        scenario: String,
+        levels: [u16; 2],
+        joiner: [bool; 2],
+        host: String,
+    },
     Order(crate::play::Order),
     Chat(String),
     /// The rule options the next game is played by (sent before it).

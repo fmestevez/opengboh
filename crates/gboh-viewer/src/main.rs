@@ -13,29 +13,29 @@
 //! click to volley, G to try a group move, Enter to finish a leader (M: and
 //! try for momentum).
 
-mod play;
-mod saves;
-mod setup;
-mod ui;
-mod hud;
 mod campaign;
+mod hud;
 mod library;
 mod menu;
-mod shell;
 mod net;
-mod slides;
-mod video;
+mod play;
 mod prefs;
+mod saves;
+mod setup;
+mod shell;
+mod slides;
 mod sound;
+mod ui;
+mod video;
 
 use anyhow::{Context, Result, bail};
 use gboh_formats::map::Map;
 use gboh_formats::pal::Palette;
 use gboh_formats::scn::Scenario;
-use gboh_render::battlefield::{self, Scene};
-use gboh_render::units::UnitView;
-use gboh_render::terrain::Zoom;
 use gboh_render::Canvas;
+use gboh_render::battlefield::{self, Scene};
+use gboh_render::terrain::Zoom;
+use gboh_render::units::UnitView;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -181,11 +181,8 @@ impl Gpu {
     fn new(window: Arc<Window>, canvases: &[Canvas], tiles: &[Option<Tile>]) -> Result<Self> {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
         let surface = instance.create_surface(window.clone())?;
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            compatible_surface: Some(&surface),
-            ..Default::default()
-        }))
-        .context("no GPU adapter")?;
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { compatible_surface: Some(&surface), ..Default::default() }))
+            .context("no GPU adapter")?;
         let widest = canvases.iter().map(|c| c.width.max(c.height) as u32).max().unwrap_or(0);
         let limits = adapter.limits();
         if widest > limits.max_texture_dimension_2d {
@@ -200,9 +197,7 @@ impl Gpu {
         }))?;
 
         let size = window.inner_size();
-        let mut config = surface
-            .get_default_config(&adapter, size.width.max(1), size.height.max(1))
-            .context("surface not supported")?;
+        let mut config = surface.get_default_config(&adapter, size.width.max(1), size.height.max(1)).context("surface not supported")?;
         // palette colours are written as-is, so avoid an sRGB conversion
         let caps = surface.get_capabilities(&adapter);
         if let Some(&f) = caps.formats.iter().find(|f| !f.is_srgb()) {
@@ -210,18 +205,11 @@ impl Gpu {
         }
         surface.configure(&device, &config);
 
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: None,
-            source: wgpu::ShaderSource::Wgsl(SHADER.into()),
-        });
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
         let texture_entry = |binding, sample_type| wgpu::BindGroupLayoutEntry {
             binding,
             visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Texture {
-                sample_type,
-                view_dimension: wgpu::TextureViewDimension::D2,
-                multisampled: false,
-            },
+            ty: wgpu::BindingType::Texture { sample_type, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
             count: None,
         };
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -232,11 +220,7 @@ impl Gpu {
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
                     visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
                     count: None,
                 },
                 texture_entry(3, wgpu::TextureSampleType::Uint),
@@ -249,12 +233,7 @@ impl Gpu {
                 bind_group_layouts: &[&layout],
                 push_constant_ranges: &[],
             })),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: Default::default(),
-            },
+            vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_main"), buffers: &[], compilation_options: Default::default() },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
                 entry_point: Some("fs_main"),
@@ -311,7 +290,6 @@ impl Gpu {
         };
         gpu.set_levels(canvases, tiles);
         Ok(gpu)
-
     }
 
     /// New textures for `canvases` (a battle's zoom levels, or a screen),
@@ -1551,7 +1529,13 @@ impl Viewer {
     /// Whether a dialog is up that keeps the rest of the window from
     /// clicks (and the menus from opening).
     fn modal(&self) -> bool {
-        self.plain.is_some() || self.reader.is_some() || self.army.is_some() || self.game_overview || self.ending || self.results.is_some() || self.details.is_some()
+        self.plain.is_some()
+            || self.reader.is_some()
+            || self.army.is_some()
+            || self.game_overview
+            || self.ending
+            || self.results.is_some()
+            || self.details.is_some()
     }
 
     /// Whether menu command `id` can be chosen now.
@@ -1722,7 +1706,8 @@ impl Viewer {
     fn open_help(&mut self) {
         let close = self.close_caption();
         let Some(help) = self.help() else { return };
-        let topics: Vec<(usize, String)> = help.topics.iter().enumerate().filter(|(_, t)| !t.title.trim().is_empty()).map(|(k, t)| (k, t.title.clone())).collect();
+        let topics: Vec<(usize, String)> =
+            help.topics.iter().enumerate().filter(|(_, t)| !t.title.trim().is_empty()).map(|(k, t)| (k, t.title.clone())).collect();
         let title = help.title.clone();
         self.reader = Some(hud::Reader {
             title,
@@ -1739,7 +1724,8 @@ impl Viewer {
         let Some(t) = self.help().and_then(|h| h.topics.get(k)).cloned() else { return };
         // a popup's title is its first line
         let title = if t.title.trim().is_empty() { t.paragraphs.first().cloned().unwrap_or_default() } else { t.title.clone() };
-        self.reader = Some(hud::Reader { title, links: vec![None; t.paragraphs.len()], paragraphs: t.paragraphs, scroll: 0, buttons: vec![close, "Contents".into()] });
+        self.reader =
+            Some(hud::Reader { title, links: vec![None; t.paragraphs.len()], paragraphs: t.paragraphs, scroll: 0, buttons: vec![close, "Contents".into()] });
     }
 
     /// The about box (`ABOUTDLG`: its texts and the credits, `CREDITS.RTF`),
@@ -1756,7 +1742,8 @@ impl Viewer {
                 let mut texts: Vec<(i16, String)> =
                     d.iter().flat_map(|d| d.controls.iter()).filter(|c| c.id == 0xffff).map(|c| (c.rect.1, c.text.clone())).collect();
                 texts.sort();
-                let credits = find_ci(&self.data_dir, "CREDITS.RTF").and_then(|p| std::fs::read(p).ok()).map(|d| gboh_formats::rtf::paragraphs(&d)).unwrap_or_default();
+                let credits =
+                    find_ci(&self.data_dir, "CREDITS.RTF").and_then(|p| std::fs::read(p).ok()).map(|d| gboh_formats::rtf::paragraphs(&d)).unwrap_or_default();
                 let mut paragraphs: Vec<String> = texts.into_iter().map(|(_, t)| t).collect();
                 paragraphs.extend(credits);
                 (d.map(|d| d.title).unwrap_or_default(), paragraphs)
@@ -1857,8 +1844,20 @@ impl Viewer {
         const EDGE: (i32, i32) = (25, 35);
         let (left, right) = (cx < EDGE.0, cx >= w as i32 - EDGE.0);
         let (up, down) = (cy < hud::TOP + EDGE.1, cy >= h as i32 - hud::STATUS_HEIGHT - EDGE.1);
-        let dx = if left { -1.0 } else if right { 1.0 } else { 0.0 };
-        let dy = if up { -1.0 } else if down { 1.0 } else { 0.0 };
+        let dx = if left {
+            -1.0
+        } else if right {
+            1.0
+        } else {
+            0.0
+        };
+        let dy = if up {
+            -1.0
+        } else if down {
+            1.0
+        } else {
+            0.0
+        };
         self.edge = (field && (dx != 0.0 || dy != 0.0)).then_some((dx, dy));
         let name = match self.edge {
             Some((dx, dy)) => Some(match (dx as i32, dy as i32) {
@@ -2397,9 +2396,7 @@ impl Viewer {
                 let changes: std::collections::VecDeque<(usize, u8)> = events
                     .iter()
                     .filter_map(|e| match e {
-                        gboh_game::campaign::Event::Subjugation { province, level, rose } => {
-                            Some((*province, if *rose { level - 1 } else { level + 1 }))
-                        }
+                        gboh_game::campaign::Event::Subjugation { province, level, rose } => Some((*province, if *rose { level - 1 } else { level + 1 })),
                         _ => None,
                     })
                     .collect();
@@ -2433,7 +2430,11 @@ impl Viewer {
                 if let Some(r) = self.campaign_results {
                     // (Hannibal's has no video)
                     let alexander = self.campaign_art.as_ref().is_some_and(|a| a.kind() == gboh_game::campaign::Kind::Alexander);
-                    let video = if r.victory && alexander { find_ci(&self.data_dir, "320ALEX.AVI").and_then(|p| video::Video::open(&p, &self.base_palette)) } else { None };
+                    let video = if r.victory && alexander {
+                        find_ci(&self.data_dir, "320ALEX.AVI").and_then(|p| video::Video::open(&p, &self.base_palette))
+                    } else {
+                        None
+                    };
                     match video {
                         Some(mut v) => {
                             self.sound.set_music(sound::Music::Silent);
@@ -2677,7 +2678,15 @@ impl Viewer {
                 match net::Waiting::listen(port) {
                     Ok(waiting) => {
                         println!("waiting for the other player on port {}", waiting.port);
-                        self.net = Some(NetGame { link: None, waiting: Some(waiting), name: get(101), other: String::new(), chosen: None, sent: 0, mine: [true, false] });
+                        self.net = Some(NetGame {
+                            link: None,
+                            waiting: Some(waiting),
+                            name: get(101),
+                            other: String::new(),
+                            chosen: None,
+                            sent: 0,
+                            mine: [true, false],
+                        });
                         // the host chooses the battle meanwhile
                         self.plain = None;
                         if let Some(setup) = &mut self.setup {
@@ -2696,7 +2705,8 @@ impl Viewer {
                 match net::Link::connect(&get(102), port) {
                     Ok(mut link) => {
                         let _ = link.send(&net::Message::Hello(get(101)));
-                        self.net = Some(NetGame { link: Some(link), waiting: None, name: get(101), other: String::new(), chosen: None, sent: 0, mine: [false, true] });
+                        self.net =
+                            Some(NetGame { link: Some(link), waiting: None, name: get(101), other: String::new(), chosen: None, sent: 0, mine: [false, true] });
                         // waiting for the host's battle
                         self.message(&[109]);
                     }
@@ -2854,7 +2864,11 @@ impl Viewer {
             self.refresh();
         }
         let volume = |on: bool, v: u16| if on { v as f32 / hud::SLIDER_MAX as f32 } else { 0.0 };
-        self.sound.set_volumes(volume(self.prefs.sounds, self.prefs.volume), volume(self.prefs.ambient_sounds, self.prefs.volume), volume(self.prefs.music, self.prefs.music_volume));
+        self.sound.set_volumes(
+            volume(self.prefs.sounds, self.prefs.volume),
+            volume(self.prefs.ambient_sounds, self.prefs.volume),
+            volume(self.prefs.music, self.prefs.music_volume),
+        );
     }
 
     /// The Preferences dialog.
@@ -3164,10 +3178,7 @@ impl Viewer {
             let shown = match &notice {
                 play::Notice::Momentum { leader, won } => plain(
                     "INITIATIVERESULTS",
-                    vec![
-                        (101, format!("{} tried for momentum and {}", name(*leader), if *won { "goes again!" } else { "failed." })),
-                        (102, String::new()),
-                    ],
+                    vec![(101, format!("{} tried for momentum and {}", name(*leader), if *won { "goes again!" } else { "failed." })), (102, String::new())],
                 ),
                 play::Notice::Rally { unit, hits } => plain(
                     "RALLYDLG",
@@ -3195,7 +3206,11 @@ impl Viewer {
                 play::Notice::NoOrders => plain("LEADERALMOSTFINISHED", Vec::new()),
                 // (Caesar's is the same dialog under its own name)
                 play::Notice::Elite { .. } => plain(
-                    if gboh_formats::game::Game::detect(&self.data_dir) == Some(gboh_formats::game::Game::Caesar) { "JCELITEINITDLG" } else { "HANELITEINITDLG" },
+                    if gboh_formats::game::Game::detect(&self.data_dir) == Some(gboh_formats::game::Game::Caesar) {
+                        "JCELITEINITDLG"
+                    } else {
+                        "HANELITEINITDLG"
+                    },
                     Vec::new(),
                 ),
             };
@@ -3290,8 +3305,7 @@ impl Viewer {
         self.setup = None;
         self.battle = (scenario.to_string(), computer);
         self.autosaved = 0;
-        (self.ending, self.ended, self.game_overview, self.army, self.results, self.details, self.plain) =
-            (false, false, false, None, None, None, None);
+        (self.ending, self.ended, self.game_overview, self.army, self.results, self.details, self.plain) = (false, false, false, None, None, None, None);
         self.queued.clear();
         self.playing = None;
         self.runners.clear();
@@ -3441,8 +3455,7 @@ impl ApplicationHandler for Viewer {
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed && self.intro => self.end_intro(),
             WindowEvent::MouseInput { state: ElementState::Pressed, .. } if self.intro => self.end_intro(),
             WindowEvent::MouseInput { state: ElementState::Pressed, .. } if self.slides.is_some() => self.end_slides(),
-            WindowEvent::KeyboardInput { event, .. }
-                if event.state == ElementState::Pressed && self.plain_key(&event.logical_key, event.text.as_deref()) => {}
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed && self.plain_key(&event.logical_key, event.text.as_deref()) => {}
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed && self.setup.is_some() => {
                 if event.logical_key.as_ref() == Key::Named(NamedKey::Escape) {
                     event_loop.exit();
@@ -3465,70 +3478,68 @@ impl ApplicationHandler for Viewer {
                     }
                 }
             }
-            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                match event.logical_key.as_ref() {
-                    Key::Named(NamedKey::Escape) if self.menu_open.is_some() || self.reader.is_some() => {
-                        self.menu_open = None;
-                        self.reader = None;
-                        self.update_hud();
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => match event.logical_key.as_ref() {
+                Key::Named(NamedKey::Escape) if self.menu_open.is_some() || self.reader.is_some() => {
+                    self.menu_open = None;
+                    self.reader = None;
+                    self.update_hud();
+                    self.redraw();
+                }
+                Key::Named(NamedKey::Escape) => event_loop.exit(),
+                Key::Named(NamedKey::ArrowLeft) => self.scroll(-STEP, 0.0),
+                Key::Named(NamedKey::ArrowRight) => self.scroll(STEP, 0.0),
+                Key::Named(NamedKey::ArrowUp) => self.scroll(0.0, -STEP),
+                Key::Named(NamedKey::ArrowDown) => self.scroll(0.0, STEP),
+                Key::Named(NamedKey::Space) => self.animate = !self.animate,
+                Key::Named(NamedKey::Enter) if self.plain.is_none() => self.finish_leader(),
+                Key::Character(c) if !self.my_turn() && "mgrcqe".contains(c.to_ascii_lowercase().as_str()) => {}
+                Key::Character(c) => match c.to_ascii_lowercase().as_str() {
+                    "a" => self.scroll(-STEP, 0.0),
+                    "d" => self.scroll(STEP, 0.0),
+                    "w" => self.scroll(0.0, -STEP),
+                    "s" => self.scroll(0.0, STEP),
+                    "1" => self.set_level(0),
+                    "2" => self.set_level(1),
+                    "3" => self.set_level(2),
+                    "m" => {
+                        if self.play.as_mut().is_some_and(|p| p.finish(true)) {
+                            self.changed();
+                        }
+                    }
+                    "g" => {
+                        if self.play.as_mut().is_some_and(|p| p.group_move()) {
+                            self.changed();
+                        }
+                    }
+                    "r" => {
+                        if self.play.as_mut().is_some_and(|p| p.rally()) {
+                            self.changed();
+                        }
+                    }
+                    "c" => {
+                        if self.play.as_mut().is_some_and(|p| p.recover()) {
+                            self.changed();
+                        }
+                    }
+                    "q" | "e" => {
+                        if self.play.as_mut().is_some_and(|p| p.turn(c.eq_ignore_ascii_case("q"))) {
+                            self.changed();
+                        }
+                    }
+                    "+" | "=" => {
+                        self.scale = (self.scale + 1.0).min(8.0);
+                        self.update_title();
                         self.redraw();
                     }
-                    Key::Named(NamedKey::Escape) => event_loop.exit(),
-                    Key::Named(NamedKey::ArrowLeft) => self.scroll(-STEP, 0.0),
-                    Key::Named(NamedKey::ArrowRight) => self.scroll(STEP, 0.0),
-                    Key::Named(NamedKey::ArrowUp) => self.scroll(0.0, -STEP),
-                    Key::Named(NamedKey::ArrowDown) => self.scroll(0.0, STEP),
-                    Key::Named(NamedKey::Space) => self.animate = !self.animate,
-                    Key::Named(NamedKey::Enter) if self.plain.is_none() => self.finish_leader(),
-                    Key::Character(c) if !self.my_turn() && "mgrcqe".contains(c.to_ascii_lowercase().as_str()) => {}
-                    Key::Character(c) => match c.to_ascii_lowercase().as_str() {
-                        "a" => self.scroll(-STEP, 0.0),
-                        "d" => self.scroll(STEP, 0.0),
-                        "w" => self.scroll(0.0, -STEP),
-                        "s" => self.scroll(0.0, STEP),
-                        "1" => self.set_level(0),
-                        "2" => self.set_level(1),
-                        "3" => self.set_level(2),
-                        "m" => {
-                            if self.play.as_mut().is_some_and(|p| p.finish(true)) {
-                                self.changed();
-                            }
-                        }
-                        "g" => {
-                            if self.play.as_mut().is_some_and(|p| p.group_move()) {
-                                self.changed();
-                            }
-                        }
-                        "r" => {
-                            if self.play.as_mut().is_some_and(|p| p.rally()) {
-                                self.changed();
-                            }
-                        }
-                        "c" => {
-                            if self.play.as_mut().is_some_and(|p| p.recover()) {
-                                self.changed();
-                            }
-                        }
-                        "q" | "e" => {
-                            if self.play.as_mut().is_some_and(|p| p.turn(c.eq_ignore_ascii_case("q"))) {
-                                self.changed();
-                            }
-                        }
-                        "+" | "=" => {
-                            self.scale = (self.scale + 1.0).min(8.0);
-                            self.update_title();
-                            self.redraw();
-                        }
-                        "-" => {
-                            self.scale = (self.scale - 1.0).max(1.0);
-                            self.update_title();
-                            self.redraw();
-                        }
-                        _ => {}
-                    },
+                    "-" => {
+                        self.scale = (self.scale - 1.0).max(1.0);
+                        self.update_title();
+                        self.redraw();
+                    }
                     _ => {}
-                }
-            }
+                },
+                _ => {}
+            },
             WindowEvent::MouseInput { state, button: MouseButton::Left, .. } if self.map_drag(state == ElementState::Pressed) => {}
             WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
                 if state == ElementState::Released {
@@ -3562,7 +3573,6 @@ impl ApplicationHandler for Viewer {
                         && let Some(sl) = d.sliders.get_mut(k)
                     {
                         sl.2 = v;
-
                     }
                 } else if let Some((k, _)) = self.menu_open {
                     let hover = self.menu_bar.item_at(k, cx, cy);
@@ -3732,11 +3742,7 @@ impl ApplicationHandler for Viewer {
             }
         }
         // once the fighting has been shown, the combat results come up
-        if self.results.is_none()
-            && self.playing.is_none()
-            && self.queued.is_empty()
-            && self.play.as_ref().is_some_and(|p| !p.combats.is_empty() && !p.demo)
-        {
+        if self.results.is_none() && self.playing.is_none() && self.queued.is_empty() && self.play.as_ref().is_some_and(|p| !p.combats.is_empty() && !p.demo) {
             if !self.prefs.overall_combat_results {
                 if let Some(p) = &mut self.play {
                     p.combats.clear();
@@ -3772,11 +3778,7 @@ impl ApplicationHandler for Viewer {
         }
         // a walking unit: redraw until it arrives
         // demo: when the animations are done, play the next computer leader
-        if self.playing.is_none()
-            && self.queued.is_empty()
-            && self.play.as_ref().is_some_and(|p| p.demo)
-            && self.next_step <= Instant::now()
-        {
+        if self.playing.is_none() && self.queued.is_empty() && self.play.as_ref().is_some_and(|p| p.demo) && self.next_step <= Instant::now() {
             if self.play.as_mut().is_some_and(|p| p.step_computer()) {
                 self.changed();
             }
@@ -3837,10 +3839,7 @@ fn palette_path(dir: &Path) -> Option<PathBuf> {
 }
 
 fn find_ci(dir: &Path, name: &str) -> Option<PathBuf> {
-    std::fs::read_dir(dir)
-        .ok()?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .find(|p| p.file_name().is_some_and(|f| f.eq_ignore_ascii_case(name)))
+    std::fs::read_dir(dir).ok()?.filter_map(|e| e.ok().map(|e| e.path())).find(|p| p.file_name().is_some_and(|f| f.eq_ignore_ascii_case(name)))
 }
 
 /// EIF file names in `dir` by title.
@@ -3912,13 +3911,7 @@ fn main() -> Result<()> {
     };
     let (title, map_file, scenes, canvases, play) = match battle {
         Some(b) => (b.title, b.map_file, b.scenes, b.canvases, b.play),
-        None => (
-            String::from("opengboh"),
-            String::new(),
-            Vec::new(),
-            vec![setup.as_ref().map_or_else(|| Canvas::new(1, 1, 0), |s| s.canvas())],
-            None,
-        ),
+        None => (String::from("opengboh"), String::new(), Vec::new(), vec![setup.as_ref().map_or_else(|| Canvas::new(1, 1, 0), |s| s.canvas())], None),
     };
     let level = if canvases.len() > 1 { 1 } else { 0 };
     let centre = [canvases[level].width as f32 / 2.0, canvases[level].height as f32 / 2.0];
@@ -4025,7 +4018,19 @@ const MACEDONIAN: u8 = 2;
 
 /// The game's cursors (`alex.exe` cursor groups).
 const CURSORS: [&str; 13] = [
-    "SWORD", "SLING", "ARROW", "BOLT", "JAVELIN", "MOVENORTH", "MOVENORTHEAST", "MOVESOUTHEAST", "MOVESOUTH", "MOVESOUTHWEST", "MOVENORTHWEST", "MOVEEAST", "MOVEWEST",
+    "SWORD",
+    "SLING",
+    "ARROW",
+    "BOLT",
+    "JAVELIN",
+    "MOVENORTH",
+    "MOVENORTHEAST",
+    "MOVESOUTHEAST",
+    "MOVESOUTH",
+    "MOVESOUTHWEST",
+    "MOVENORTHWEST",
+    "MOVEEAST",
+    "MOVEWEST",
 ];
 
 /// What the Help menu shows in the text window.
@@ -4077,11 +4082,8 @@ struct Battle {
 fn load_battle(data_dir: &Path, file: &str, computer: [bool; 2], deploy: bool) -> Result<Battle> {
     let load = |name: &str| find_ci(data_dir, name).and_then(|p| std::fs::read(p).ok());
     // a scenario brings its map and units
-    let scenario = if file.to_ascii_lowercase().ends_with(".scn") {
-        Some(Scenario::parse(&load(file).with_context(|| format!("{file} not found"))?)?)
-    } else {
-        None
-    };
+    let scenario =
+        if file.to_ascii_lowercase().ends_with(".scn") { Some(Scenario::parse(&load(file).with_context(|| format!("{file} not found"))?)?) } else { None };
     let map_file = scenario.as_ref().map_or_else(|| file.to_string(), |s| s.map_file.clone());
     let units = scenario.as_ref().map_or_else(Vec::new, |s| s.units.clone());
     let map_file = map_file.as_str();
@@ -4116,10 +4118,7 @@ fn build_scenes(data_dir: &Path, map_file: &str, map: &Map, reversed: bool) -> R
     let palette = Palette::parse(&std::fs::read(palette_path(data_dir).context("GAME.PAL not found")?)?)?;
     let game = gboh_formats::game::Game::detect(data_dir).unwrap_or_default();
     let types: Vec<usize> = gboh_formats::units::types_of(game).collect();
-    Ok(ZOOMS
-        .iter()
-        .map(|&z| Scene::build_view(map_file, map, z, reversed, &palette, 1, &types, &mut load, &mut load_title))
-        .collect::<Result<Vec<_>, _>>()?)
+    Ok(ZOOMS.iter().map(|&z| Scene::build_view(map_file, map, z, reversed, &palette, 1, &types, &mut load, &mut load_title)).collect::<Result<Vec<_>, _>>()?)
 }
 
 #[cfg(test)]

@@ -659,9 +659,7 @@ impl Script {
                 entries.iter().for_each(|(_, e)| calls_in_expr(e, &mut calls));
             }
         }
-        calls.retain(|(n, k)| {
-            !self.procs.get(&(n.clone(), *k)).is_some_and(|p| p.body.is_some()) && !BUILTINS.iter().any(|(b, a)| b == n && a == k)
-        });
+        calls.retain(|(n, k)| !self.procs.get(&(n.clone(), *k)).is_some_and(|p| p.body.is_some()) && !BUILTINS.iter().any(|(b, a)| b == n && a == k));
         calls.sort();
         calls.dedup();
         calls

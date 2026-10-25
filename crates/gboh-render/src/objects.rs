@@ -105,12 +105,7 @@ pub fn scatter(map: &Map, rng: &mut BorlandRand) -> Vec<Placement> {
                             let ox = below(rng, sw) + (slot % 3) * sw;
                             let oy = below(rng, sh) + (slot / 3) * (h / 3);
                             let cel = rng.next() % CELS;
-                            out.push(Placement {
-                                hex,
-                                offset: (base.0 + ox, base.1 + oy),
-                                art: ObjectArt::Trees,
-                                cel: cel as usize,
-                            });
+                            out.push(Placement { hex, offset: (base.0 + ox, base.1 + oy), art: ObjectArt::Trees, cel: cel as usize });
                         }
                         out.push(Placement { hex, offset: (0, h / 3), art: ObjectArt::Trees, cel: 0 });
                     }
@@ -208,12 +203,7 @@ pub struct Drawable<'a> {
 }
 
 /// Drawables for scattered terrain objects.
-pub fn drawables<'a>(
-    map: &Map,
-    layout: &Layout,
-    sprites: &'a ObjectSprites,
-    objects: &[Placement],
-) -> Vec<Drawable<'a>> {
+pub fn drawables<'a>(map: &Map, layout: &Layout, sprites: &'a ObjectSprites, objects: &[Placement]) -> Vec<Drawable<'a>> {
     objects
         .iter()
         .filter_map(|p| {

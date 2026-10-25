@@ -33,11 +33,8 @@ impl Game {
 
     /// The game whose files are in `data_dir`, told by its palette's name.
     pub fn detect(data_dir: &Path) -> Option<Game> {
-        let names: Vec<String> = std::fs::read_dir(data_dir)
-            .ok()?
-            .filter_map(|e| e.ok()?.file_name().into_string().ok())
-            .map(|n| n.to_ascii_uppercase())
-            .collect();
+        let names: Vec<String> =
+            std::fs::read_dir(data_dir).ok()?.filter_map(|e| e.ok()?.file_name().into_string().ok()).map(|n| n.to_ascii_uppercase()).collect();
         Game::ALL.into_iter().find(|g| names.iter().any(|n| n == g.palette_file()))
     }
 }

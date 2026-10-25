@@ -2,8 +2,8 @@
 //! original data files.
 
 use crate::objects::{self, ObjectSprites};
-use crate::units::{self, Corpse, UnitSprites, UnitView};
 use crate::terrain::{self, Layout, TerrainArt, Zoom};
+use crate::units::{self, Corpse, UnitSprites, UnitView};
 use crate::{BorlandRand, Canvas, strip};
 use gboh_formats::eif::Eif;
 use gboh_formats::map::Map;
@@ -54,10 +54,7 @@ fn town(map_file: &str) -> Option<Town> {
                 (4, 131),
             ],
             // the table at 0x618334
-            reversed: (
-                (6, 2),
-                &[(26, 42), (209, 39), (310, 39), (366, 86), (259, 151), (194, 197), (64, 202), (-1, 154), (-66, 106), (180, 124), (212, 104)],
-            ),
+            reversed: ((6, 2), &[(26, 42), (209, 39), (310, 39), (366, 86), (259, 151), (194, 197), (64, 202), (-1, 154), (-66, 106), (180, 124), (212, 104)]),
         }),
         _ => None,
     }
@@ -109,10 +106,8 @@ fn eif(load: &mut Loader, name: &str) -> Result<Eif, Error> {
 /// The game palette as used on the battlefield: `GAME.PAL` (or the
 /// game's own name for it) with water animation frame 0 applied.
 pub fn palette(load: &mut Loader) -> Result<Palette, Error> {
-    let (game, data) = gboh_formats::game::Game::ALL
-        .into_iter()
-        .find_map(|g| Some((g, load(g.palette_file())?)))
-        .ok_or_else(|| Error::Missing("GAME.PAL".into()))?;
+    let (game, data) =
+        gboh_formats::game::Game::ALL.into_iter().find_map(|g| Some((g, load(g.palette_file())?))).ok_or_else(|| Error::Missing("GAME.PAL".into()))?;
     let mut pal = Palette::parse(&data).map_err(|e| Error::Format("GAME.PAL".into(), e))?;
     crate::animate_water(&mut pal, 0, game);
     Ok(pal)
@@ -212,8 +207,7 @@ impl Scene {
         } else {
             let artwork = eif(load, zoom.artwork_file())?;
             let cliffs = if map.unk_b == 2 { eif(load, zoom.green_artwork_file())? } else { artwork.clone() };
-            let mut art =
-                TerrainArt::load(&blocks, &artwork, &cliffs).ok_or_else(|| Error::Strips(zoom.blocks_file().into()))?;
+            let mut art = TerrainArt::load(&blocks, &artwork, &cliffs).ok_or_else(|| Error::Strips(zoom.blocks_file().into()))?;
             art.river_rocks = strip(&overlay, "River Impass").unwrap_or_default();
             art.background = back_tile;
             (terrain::render_view(map, &art, layout, strip_offset(map_file, map), seed), objects::scatter(map, &mut BorlandRand::new(seed)))
@@ -229,10 +223,7 @@ impl Scene {
                 (t.hex, t.offsets) = t.reversed;
             }
             let cels = &eif.strips.get(reversed as usize)?.cels;
-            let sprites: Vec<_> = cels
-                .iter()
-                .filter_map(|c| Some((crate::Sprite::from(c.decode().ok()?), (c.hot_x as i32, c.hot_y as i32))))
-                .collect();
+            let sprites: Vec<_> = cels.iter().filter_map(|c| Some((crate::Sprite::from(c.decode().ok()?), (c.hot_x as i32, c.hot_y as i32)))).collect();
             Some((t, sprites))
         });
         let mut unit_art = HashMap::new();
@@ -242,9 +233,7 @@ impl Scene {
                 load_title(&title).and_then(|d| Eif::parse(&d).ok()).and_then(|e| UnitSprites::load(&e))
             });
         }
-        let flag_art = load_title(&format!("Activation Unit Flags{suffix}"))
-            .and_then(|d| Eif::parse(&d).ok())
-            .and_then(|e| units::FlagSprites::load(&e));
+        let flag_art = load_title(&format!("Activation Unit Flags{suffix}")).and_then(|d| Eif::parse(&d).ok()).and_then(|e| units::FlagSprites::load(&e));
         let missile_art = crate::missiles::Missile::ALL
             .into_iter()
             .filter_map(|m| {
@@ -259,12 +248,8 @@ impl Scene {
                 Some((r, UnitSprites::load(&eif)?))
             })
             .collect();
-        let rout_debris = load_title(&format!("Generic Rout Debris{suffix}"))
-            .and_then(|d| Eif::parse(&d).ok())
-            .map(|e| units::DebrisSprites::load(&e));
-        let missile_debris = load_title(&format!("Missile Debris{suffix}"))
-            .and_then(|d| Eif::parse(&d).ok())
-            .map(|e| crate::missiles::DebrisSprites::load(&e));
+        let rout_debris = load_title(&format!("Generic Rout Debris{suffix}")).and_then(|d| Eif::parse(&d).ok()).map(|e| units::DebrisSprites::load(&e));
+        let missile_debris = load_title(&format!("Missile Debris{suffix}")).and_then(|d| Eif::parse(&d).ok()).map(|e| crate::missiles::DebrisSprites::load(&e));
         let walk = load("WALKANIM.EIF").and_then(|d| gboh_formats::walkanim::WalkAnim::parse(&d).ok());
         let grid = load_title(&format!("Hex Grid{suffix}"))
             .and_then(|d| Eif::parse(&d).ok())
@@ -371,9 +356,7 @@ impl Scene {
         for c in corpses {
             if c.kind >= units::MISSILE {
                 let missile = crate::missiles::Missile::ALL[(c.kind - units::MISSILE).min(crate::missiles::Missile::ALL.len() - 1)];
-                if let Some(d) = self.missile_debris.as_ref().and_then(|art| {
-                    art.drawable(missile, c.cel, objects::anchor_at(map, layout, c.hex, c.offset))
-                }) {
+                if let Some(d) = self.missile_debris.as_ref().and_then(|art| art.drawable(missile, c.cel, objects::anchor_at(map, layout, c.hex, c.offset))) {
                     items.push(d);
                 }
                 continue;
@@ -413,10 +396,7 @@ impl Scene {
             }
         }
         objects::draw(&mut canvas, items, &self.shadow);
-        let missiles: Vec<_> = flights
-            .iter()
-            .filter_map(|f| f.drawable(&self.missile_art.iter().find(|(m, _)| *m == f.missile)?.1))
-            .collect();
+        let missiles: Vec<_> = flights.iter().filter_map(|f| f.drawable(&self.missile_art.iter().find(|(m, _)| *m == f.missile)?.1)).collect();
         objects::draw(&mut canvas, missiles, &self.shadow);
         canvas
     }

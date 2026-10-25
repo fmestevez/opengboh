@@ -218,13 +218,24 @@ pub enum Event {
     TurnsLeft(i16),
     /// Caesar's: Pompeian armies destroyed in a province; Caesar's army
     /// moved into one; one of the game's own messages (a string id).
-    Defeated { province: usize },
-    Moved { province: usize },
+    Defeated {
+        province: usize,
+    },
+    Moved {
+        province: usize,
+    },
     Message(u16),
     /// A province's subjugation rose (true) or fell to this level.
-    Subjugation { province: usize, level: u8, rose: bool },
+    Subjugation {
+        province: usize,
+        level: u8,
+        rose: bool,
+    },
     /// Reinforcements of a kind assembled in Macedon (0: none available).
-    Reinforcements { kind: usize, count: u16 },
+    Reinforcements {
+        kind: usize,
+        count: u16,
+    },
 }
 
 /// What comes after a battle or a round.

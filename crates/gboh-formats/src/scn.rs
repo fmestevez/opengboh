@@ -253,10 +253,7 @@ impl Scenario {
 
 /// Map files in the order of the original's battle table (`0x5e4394`); many
 /// per-battle rules are indexed by it.
-const BATTLES: [&str; 11] = [
-    "CHAERONE", "LYGINUS", "PELIUM", "GRANICUS", "ISSUS", "GAUGAMEL", "SAMARKAN", "JAXARTES",
-    "ARIGAEUM", "HYDASPES", "PARAIT",
-];
+const BATTLES: [&str; 11] = ["CHAERONE", "LYGINUS", "PELIUM", "GRANICUS", "ISSUS", "GAUGAMEL", "SAMARKAN", "JAXARTES", "ARIGAEUM", "HYDASPES", "PARAIT"];
 
 /// The battle index of a map file name (case-insensitive, extension
 /// ignored).

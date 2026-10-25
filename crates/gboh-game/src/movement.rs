@@ -1,9 +1,9 @@
 //! Movement: terrain costs and the hexes a unit can reach (see
 //! `docs/formats.md`, "Movement").
 
-use crate::battle::{Battle, UnitState};
 #[cfg(test)]
 use crate::battle::Unit;
+use crate::battle::{Battle, UnitState};
 use crate::hex::Hex;
 use gboh_formats::map::{Map, Side};
 use std::collections::{BinaryHeap, HashMap};
@@ -424,12 +424,11 @@ fn elephant_bars(battle: &Battle, map: &Map, side: u8, hex: Hex) -> bool {
 /// friendly leader (the second hexes of two-hex units count as occupied).
 fn can_enter(battle: &Battle, mover: usize, hex: Hex) -> bool {
     let side = battle.units[mover].side;
-    battle.units.iter().enumerate().all(|(i, u)| {
-        i == mover
-            || u.state == UnitState::Gone
-            || !battle.hexes(i).contains(&hex)
-            || (u.leader.is_some() && u.side == side)
-    })
+    battle
+        .units
+        .iter()
+        .enumerate()
+        .all(|(i, u)| i == mover || u.state == UnitState::Gone || !battle.hexes(i).contains(&hex) || (u.leader.is_some() && u.side == side))
 }
 
 /// Hexes the unit at index `unit` can reach with `points` movement points,
@@ -489,8 +488,13 @@ fn search(battle: &Battle, map: &Map, unit: usize, points: i32) -> Search {
         let holders: Vec<usize> = (0..battle.units.len())
             .filter(|&e| battle.units[e].side != u.side && battle.units[e].state == UnitState::Fighting && zoc_of(battle, map, e).contains(&u.hex))
             .collect();
-        let outpaces = holders.iter().all(|&e| u.max_mp > battle.units[e].max_mp || (class == MoveClass::LightCavalry && gboh_formats::units::cataphract(battle.units[e].type_id)));
-        let free_front = dirs.iter().any(|&d| { let n = u.hex.neighbours()[d]; on_map(map, n) && can_enter(battle, unit, n) });
+        let outpaces = holders
+            .iter()
+            .all(|&e| u.max_mp > battle.units[e].max_mp || (class == MoveClass::LightCavalry && gboh_formats::units::cataphract(battle.units[e].type_id)));
+        let free_front = dirs.iter().any(|&d| {
+            let n = u.hex.neighbours()[d];
+            on_map(map, n) && can_enter(battle, unit, n)
+        });
         start_free = outpaces && (battle.hannibal() || free_front);
     }
     let through = manual && battle.caesar() && class == MoveClass::Skirmisher;

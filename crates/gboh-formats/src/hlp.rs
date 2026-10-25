@@ -406,7 +406,12 @@ mod tests {
     #[test]
     fn reads_hannibal_help() {
         let Ok(dir) = std::env::var("GBOH_HANNIBAL") else { return };
-        let path = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).map(|e| e.path()).find(|p| p.file_name().unwrap().to_string_lossy().eq_ignore_ascii_case("HANNIBAL.HLP")).unwrap();
+        let path = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .find(|p| p.file_name().unwrap().to_string_lossy().eq_ignore_ascii_case("HANNIBAL.HLP"))
+            .unwrap();
         let h = Help::parse(&std::fs::read(path).unwrap()).unwrap();
         assert!(h.topics.len() > 10);
         assert!(h.topics.iter().any(|t| t.title.contains("Tutorial")), "{:?}", h.topics.iter().map(|t| &t.title).take(40).collect::<Vec<_>>());

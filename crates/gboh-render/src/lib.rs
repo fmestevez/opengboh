@@ -121,19 +121,18 @@ impl Canvas {
         if from >= to {
             return;
         }
-        let part = Sprite {
-            width: to - from,
-            height: s.height,
-            pixels: s.pixels.chunks(s.width).flat_map(|r| r[from..to].iter().copied()).collect(),
-        };
+        let part = Sprite { width: to - from, height: s.height, pixels: s.pixels.chunks(s.width).flat_map(|r| r[from..to].iter().copied()).collect() };
         self.blit(&part, x + from as i32, y);
     }
 
     pub fn to_rgba(&self, pal: &Palette) -> Vec<u8> {
-        self.pixels.iter().flat_map(|&p| {
-            let [r, g, b] = pal.colors[p as usize];
-            [r, g, b, 255]
-        }).collect()
+        self.pixels
+            .iter()
+            .flat_map(|&p| {
+                let [r, g, b] = pal.colors[p as usize];
+                [r, g, b, 255]
+            })
+            .collect()
     }
 }
 
